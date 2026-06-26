@@ -225,7 +225,18 @@ class ConditionalExperimentalMode:
       self.status_value = CEStatus["LEAD"]
       return True
 
-    if starpilot_toggles.conditional_model_stop_time != 0 and self.stop_light_detected:
+    # Suppress the stop-light trigger during the post-stop launch window. Pulling away
+    # from a standstill stop-hold, model_length is still short while stop_threshold is
+    # tiny at low speed, so the (essentially unfiltered) stop-light detector re-latches
+    # for a frame or two around 6-12 mph and blips CEM back to EXP, causing a noticeable
+    # accel dip. A real new red light approached after launch re-triggers once this
+    # window (POST_STOP_SPEED_TRIGGER_SUPPRESS_TIME) elapses. Dashboard stop signs and
+    # force-stops are pinned via the standstill_stop_hold path and are unaffected.
+    if (
+      starpilot_toggles.conditional_model_stop_time != 0
+      and self.stop_light_detected
+      and not speed_trigger_suppressed
+    ):
       self.status_value = CEStatus["STOP_LIGHT"]
       return True
 

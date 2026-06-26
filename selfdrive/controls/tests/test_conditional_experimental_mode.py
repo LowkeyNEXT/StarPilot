@@ -462,6 +462,40 @@ def test_post_stop_speed_trigger_is_suppressed_after_red_light_release(monkeypat
   assert cem.status_value == conditional_experimental_mode_module.CEStatus["SPEED"]
 
 
+def test_post_stop_stop_light_relatch_is_suppressed_during_launch(monkeypatch):
+  # Pulling away from a red light, the (essentially unfiltered) stop-light detector can
+  # briefly re-latch around 6-12 mph while model_length is still short, blipping CEM back
+  # to EXP and causing an accel dip. The post-stop suppress window must gate the STOP_LIGHT
+  # trigger too, not just the SPEED trigger, then allow a real new red light afterward.
+  cem = make_cem(model_length=80.0, model_stopped=False)
+  toggles = make_update_toggles()
+  standstill_sm = make_update_sm(standstill=True)
+  moving_sm = make_update_sm(standstill=False)
+
+  now = [100.0]
+  monkeypatch.setattr(conditional_experimental_mode_module.time, "monotonic", lambda: now[0])
+
+  def hold_red_light(*args, **kwargs):
+    cem.stop_light_detected = True
+
+  # Standstill at the red light pins EXP via the stop-hold path.
+  monkeypatch.setattr(cem, "stop_sign_and_light", hold_red_light)
+  cem.update(0.0, standstill_sm, toggles)
+  assert cem.experimental_mode
+
+  # Light turns green, we launch, but the stop-light detector re-latches at low speed.
+  now[0] = 100.1
+  cem.update(8.0 * CV.MPH_TO_MS, moving_sm, toggles)
+  assert not cem.experimental_mode
+  assert cem.params_memory.get_int("CEStatus") == conditional_experimental_mode_module.CEStatus["OFF"]
+
+  # After the suppress window, a genuine stop-light detection re-triggers EXP.
+  now[0] = 102.5
+  cem.update(8.0 * CV.MPH_TO_MS, moving_sm, toggles)
+  assert cem.experimental_mode
+  assert cem.status_value == conditional_experimental_mode_module.CEStatus["STOP_LIGHT"]
+
+
 def test_standstill_update_can_activate_exp_from_dashboard_stop_sign(monkeypatch):
   cem = make_cem(model_length=80.0, model_stopped=False)
   toggles = make_update_toggles()
