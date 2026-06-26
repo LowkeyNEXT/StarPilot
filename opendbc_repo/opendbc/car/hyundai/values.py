@@ -48,8 +48,8 @@ class CarControllerParams:
         self.STEER_DELTA_UP = 10
         self.STEER_DELTA_DOWN = 8
       else:
-        self.STEER_DELTA_UP = 2
-        self.STEER_DELTA_DOWN = 3
+        self.STEER_DELTA_UP = 6
+        self.STEER_DELTA_DOWN = 7
 
     if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
       self.STEER_THRESHOLD = 175
