@@ -173,13 +173,15 @@ def extract_zip(zip_file, extract_path):
   print(f"Extraction completed!")
 
 
-def get_selected_panda_firmware_name(app_fn, remote_start, ignore_ignition_line):
-  if not remote_start and not ignore_ignition_line:
+def get_selected_panda_firmware_name(app_fn, remote_start, hkg_remote_start, ignore_ignition_line):
+  if not remote_start and not hkg_remote_start and not ignore_ignition_line:
     return app_fn
 
   h7 = app_fn == "panda_h7.bin.signed"
   name_parts = ["panda_h7" if h7 else "panda"]
-  if remote_start:
+  if hkg_remote_start:
+    name_parts.extend(["hkg", "remote"])
+  elif remote_start:
     name_parts.append("remote")
   if ignore_ignition_line:
     name_parts.append("can_ignition_only")
@@ -193,6 +195,10 @@ def flash_panda(params_memory):
   except Exception:
     remote_start = False
   try:
+    hkg_remote_start = params.get_bool("HKGRemoteStartBootsComma")
+  except Exception:
+    hkg_remote_start = False
+  try:
     ignore_ignition_line = params.get_bool("IgnoreIgnitionLine")
   except Exception:
     ignore_ignition_line = False
@@ -203,7 +209,7 @@ def flash_panda(params_memory):
         print(f"Flashing Panda {serial}")
         flash_fn = None
         app_fn = panda.get_mcu_type().config.app_fn
-        selected_fn = get_selected_panda_firmware_name(app_fn, remote_start, ignore_ignition_line)
+        selected_fn = get_selected_panda_firmware_name(app_fn, remote_start, hkg_remote_start, ignore_ignition_line)
         if selected_fn != app_fn:
           candidate = os.path.join(FW_PATH, selected_fn)
           if os.path.isfile(candidate):

@@ -113,6 +113,17 @@ _TESTING_GROUND_CUSTOM_RESERVED_INTERVAL_S = 15.0
 _TESTING_GROUND_CUSTOM_RESERVED_PM = None
 _TESTING_GROUND_CUSTOM_RESERVED_LOCK = threading.Lock()
 _TESTING_GROUND_CUSTOM_RESERVED_LAST_PUBLISH_MONO = 0.0
+PANDA_FIRMWARE_TOGGLE_KEYS = {"HKGRemoteStartBootsComma"}
+PANDA_FIRMWARE_CONFIRMATION_FIELD = "confirmedPandaFirmwareFlash"
+_PANDA_FLASH_REBOOT_LOCK = threading.Lock()
+
+
+def _flash_panda_then_reboot() -> None:
+  with _PANDA_FLASH_REBOOT_LOCK:
+    params_memory.put_bool("FlashPanda", True)
+    while params_memory.get_bool("FlashPanda"):
+      time.sleep(0.1)
+    HARDWARE.reboot()
 
 
 def _is_comma_device_runtime() -> bool:
@@ -3959,6 +3970,11 @@ def setup(app):
       if key == "AutomaticUpdates" and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot change Automatic Updates while driving."}), 403
 
+      if key in PANDA_FIRMWARE_TOGGLE_KEYS and params.get_bool("IsOnroad"):
+        return jsonify({"error": "Cannot flash Panda firmware while driving."}), 403
+      if key in PANDA_FIRMWARE_TOGGLE_KEYS and data.get(PANDA_FIRMWARE_CONFIRMATION_FIELD) is not True:
+        return jsonify({"error": "Panda firmware changes require confirmation before flashing."}), 409
+
       if key == "AllowImpossibleAcceleration":
         enabled = str_val.strip() in ("1", "true", "True")
         params.put_bool(key, enabled)
@@ -4185,6 +4201,9 @@ def setup(app):
 
       response = {"message": f"Parameter '{key}' updated successfully."}
       updated = {}
+      if key in PANDA_FIRMWARE_TOGGLE_KEYS:
+        threading.Thread(target=_flash_panda_then_reboot, daemon=True).start()
+        response["message"] = f"Parameter '{key}' updated successfully. Panda flashing started; device will reboot when finished."
       if key == "RemapCancelToDistance" and params.get_bool("RemapCancelToDistance"):
         updated["RemapCancelToDistance"] = True
         response["message"] = "Remap Cancel Button enabled."

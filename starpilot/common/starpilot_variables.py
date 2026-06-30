@@ -1392,6 +1392,10 @@ class StarPilotVariables:
       condition=toggle.car_make == "gm" and toggle.has_pedal,
     )
     toggle.ignore_ignition_line = self.get_value("IgnoreIgnitionLine", condition=toggle.car_make == "gm")
+    toggle.hkg_remote_start_boots_comma = self.get_value(
+      "HKGRemoteStartBootsComma",
+      condition=toggle.car_make == "hyundai" and toggle.openpilot_longitudinal and bool(CP.flags & HyundaiFlags.CANFD),
+    )
     toggle.long_pitch = self.get_value(
       "LongPitch",
       condition=toggle.openpilot_longitudinal and toggle.car_make == "gm",

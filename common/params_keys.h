@@ -289,6 +289,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FlashPanda", {CLEAR_ON_MANAGER_START, BOOL, "0", "0"}},
     {"GMDashSpoofOffsets", {PERSISTENT, BOOL, "0", "0", 2}},
     {"GMPedalLongitudinal", {PERSISTENT, BOOL, "1", "1", 2}},
+    {"HKGRemoteStartBootsComma", {PERSISTENT, BOOL, "0", "0"}},
     {"IgnoreIgnitionLine", {PERSISTENT, BOOL, "0", "0"}},
     {"LongPitch", {PERSISTENT, BOOL, "1", "0", 2}},
     {"RemoteStartBootsComma", {PERSISTENT, BOOL, "0", "0"}},

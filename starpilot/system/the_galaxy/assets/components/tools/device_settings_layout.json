@@ -2521,6 +2521,13 @@
         "ui_type": "toggle"
       },
       {
+        "key": "HKGRemoteStartBootsComma",
+        "label": "EV Remote Climate",
+        "description": "Use the remote-climate Hyundai/Kia/Genesis CAN-FD panda firmware at boot.\n\nRequired for EV remote-climate startup signal behavior.",
+        "data_type": "bool",
+        "ui_type": "toggle"
+      },
+      {
         "key": "VoltSNG",
         "label": "Stop-and-Go Hack",
         "description": "Force stop-and-go on the 2017 Chevy Volt.",

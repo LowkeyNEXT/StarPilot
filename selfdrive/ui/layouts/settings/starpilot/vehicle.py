@@ -210,6 +210,11 @@ class VehicleSettingsManagerView(PanelManagerView):
 
     if cs.isHKGCanFd and cs.hasOpenpilotLongitudinal:
       toggles.append({
+        "title": tr("EV Remote Climate"),
+        "get_state": lambda: self._controller._params.get_bool("HKGRemoteStartBootsComma"),
+        "set_state": lambda s: self._controller._on_panda_firmware_toggle("HKGRemoteStartBootsComma", tr("EV Remote Climate requires a Panda firmware update.")),
+      })
+      toggles.append({
         "title": tr("Nostalgia Mode"),
         "subtitle": tr("Use the left paddle to pause openpilot acceleration and braking."),
         "get_state": lambda: self._controller._params.get_bool("NostalgiaMode"),
