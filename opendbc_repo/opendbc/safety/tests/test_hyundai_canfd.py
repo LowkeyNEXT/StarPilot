@@ -567,7 +567,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
              [0x1a0, 1], [0x1ea, 1], [0x200, 1], [0x345, 1], [0x1da, 1]]
 
   RELAY_MALFUNCTION_ADDRS = {0: (0x110, 0x362), 1: (0x1a0,)}  # LKAS_ALT, CAM_0x362, SCC_CONTROL
-  FWD_BLACKLISTED_ADDRS = {0: MRR35_RADAR_TRACK_ADDRS}
+  FWD_BLACKLISTED_ADDRS = {0: MRR35_RADAR_TRACK_ADDRS, 2: [0x110, 0x362]}
 
   DISABLED_ECU_UDS_MSG = (0x730, 1)
   DISABLED_ECU_ACTUATION_MSG = (0x1a0, 1)
@@ -611,20 +611,27 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     values = {"GEAR": gear, "ACCELERATOR_PEDAL": 0}
     return self.packer.make_can_msg_safety("ACCELERATOR", self.PT_BUS, values)
 
-  def test_lka_alt_stock_forwarding_depends_on_controls_allowed(self):
+  def test_lka_alt_stock_forwarding_blocked_for_openpilot_copies(self):
     for addr in (0x110, 0x362):
       self.safety.set_controls_allowed(False)
-      self.assertEqual(0, self.safety.safety_fwd_hook(2, addr))
+      self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
 
       self.safety.set_controls_allowed(True)
       self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
 
-  def test_lka_alt_stock_forwarding_blocks_openpilot_tx(self):
+  def test_lka_alt_inactive_status_copy_allowed_without_controls(self):
     self.safety.set_controls_allowed(False)
-    self.assertFalse(self._tx(self._angle_cmd_msg(0, enabled=False)))
-    self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
+    self._reset_angle_measurement(350)
+    self._set_prev_desired_angle(350)
+    self.assertTrue(self._tx(self._angle_cmd_msg(176.7, enabled=False)))
+    self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
+  def test_lka_alt_openpilot_tx_allowed_with_controls(self):
     self.safety.set_controls_allowed(True)
+    self._rx(self._gear_msg(5))
+    self._reset_angle_measurement(0)
+    self._reset_speed_measurement(1)
+    self._set_prev_desired_angle(0)
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
@@ -643,7 +650,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
-  def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
+  def test_lka_alt_aol_non_drive_gear_blocks_active_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
     self.safety.set_controls_allowed(False)
     self._toggle_aol(True)
@@ -652,13 +659,24 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
       with self.subTest(gear=gear):
         self._rx(self._gear_msg(gear))
         for addr in (0x110, 0x362):
-          self.assertEqual(0, self.safety.safety_fwd_hook(2, addr))
+          self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
 
         self._reset_angle_measurement(0)
         self._reset_speed_measurement(1)
         self._set_prev_desired_angle(0)
         self.assertFalse(self._tx(self._angle_cmd_msg(0, enabled=True)))
-        self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
+        self.assertTrue(self._tx(self._angle_cmd_msg(176.7, enabled=False)))
+        self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
+
+  def test_lka_alt_inactive_status_copy_must_be_inert(self):
+    self.safety.set_controls_allowed(False)
+    self._reset_angle_measurement(350)
+    self._set_prev_desired_angle(350)
+    self.assertFalse(self._tx(self._angle_cmd_msg(176.7, enabled=False, gain_raw=1)))
+
+    msg = self._angle_cmd_msg(176.7, enabled=False)
+    msg[0].data[5] += 2
+    self.assertFalse(self._tx(msg))
 
   def test_angle_cmd_when_disabled(self):
     for controls_allowed in (True, False):
@@ -668,7 +686,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
         for angle_cmd in np.arange(-90, 91, 10):
           self._set_prev_desired_angle(angle_cmd)
           self.assertEqual(controls_allowed, self._tx(self._angle_cmd_msg(angle_cmd, True)))
-          self.assertEqual(controls_allowed and angle_cmd == angle_meas, self._tx(self._angle_cmd_msg(angle_cmd, False)))
+          self.assertTrue(self._tx(self._angle_cmd_msg(angle_cmd, False)))
 
   def _accel_msg(self, accel, aeb_req=False, aeb_decel=0):
     values = {

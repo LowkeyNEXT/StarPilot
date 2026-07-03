@@ -139,7 +139,8 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
           "LKA_RHLnWrnSta": 0,
           "LKA_HndsoffSnd": 0,
           "LKA_StrSnd": 0,
-          "LKA_SysIndReq": 2,
+          "LKA_SysIndReq": lka_icon,
+          "LKA_ICON": lka_icon,
           "StrTqReqVal": 0,
           "ActToiSta": 0,
           "ToiFltSta": 0,
@@ -163,7 +164,7 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
           "LKA_HndsoffSnd": 0,
           "LKA_StrSnd": 2,
           "LKA_SysIndReq": 1,
-          "LKA_ICON": 1,
+          "LKA_ICON": lka_icon,
           "FCA_SYSWARN": 0,
           "StrTqReqVal": 0,
           "TORQUE_REQUEST": 0,
@@ -207,14 +208,19 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   return ret
 
 
-def create_lka_steering_stock_lkas(packer, CP, CAN, lkas_base_values, apply_angle=None, sanitize_angle_status=False):
+def create_lka_steering_stock_lkas(packer, CP, CAN, lkas_base_values, apply_angle=None, sanitize_angle_status=False,
+                                   lka_icon=None):
   lkas_msg = "LKAS_ALT" if CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT else "LKAS"
   values = {k: v for k, v in lkas_base_values.items() if k != "CHECKSUM"}
+  if lka_icon is not None:
+    values["LKA_ICON"] = lka_icon
+    if CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT:
+      values["LKA_SysIndReq"] = lka_icon
   if sanitize_angle_status:
     values.update({
       "LKA_StrSnd": 0,
       "LKA_SysIndReq": 0,
-      "LKA_ICON": 0,
+      "LKA_ICON": 0 if lka_icon is None else lka_icon,
       "FCA_SYSWARN": 0,
       "StrTqReqVal": 0,
       "TORQUE_REQUEST": 0,

@@ -696,8 +696,14 @@ class CarController(CarControllerBase):
     drive_gear = gear == structs.CarState.GearShifter.drive
     if is_ev9_angle_lkas_alt:
       steering_msg_active = steering_msg_active and drive_gear
-    forward_stock_lkas = is_ev9_angle_lkas_alt and not (drive_gear and (CC.latActive or CC.enabled))
-    if not forward_stock_lkas:
+      steering_pressed = getattr(CS.out, "steeringPressed", False)
+      lka_icon = 2 if CC.enabled and drive_gear and apply_steer_req and not steering_pressed else 1 if CC.enabled else 0
+
+    if is_ev9_angle_lkas_alt and not (drive_gear and (CC.latActive or CC.enabled)):
+      if CS.stock_lkas_msg:
+        can_sends.append(hyundaicanfd.create_lka_steering_stock_lkas(self.packer, self.CP, self.CAN, CS.stock_lkas_msg,
+                                                                     lka_icon=lka_icon))
+    else:
       can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled,
                                                              steering_msg_active, apply_torque, apply_angle,
                                                              CS.stock_lfa_msg,
@@ -711,6 +717,9 @@ class CarController(CarControllerBase):
     if self.frame % 5 == 0 and suppress_lfa:
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
                                                         self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))
+    elif self.frame % 5 == 0 and is_ev9_angle_lkas_alt and CS.lfa_block_msg:
+      can_sends.append(hyundaicanfd.create_lka_steering_stock_lfa(self.packer, self.CAN, CS.lfa_block_msg,
+                                                                  self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))
 
     # LFA and HDA icons
     if self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
