@@ -85,6 +85,14 @@ static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
   return (addr == 0x110) || (addr == 0x362);
 }
 
+static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
+  return (aol_allowed || controls_allowed) && (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
+}
+
+static bool hyundai_canfd_lka_alt_stock_forwarding(void) {
+  return hyundai_canfd_lka_steering_alt && hyundai_canfd_angle_steering && !hyundai_canfd_lka_alt_openpilot_allowed();
+}
+
 static void hyundai_canfd_rx_all_hook(const CANPacket_t *msg) {
   SAFETY_UNUSED(msg);
 }
@@ -93,7 +101,7 @@ static bool hyundai_canfd_fwd_hook(int bus_num, int addr) {
   const bool mrr35_radar_track = (addr >= HYUNDAI_CANFD_MRR35_RADAR_TRACK_START) && (addr <= HYUNDAI_CANFD_MRR35_RADAR_TRACK_END);
 
   if ((bus_num == 2) && hyundai_canfd_lka_steering_alt && hyundai_canfd_lka_alt_forward_addr(addr)) {
-    return true;
+    return !hyundai_canfd_lka_alt_stock_forwarding();
   }
 
   // On LKA-steering long-control cars using live MRR35 radar tracks, openpilot parses
@@ -212,6 +220,10 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
 
   bool tx = true;
 
+  if ((msg->bus == 0U) && hyundai_canfd_lka_alt_forward_addr(msg->addr) && hyundai_canfd_lka_alt_stock_forwarding()) {
+    tx = false;
+  }
+
   if (msg->addr == 0xCBU) {
     if (!hyundai_canfd_angle_steering) {
       tx = false;
@@ -248,18 +260,9 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
         gain_violation = true;
       }
 
-      const int desired_torque = (((msg->data[6] & 0xFU) << 7U) | (msg->data[5] >> 1U)) - 1024U;
-      const bool steer_req = GET_BIT(msg, 52U);
-      const bool inert_lka_alt_status = hyundai_canfd_lka_steering_alt && !steer_angle_req &&
-                                        (gain_raw == 0U) && (desired_torque == 0) && !steer_req;
-      const bool active_lka_alt_non_drive = hyundai_canfd_lka_steering_alt && steer_angle_req &&
-                                            hyundai_ev_gas_signal && !hyundai_canfd_lka_alt_drive_gear;
-      const bool angle_violation = !inert_lka_alt_status &&
-                                   steer_angle_cmd_checks_vm(desired_angle, steer_angle_req,
-                                                             HYUNDAI_CANFD_ANGLE_STEERING_LIMITS,
-                                                             HYUNDAI_CANFD_ANGLE_STEERING_PARAMS);
-
-      if (angle_violation || gain_violation || active_lka_alt_non_drive) {
+      if (steer_angle_cmd_checks_vm(desired_angle, steer_angle_req,
+                                    HYUNDAI_CANFD_ANGLE_STEERING_LIMITS,
+                                    HYUNDAI_CANFD_ANGLE_STEERING_PARAMS) || gain_violation) {
         tx = false;
       }
     } else {
