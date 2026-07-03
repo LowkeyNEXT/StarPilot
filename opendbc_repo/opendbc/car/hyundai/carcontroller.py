@@ -723,8 +723,11 @@ class CarController(CarControllerBase):
     if is_ev9_angle_steering(self.CP):
       suppress_lfa = bool(lka_steering and CC.latActive and drive_gear)
     if self.frame % 5 == 0 and suppress_lfa:
+      left_lane_visible = bool(getattr(hud_control, "leftLaneVisible", False)) if is_ev9_angle_steering(self.CP) else False
+      right_lane_visible = bool(getattr(hud_control, "rightLaneVisible", False)) if is_ev9_angle_steering(self.CP) else False
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
-                                                        self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))
+                                                        self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT,
+                                                        left_lane_visible, right_lane_visible))
 
     # LFA and HDA icons
     if self.frame % 5 == 0 and (not lka_steering or lka_steering_long):

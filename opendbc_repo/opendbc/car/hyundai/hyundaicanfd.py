@@ -235,7 +235,7 @@ def create_lka_steering_stock_lfa(packer, CAN, lfa_base_values, lka_steering_alt
   return packer.make_can_msg(lfa_msg, CAN.ACAN, values)
 
 
-def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
+def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, left_lane_visible=False, right_lane_visible=False):
   suppress_msg = "CAM_0x362" if lka_steering_alt else "CAM_0x2a4"
   msg_bytes = 32 if lka_steering_alt else 24
 
@@ -243,8 +243,8 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
   values["COUNTER"] = lfa_block_msg["COUNTER"]
   values["SET_ME_0"] = 0
   values["SET_ME_0_2"] = 0
-  values["LEFT_LANE_LINE"] = 0
-  values["RIGHT_LANE_LINE"] = 0
+  values["LEFT_LANE_LINE"] = 3 if left_lane_visible else 0
+  values["RIGHT_LANE_LINE"] = 3 if right_lane_visible else 0
   return packer.make_can_msg(suppress_msg, CAN.ACAN, values)
 
 
