@@ -1435,6 +1435,7 @@ class TestHyundaiFingerprint:
       "CHECKSUM": 1234,
       "COUNTER": 42,
       "LKA_MODE": 2,
+      "LKA_RcgSta": 3,
       "LKA_AVAILABLE": 3,
       "LKA_WARNING": 1,
       "LKA_ICON": 1,
@@ -1445,7 +1446,7 @@ class TestHyundaiFingerprint:
       "LKA_ASSIST": 1,
       "STEER_MODE": 5,
       "NEW_SIGNAL_2": 0,
-      "LKAS_ANGLE_ACTIVE": 1,
+      "LKAS_ANGLE_ACTIVE": 2,
       "HAS_LANE_SAFETY": 1,
       "ADAS_StrAnglReqVal": 12.3,
       "ADAS_ACIAnglTqRedcGainVal": 0.42,
@@ -1464,6 +1465,8 @@ class TestHyundaiFingerprint:
     parser.update([(1, lkas_msgs)])
 
     assert parser.can_valid
+    assert parser.vl["LKAS_ALT"]["LKA_ICON"] == 2
+    assert parser.vl["LKAS_ALT"]["LKA_AVAILABLE"] == 3
     assert parser.vl["LKAS_ALT"]["LKAS_ANGLE_ACTIVE"] == 2
     assert parser.vl["LKAS_ALT"]["ADAS_ACIAnglTqRedcGainVal"] == pytest.approx(0.0)
     assert parser.vl["LKAS_ALT"]["ADAS_StrAnglReqVal"] == pytest.approx(8.5)
@@ -1732,7 +1735,7 @@ class TestHyundaiFingerprint:
     lkas_msgs = [msg for msg in msgs if msg[0] == 0x110]
     assert len(lkas_msgs) == 0
 
-  def test_ev9_active_angle_steering_uses_comma_lane_visibility(self):
+  def test_ev9_active_angle_steering_spoofs_visible_lane_lines(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
@@ -1748,8 +1751,14 @@ class TestHyundaiFingerprint:
                          hudControl=SimpleNamespace(leftLaneVisible=True, rightLaneVisible=False))
     lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
     lfa_block_msg["COUNTER"] = 0
+    stock_lkas = {
+      "LKA_RcgSta": 3,
+      "LKA_AVAILABLE": 3,
+      "LKAS_ANGLE_ACTIVE": 2,
+    }
     cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
                          out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive))
+    cs.stock_lkas_msg = stock_lkas
 
     msgs = controller.create_canfd_msgs(0, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
                                         get_test_toggles(), lka_icon=2, lfa_icon=2)
@@ -1760,7 +1769,7 @@ class TestHyundaiFingerprint:
 
     assert parser.can_valid
     assert parser.vl["CAM_0x362"]["LEFT_LANE_LINE"] == 3
-    assert parser.vl["CAM_0x362"]["RIGHT_LANE_LINE"] == 0
+    assert parser.vl["CAM_0x362"]["RIGHT_LANE_LINE"] == 3
 
   @pytest.mark.parametrize("gear", [
     structs.CarState.GearShifter.park,
@@ -1804,6 +1813,7 @@ class TestHyundaiFingerprint:
       "CHECKSUM": 1234,
       "COUNTER": 42,
       "LKA_MODE": 2,
+      "LKA_RcgSta": 3,
       "LKA_AVAILABLE": 3,
       "LKA_WARNING": 1,
       "LKA_ICON": 1,
@@ -1814,7 +1824,7 @@ class TestHyundaiFingerprint:
       "LKA_ASSIST": 1,
       "STEER_MODE": 5,
       "NEW_SIGNAL_2": 0,
-      "LKAS_ANGLE_ACTIVE": 1,
+      "LKAS_ANGLE_ACTIVE": 2,
       "HAS_LANE_SAFETY": 1,
       "ADAS_StrAnglReqVal": 12.3,
       "ADAS_ACIAnglTqRedcGainVal": 0.42,
@@ -1837,11 +1847,13 @@ class TestHyundaiFingerprint:
     parser.update([(1, lkas_msgs)])
 
     assert parser.can_valid
+    assert parser.vl["LKAS_ALT"]["LKA_ICON"] == 2
+    assert parser.vl["LKAS_ALT"]["LKA_AVAILABLE"] == 3
     assert parser.vl["LKAS_ALT"]["LKAS_ANGLE_ACTIVE"] == 2
     assert parser.vl["LKAS_ALT"]["ADAS_ACIAnglTqRedcGainVal"] == pytest.approx(0.44)
     assert parser.vl["LKAS_ALT"]["ADAS_StrAnglReqVal"] == pytest.approx(120.0)
 
-  def test_ev9_high_driver_torque_uses_inactive_synced_lkas_status(self):
+  def test_ev9_high_driver_torque_keeps_openpilot_owned_happy_lkas_status(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
@@ -1849,28 +1861,39 @@ class TestHyundaiFingerprint:
     CP.openpilotLongitudinalControl = False
 
     controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
     can_bus = CanBus(CP)
-    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("LKAS_ALT", 0)], can_bus.ACAN)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("LKAS_ALT", 0), ("CAM_0x362", 0)], can_bus.ACAN)
     cc = SimpleNamespace(enabled=True, latActive=True, actuators=SimpleNamespace(longControlState=LongCtrlState.off),
                          leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
     lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
     lfa_block_msg["COUNTER"] = 0
-    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
+    stock_lkas = {
+      "LKA_RcgSta": 3,
+      "LKA_AVAILABLE": 3,
+      "LKAS_ANGLE_ACTIVE": 2,
+    }
+    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg=stock_lkas, lfa_block_msg=lfa_block_msg,
                          out=SimpleNamespace(steeringAngleDeg=-40.8, steeringTorque=-312.0, steeringPressed=True,
                                              gearShifter=structs.CarState.GearShifter.drive))
 
     msgs = controller.create_canfd_msgs(0, True, 0.064, -46.4, 0.0, 0.0, False, cc.hudControl, cs, cc,
                                         get_test_toggles(), lka_icon=2, lfa_icon=2)
     lkas_msgs = [msg for msg in msgs if msg[0] == 0x110]
+    lfa_msgs = [msg for msg in msgs if msg[0] == 0x362]
     assert len(lkas_msgs) == 1
+    assert len(lfa_msgs) == 1
 
-    parser.update([(1, lkas_msgs)])
+    parser.update([(1, msgs)])
 
     assert parser.can_valid
-    assert parser.vl["LKAS_ALT"]["LKA_ICON"] == 1
-    assert parser.vl["LKAS_ALT"]["LKAS_ANGLE_ACTIVE"] == 1
+    assert parser.vl["LKAS_ALT"]["LKA_ICON"] == 2
+    assert parser.vl["LKAS_ALT"]["LKA_AVAILABLE"] == 3
+    assert parser.vl["LKAS_ALT"]["LKAS_ANGLE_ACTIVE"] == 2
     assert parser.vl["LKAS_ALT"]["ADAS_ACIAnglTqRedcGainVal"] == pytest.approx(0.0)
     assert parser.vl["LKAS_ALT"]["ADAS_StrAnglReqVal"] == pytest.approx(-40.8)
+    assert parser.vl["CAM_0x362"]["LEFT_LANE_LINE"] == 3
+    assert parser.vl["CAM_0x362"]["RIGHT_LANE_LINE"] == 3
 
   def test_can_acc_commands_use_default_values(self):
     CP = CarParams.new_message()

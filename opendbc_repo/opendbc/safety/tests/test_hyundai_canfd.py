@@ -583,6 +583,8 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
   def setUp(self):
     super().setUp()
     self._rx(self._gear_msg(5))
+    self.stock_lka_alt_cnt = 0
+    self._rx(self._stock_lka_alt_msg(active=True))
 
   def _angle_cmd_msg(self, angle, enabled, increment_timer=True, gain_raw=250):
     if increment_timer:
@@ -607,9 +609,23 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     }
     return self.packer.make_can_msg_safety("LKAS_ALT", 0, values)
 
+  def _torque_driver_msg(self, torque):
+    values = {"STEERING_COL_TORQUE": torque}
+    return self.packer.make_can_msg_safety("MDPS", self.PT_BUS, values)
+
   def _gear_msg(self, gear):
     values = {"GEAR": gear, "ACCELERATOR_PEDAL": 0}
     return self.packer.make_can_msg_safety("ACCELERATOR", self.PT_BUS, values)
+
+  def _stock_lka_alt_msg(self, active=True):
+    values = {
+      "COUNTER": self.stock_lka_alt_cnt,
+      "LKA_RcgSta": 3 if active else 0,
+      "LKA_AVAILABLE": 3 if active else 0,
+      "LKAS_ANGLE_ACTIVE": 2 if active else 1,
+    }
+    self.stock_lka_alt_cnt = (self.stock_lka_alt_cnt + 1) % 256
+    return self.packer.make_can_msg_safety("LKAS_ALT", 2, values)
 
   def _lka_button_msg(self, pressed):
     values = {
@@ -630,6 +646,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
       self.assertEqual(0, self.safety.safety_fwd_hook(2, addr))
 
       self.safety.set_controls_allowed(True)
+      self._rx(self._stock_lka_alt_msg(active=True))
       self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
 
   def test_lka_alt_aol_off_forwards_stock_even_with_acc_active(self):
@@ -653,6 +670,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
 
     self.safety.set_controls_allowed(True)
+    self._rx(self._stock_lka_alt_msg(active=True))
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
@@ -661,6 +679,40 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.safety.set_controls_allowed(False)
     self._toggle_lka_on()
     self._rx(self._gear_msg(5))
+    self._rx(self._stock_lka_alt_msg(active=True))
+
+    for addr in (0x110, 0x362):
+      self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
+
+    self._reset_angle_measurement(0)
+    self._reset_speed_measurement(1)
+    self._set_prev_desired_angle(0)
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
+    self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
+
+  def test_lka_alt_stock_inactive_aol_on_keeps_openpilot_ownership(self):
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(False)
+    self._toggle_lka_on()
+    self._rx(self._gear_msg(5))
+    self._rx(self._stock_lka_alt_msg(active=False))
+
+    for addr in (0x110, 0x362):
+      self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
+
+    self._reset_angle_measurement(0)
+    self._reset_speed_measurement(1)
+    self._set_prev_desired_angle(0)
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
+    self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
+
+  def test_lka_alt_driver_torque_override_aol_on_keeps_openpilot_ownership(self):
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(False)
+    self._toggle_lka_on()
+    self._rx(self._gear_msg(5))
+    self._rx(self._stock_lka_alt_msg(active=True))
+    self.safety.set_torque_driver(300, 300)
 
     for addr in (0x110, 0x362):
       self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
