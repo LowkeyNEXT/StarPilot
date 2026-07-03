@@ -13,8 +13,8 @@
 
 #define HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(a_can, e_can) \
   HYUNDAI_CANFD_CRUISE_BUTTON_TX_MSGS(e_can)                        \
-  {0x110, a_can, 32, .check_relay = (a_can) == 0},  /* LKAS_ALT */  \
-  {0x362, a_can, 32, .check_relay = (a_can) == 0},  /* CAM_0x362 */ \
+  {0x110, a_can, 32, .check_relay = (a_can) == 0, .disable_static_blocking = true},  /* LKAS_ALT */  \
+  {0x362, a_can, 32, .check_relay = (a_can) == 0, .disable_static_blocking = true},  /* CAM_0x362 */ \
 
 #define HYUNDAI_CANFD_LFA_STEERING_COMMON_TX_MSGS(e_can)  \
   {0x12A, e_can, 16, .check_relay = (e_can) == 0},  /* LFA */            \
@@ -60,6 +60,7 @@ static bool hyundai_canfd_alt_buttons = false;
 static bool hyundai_canfd_lka_steering_alt = false;
 static bool hyundai_canfd_angle_steering = false;
 static bool hyundai_ccnc = false;
+static bool hyundai_canfd_lka_alt_drive_gear = false;
 
 static unsigned int hyundai_canfd_get_lka_addr(void) {
   return hyundai_canfd_lka_steering_alt ? 0x110U : 0x50U;
@@ -80,12 +81,28 @@ static uint32_t hyundai_canfd_get_checksum(const CANPacket_t *msg) {
   return chksum;
 }
 
+static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
+  return (addr == 0x110) || (addr == 0x362);
+}
+
+static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
+  return (aol_allowed || controls_allowed) && (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
+}
+
+static bool hyundai_canfd_lka_alt_stock_forwarding(void) {
+  return hyundai_canfd_lka_steering_alt && hyundai_canfd_angle_steering && !hyundai_canfd_lka_alt_openpilot_allowed();
+}
+
 static void hyundai_canfd_rx_all_hook(const CANPacket_t *msg) {
   SAFETY_UNUSED(msg);
 }
 
 static bool hyundai_canfd_fwd_hook(int bus_num, int addr) {
   const bool mrr35_radar_track = (addr >= HYUNDAI_CANFD_MRR35_RADAR_TRACK_START) && (addr <= HYUNDAI_CANFD_MRR35_RADAR_TRACK_END);
+
+  if ((bus_num == 2) && hyundai_canfd_lka_steering_alt && hyundai_canfd_lka_alt_forward_addr(addr)) {
+    return !hyundai_canfd_lka_alt_stock_forwarding();
+  }
 
   // On LKA-steering long-control cars using live MRR35 radar tracks, openpilot parses
   // the tracks directly from bus 0. Forwarding them to bus 2 creates a returned TX copy
@@ -132,6 +149,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
     // gas press, different for EV, hybrid, and ICE models
     if ((msg->addr == 0x35U) && hyundai_ev_gas_signal) {
       gas_pressed = msg->data[5] != 0U;
+      hyundai_canfd_lka_alt_drive_gear = (msg->data[24] & 0x7U) == 5U;
     } else if ((msg->addr == 0x105U) && hyundai_hybrid_gas_signal) {
       gas_pressed = GET_BIT(msg, 103U) || (msg->data[13] != 0U) || GET_BIT(msg, 112U);
     } else if ((msg->addr == 0x100U) && !hyundai_ev_gas_signal && !hyundai_hybrid_gas_signal) {
@@ -201,6 +219,10 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
   };
 
   bool tx = true;
+
+  if ((msg->bus == 0U) && hyundai_canfd_lka_alt_forward_addr(msg->addr) && hyundai_canfd_lka_alt_stock_forwarding()) {
+    tx = false;
+  }
 
   if (msg->addr == 0xCBU) {
     if (!hyundai_canfd_angle_steering) {
@@ -389,6 +411,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   hyundai_canfd_lka_steering_alt = GET_FLAG(param, HYUNDAI_PARAM_CANFD_LKA_STEERING_ALT);
   hyundai_canfd_angle_steering = GET_FLAG(param, HYUNDAI_PARAM_CANFD_ANGLE_STEERING);
   hyundai_ccnc = GET_FLAG(param, HYUNDAI_PARAM_CCNC);
+  hyundai_canfd_lka_alt_drive_gear = false;
 
   safety_config ret;
   if (hyundai_longitudinal) {

@@ -131,25 +131,60 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
     lkas_values["LKAS_ANGLE_ACTIVE"] = 2 if lat_active else 1
     lkas_values["ADAS_ACIAnglTqRedcGainVal"] = apply_torque if lat_active else 0.0
     if ev9_angle_lkas_alt:
-      lkas_values = {
-        "LKA_OptUsmSta": 0,
-        "LKA_RcgSta": 3 if lat_active else 0,
-        "LKA_LHLnWrnSta": 0,
-        "LKA_RHLnWrnSta": 0,
-        "LKA_HndsoffSnd": 0,
-        "LKA_StrSnd": 0,
-        "LKA_SysIndReq": 2 if enabled or lat_active else 1,
-        "StrTqReqVal": 0,
-        "ActToiSta": 0,
-        "ToiFltSta": 0,
-        "LFA_BUTTON": 0,
-        "LKA_SysWrn": 0,
-        "Damping_Gain": 100,
-        "LKAS_ANGLE_ACTIVE": 2 if lat_active else 1,
-        "LKA_UsmMod": 0,
-        "ADAS_StrAnglReqVal": apply_angle,
-        "ADAS_ACIAnglTqRedcGainVal": apply_torque if lat_active else 0.0,
-      }
+      if lat_active:
+        lkas_values = {
+          "LKA_OptUsmSta": 0,
+          "LKA_RcgSta": 3,
+          "LKA_LHLnWrnSta": 0,
+          "LKA_RHLnWrnSta": 0,
+          "LKA_HndsoffSnd": 0,
+          "LKA_StrSnd": 0,
+          "LKA_SysIndReq": 2,
+          "StrTqReqVal": 0,
+          "ActToiSta": 0,
+          "ToiFltSta": 0,
+          "LFA_BUTTON": 0,
+          "LKA_SysWrn": 0,
+          "Damping_Gain": 100,
+          "LKAS_ANGLE_ACTIVE": 2,
+          "LKA_UsmMod": 0,
+          "ADAS_StrAnglReqVal": apply_angle,
+          "ADAS_ACIAnglTqRedcGainVal": apply_torque,
+        }
+      else:
+        lkas_values.update({
+          "LKA_OptUsmSta": 0,
+          "LKA_MODE": 0,
+          "LKA_RcgSta": 0,
+          "LKA_AVAILABLE": 0,
+          "LKA_LHLnWrnSta": 0,
+          "LKA_RHLnWrnSta": 0,
+          "LKA_WARNING": 0,
+          "LKA_HndsoffSnd": 0,
+          "LKA_StrSnd": 2,
+          "LKA_SysIndReq": 1,
+          "LKA_ICON": 1,
+          "FCA_SYSWARN": 0,
+          "StrTqReqVal": 0,
+          "TORQUE_REQUEST": 0,
+          "ActToiSta": 0,
+          "STEER_REQ": 0,
+          "ToiFltSta": 0,
+          "LFA_BUTTON": 0,
+          "LKA_SysWrn": 0,
+          "LKA_ASSIST": 0,
+          "Damping_Gain": 0,
+          "STEER_MODE": 0,
+          "NEW_SIGNAL_2": 0,
+          "LKAS_ANGLE_ACTIVE": 1,
+          "LKA_UsmMod": 0,
+          "HAS_LANE_SAFETY": 0,
+          "ADAS_ACIAnglTqRedcGainVal": 0.0,
+          "DAMP_FACTOR": 0,
+        })
+        lkas_values["ADAS_StrAnglReqVal"] = (
+          lkas_base_values.get("ADAS_StrAnglReqVal", apply_angle) if lkas_base_values else apply_angle
+        )
 
   ret = []
   if CP.flags & HyundaiFlags.CANFD_LKA_STEERING:
@@ -170,6 +205,34 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
       ret.append(packer.make_can_msg("LFA", CAN.ECAN, lfa_values))
 
   return ret
+
+
+def create_lka_steering_stock_lkas(packer, CP, CAN, lkas_base_values, apply_angle=None, sanitize_angle_status=False):
+  lkas_msg = "LKAS_ALT" if CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT else "LKAS"
+  values = {k: v for k, v in lkas_base_values.items() if k != "CHECKSUM"}
+  if sanitize_angle_status:
+    values.update({
+      "LKA_StrSnd": 0,
+      "LKA_SysIndReq": 0,
+      "LKA_ICON": 0,
+      "FCA_SYSWARN": 0,
+      "StrTqReqVal": 0,
+      "TORQUE_REQUEST": 0,
+      "ActToiSta": 0,
+      "STEER_REQ": 0,
+      "ToiFltSta": 0,
+      "LKAS_ANGLE_ACTIVE": 1,
+      "ADAS_ACIAnglTqRedcGainVal": 0.0,
+    })
+    if apply_angle is not None:
+      values["ADAS_StrAnglReqVal"] = apply_angle
+  return packer.make_can_msg(lkas_msg, CAN.ACAN, values)
+
+
+def create_lka_steering_stock_lfa(packer, CAN, lfa_base_values, lka_steering_alt):
+  lfa_msg = "CAM_0x362" if lka_steering_alt else "CAM_0x2a4"
+  values = {k: v for k, v in lfa_base_values.items() if k != "CHECKSUM"}
+  return packer.make_can_msg(lfa_msg, CAN.ACAN, values)
 
 
 def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
