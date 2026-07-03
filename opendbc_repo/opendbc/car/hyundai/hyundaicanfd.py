@@ -253,6 +253,7 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, left_lane_
 def create_ccnc_lfa_icon(packer, CAN, msg_161, lfa_icon):
   values = {k: v for k, v in msg_161.items() if k not in ("CHECKSUM", "COUNTER")}
   values["LFA_ICON"] = lfa_icon
+  values["CENTERLINE"] = 1 if lfa_icon else 0
   return packer.make_can_msg("CCNC_0x161", CAN.ECAN, values)
 
 

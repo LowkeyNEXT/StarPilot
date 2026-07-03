@@ -27,6 +27,7 @@ CANFD_CAMERA_LEAD_STALE_NS = 300_000_000
 CANFD_LEAD_MIN_DISTANCE = 0.1
 CANFD_FALLBACK_LEAD_DISTANCE = 20.0
 HYUNDAI_DASH_DISENGAGE_BLINK_TIME = 1.0
+EV9_AOL_ICON_HANDOFF_FRAMES = 100
 HYUNDAI_CANFD_SCC_ACCEL_STEP = 5.0 / 50.0
 HYUNDAI_CANFD_SCC_DECEL_STEP = 12.5 / 50.0
 IONIQ_6_RESPONSE_MULTIPLIER = 1.2
@@ -360,6 +361,7 @@ class CarController(CarControllerBase):
     self._dash_lat_disengage_blink_frame = 0
     self._dash_lat_disengage_init = False
     self._dash_prev_lat_active = False
+    self._ev9_aol_icon_last_enabled_frame = -1_000_000
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -732,9 +734,13 @@ class CarController(CarControllerBase):
                                                         self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT,
                                                         left_lane_visible, right_lane_visible))
 
+    ev9_aol_icon_enabled = bool(getattr(CC, "alwaysOnLateralEnabled", False))
+    if ev9_aol_icon_enabled:
+      self._ev9_aol_icon_last_enabled_frame = self.frame
+    ev9_aol_icon_handoff = 0 <= self.frame - self._ev9_aol_icon_last_enabled_frame <= EV9_AOL_ICON_HANDOFF_FRAMES
     if self.frame % 5 == 0 and is_ev9_angle_lkas_alt and self.CP.flags & HyundaiFlags.CCNC and \
-        getattr(CC, "alwaysOnLateralEnabled", False) and getattr(CS, "msg_161", None):
-      ev9_lfa_icon = 2 if drive_gear and apply_steer_req and not ev9_manual_override else 1
+        (ev9_aol_icon_enabled or ev9_aol_icon_handoff) and getattr(CS, "msg_161", None):
+      ev9_lfa_icon = 2 if ev9_aol_icon_enabled and drive_gear and apply_steer_req and not ev9_manual_override else 1
       can_sends.append(hyundaicanfd.create_ccnc_lfa_icon(self.packer, self.CAN, CS.msg_161, ev9_lfa_icon))
 
     # LFA and HDA icons
