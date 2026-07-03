@@ -564,7 +564,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
 
   TX_MSGS = [[0x110, 0], [0x1CF, 1], [0x362, 0], [0x51, 0], [0x100, 0], [0x730, 1], [0x12a, 1], [0x160, 1],
              [0x1ba, 1], [0x1e0, 1], [0x1e5, 1], [0x31a, 1], [0x3b5, 1], [0x3c1, 1],
-             [0x1a0, 1], [0x1ea, 1], [0x200, 1], [0x345, 1], [0x1da, 1]]
+             [0x1a0, 1], [0x1ea, 1], [0x200, 1], [0x345, 1], [0x1da, 1], [0x161, 0]]
 
   RELAY_MALFUNCTION_ADDRS = {0: (0x110, 0x362), 1: (0x1a0,)}  # LKAS_ALT, CAM_0x362, SCC_CONTROL
   FWD_BLACKLISTED_ADDRS = {0: MRR35_RADAR_TRACK_ADDRS}
@@ -578,7 +578,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
   STEER_MSG = "LKAS_ALT"
   GAS_MSG = ("ACCELERATOR", "ACCELERATOR_PEDAL")
   SAFETY_PARAM = HyundaiSafetyFlags.CANFD_LKA_STEERING | HyundaiSafetyFlags.CANFD_LKA_STEERING_ALT | \
-    HyundaiSafetyFlags.CANFD_ANGLE_STEERING | HyundaiSafetyFlags.LONG | HyundaiSafetyFlags.EV_GAS
+    HyundaiSafetyFlags.CANFD_ANGLE_STEERING | HyundaiSafetyFlags.LONG | HyundaiSafetyFlags.EV_GAS | HyundaiSafetyFlags.CCNC
 
   def setUp(self):
     super().setUp()
@@ -722,6 +722,10 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self._set_prev_desired_angle(0)
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
+
+  def test_lka_alt_allows_ccnc_lfa_icon_overlay(self):
+    self.assertTrue(self._tx(self.packer.make_can_msg_safety("CCNC_0x161", 0, {"LFA_ICON": 1})))
+    self.assertTrue(self._tx(self.packer.make_can_msg_safety("CCNC_0x161", 0, {"LFA_ICON": 2})))
 
   def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)

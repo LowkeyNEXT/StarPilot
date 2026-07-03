@@ -352,6 +352,11 @@ static safety_config hyundai_canfd_init(uint16_t param) {
     HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(0, 1)
   };
 
+  static const CanMsg HYUNDAI_CANFD_LKA_STEERING_ALT_CCNC_TX_MSGS[] = {
+    HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(0, 1)
+    {0x161, 0, 32, .check_relay = false},  // CCNC_0x161 LFA icon overlay
+  };
+
   static const CanMsg HYUNDAI_CANFD_LKA_STEERING_LONG_TX_MSGS[] = {
     HYUNDAI_CANFD_LKA_STEERING_COMMON_TX_MSGS(0, 1)
     HYUNDAI_CANFD_LFA_STEERING_COMMON_TX_MSGS(1)
@@ -380,6 +385,22 @@ static safety_config hyundai_canfd_init(uint16_t param) {
     {0x200, 1,  8, .check_relay = false},  // ADRV_0x200
     {0x345, 1,  8, .check_relay = false},  // ADRV_0x345
     {0x1DA, 1, 32, .check_relay = false},  // ADRV_0x1da
+  };
+
+  static const CanMsg HYUNDAI_CANFD_LKA_STEERING_ALT_CCNC_LONG_TX_MSGS[] = {
+    HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(0, 1)
+    HYUNDAI_CANFD_LFA_STEERING_COMMON_TX_MSGS(1)
+    HYUNDAI_CANFD_SCC_CONTROL_COMMON_TX_MSGS(1, true)
+    HYUNDAI_CANFD_BLINDSPOT_DASH_TX_MSGS(1)
+    {0x51,  0, 32, .check_relay = false},  // ADRV_0x51
+    {0x100, 0, 24, .check_relay = false},  // ACCELERATOR_BRAKE_ALT radar heartbeat spoof
+    {0x730, 1,  8, .check_relay = false},  // tester present for ADAS ECU disable
+    {0x160, 1, 16, .check_relay = false},  // ADRV_0x160
+    {0x1EA, 1, 32, .check_relay = false},  // ADRV_0x1ea
+    {0x200, 1,  8, .check_relay = false},  // ADRV_0x200
+    {0x345, 1,  8, .check_relay = false},  // ADRV_0x345
+    {0x1DA, 1, 32, .check_relay = false},  // ADRV_0x1da
+    {0x161, 0, 32, .check_relay = false},  // CCNC_0x161 LFA icon overlay
   };
 
   static const CanMsg HYUNDAI_CANFD_LFA_STEERING_TX_MSGS[] = {
@@ -432,7 +453,11 @@ static safety_config hyundai_canfd_init(uint16_t param) {
 
       SET_RX_CHECKS(hyundai_canfd_lka_steering_long_rx_checks, ret);
       if (hyundai_canfd_lka_steering_alt) {
-        SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_LONG_TX_MSGS, ret);
+        if (hyundai_ccnc) {
+          SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_CCNC_LONG_TX_MSGS, ret);
+        } else {
+          SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_LONG_TX_MSGS, ret);
+        }
       } else {
         SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_LONG_TX_MSGS, ret);
       }
@@ -485,7 +510,11 @@ static safety_config hyundai_canfd_init(uint16_t param) {
 
       SET_RX_CHECKS(hyundai_canfd_lka_steering_rx_checks, ret);
       if (hyundai_canfd_lka_steering_alt) {
-        SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_TX_MSGS, ret);
+        if (hyundai_ccnc) {
+          SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_CCNC_TX_MSGS, ret);
+        } else {
+          SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_ALT_TX_MSGS, ret);
+        }
       } else {
         SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEERING_TX_MSGS, ret);
       }

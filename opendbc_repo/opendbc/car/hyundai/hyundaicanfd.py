@@ -250,6 +250,12 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, left_lane_
   return packer.make_can_msg(suppress_msg, CAN.ACAN, values)
 
 
+def create_ccnc_lfa_icon(packer, CAN, msg_161, lfa_icon):
+  values = {k: v for k, v in msg_161.items() if k not in ("CHECKSUM", "COUNTER")}
+  values["LFA_ICON"] = lfa_icon
+  return packer.make_can_msg("CCNC_0x161", CAN.ECAN, values)
+
+
 def create_buttons(packer, CP, CAN, cnt, btn=0, base_values=None, left_paddle=False, right_paddle=False):
   values = {k: v for k, v in base_values.items() if k not in ("_CHECKSUM", "COUNTER")} if base_values else {}
   values.update({
