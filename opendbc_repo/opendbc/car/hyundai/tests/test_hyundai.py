@@ -1452,7 +1452,8 @@ class TestHyundaiFingerprint:
       "ADAS_ACIAnglTqRedcGainVal": 0.42,
       "DAMP_FACTOR": 0,
     }
-    cc = SimpleNamespace(enabled=True, latActive=True, actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+    cc = SimpleNamespace(enabled=True, latActive=True, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
                          leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
     cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg=stock_lkas,
                          out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive))
@@ -1782,7 +1783,8 @@ class TestHyundaiFingerprint:
     controller.frame = 5
     can_bus = CanBus(CP)
     parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
-    cc = SimpleNamespace(enabled=True, latActive=True, actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+    cc = SimpleNamespace(enabled=True, latActive=True, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
                          leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
     lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
     lfa_block_msg["COUNTER"] = 0
@@ -1821,7 +1823,8 @@ class TestHyundaiFingerprint:
     controller.frame = 5
     can_bus = CanBus(CP)
     parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
-    cc = SimpleNamespace(enabled=True, latActive=True, actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+    cc = SimpleNamespace(enabled=True, latActive=True, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
                          leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
     lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
     lfa_block_msg["COUNTER"] = 0
@@ -1839,6 +1842,127 @@ class TestHyundaiFingerprint:
 
     assert parser.can_valid
     assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+
+  def test_ev9_aol_enabled_but_inactive_sets_ccnc_lfa_icon_gray(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CCNC)
+    CP.openpilotLongitudinalControl = False
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
+    cc = SimpleNamespace(enabled=False, latActive=False, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+                         leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
+                         msg_161={"LFA_ICON": 0},
+                         out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive))
+
+    msgs = controller.create_canfd_msgs(0, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=1, lfa_icon=1)
+    ccnc_msgs = [msg for msg in msgs if msg[0] == 0x161]
+    assert len(ccnc_msgs) == 1
+
+    parser.update([(1, ccnc_msgs)])
+
+    assert parser.can_valid
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+
+  def test_ev9_acc_enabled_aol_off_does_not_override_ccnc_lfa_icon(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CCNC)
+    CP.openpilotLongitudinalControl = False
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    cc = SimpleNamespace(enabled=True, latActive=False, alwaysOnLateralEnabled=False,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+                         leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
+                         msg_161={"LFA_ICON": 1},
+                         out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive))
+
+    msgs = controller.create_canfd_msgs(0, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=2, lfa_icon=2)
+
+    assert not any(msg[0] == 0x161 for msg in msgs)
+
+  def test_ev9_active_lat_without_steer_request_sets_ccnc_lfa_icon_gray(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CCNC)
+    CP.openpilotLongitudinalControl = False
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
+    cc = SimpleNamespace(enabled=True, latActive=True, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+                         leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
+                         msg_161={"LFA_ICON": 0},
+                         out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive))
+
+    msgs = controller.create_canfd_msgs(0, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=2, lfa_icon=2)
+    ccnc_msgs = [msg for msg in msgs if msg[0] == 0x161]
+    assert len(ccnc_msgs) == 1
+
+    parser.update([(1, ccnc_msgs)])
+
+    assert parser.can_valid
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+
+  @pytest.mark.parametrize("gear", [
+    structs.CarState.GearShifter.park,
+    structs.CarState.GearShifter.reverse,
+    structs.CarState.GearShifter.neutral,
+  ])
+  def test_ev9_aol_enabled_non_drive_sets_ccnc_lfa_icon_gray(self, gear):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CCNC)
+    CP.openpilotLongitudinalControl = False
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
+    cc = SimpleNamespace(enabled=False, latActive=False, alwaysOnLateralEnabled=True,
+                         actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+                         leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cs = SimpleNamespace(stock_lfa_msg=None, stock_lkas_msg={}, lfa_block_msg=lfa_block_msg,
+                         msg_161={"LFA_ICON": 0, "LKA_ICON": 3, "ALERTS_2": 9, "SOUNDS_4": 2},
+                         out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=gear))
+
+    msgs = controller.create_canfd_msgs(0, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=1, lfa_icon=1)
+    ccnc_msgs = [msg for msg in msgs if msg[0] == 0x161]
+    assert len(ccnc_msgs) == 1
+
+    parser.update([(1, ccnc_msgs)])
+
+    assert parser.can_valid
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+    assert parser.vl["CCNC_0x161"]["LKA_ICON"] == 3
+    assert parser.vl["CCNC_0x161"]["ALERTS_2"] == 9
+    assert parser.vl["CCNC_0x161"]["SOUNDS_4"] == 2
 
   @pytest.mark.parametrize("gear", [
     structs.CarState.GearShifter.park,

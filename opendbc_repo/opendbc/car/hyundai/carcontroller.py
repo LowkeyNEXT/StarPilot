@@ -733,8 +733,8 @@ class CarController(CarControllerBase):
                                                         left_lane_visible, right_lane_visible))
 
     if self.frame % 5 == 0 and is_ev9_angle_lkas_alt and self.CP.flags & HyundaiFlags.CCNC and \
-        drive_gear and (CC.enabled or CC.latActive) and getattr(CS, "msg_161", None):
-      ev9_lfa_icon = 2 if steering_msg_active and not ev9_manual_override else 1
+        getattr(CC, "alwaysOnLateralEnabled", False) and getattr(CS, "msg_161", None):
+      ev9_lfa_icon = 2 if drive_gear and apply_steer_req and not ev9_manual_override else 1
       can_sends.append(hyundaicanfd.create_ccnc_lfa_icon(self.packer, self.CAN, CS.msg_161, ev9_lfa_icon))
 
     # LFA and HDA icons

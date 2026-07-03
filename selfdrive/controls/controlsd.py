@@ -174,6 +174,7 @@ class Controls:
 
     CC = car.CarControl.new_message()
     CC.enabled = self.sm['selfdriveState'].enabled
+    CC.alwaysOnLateralEnabled = self.sm['starpilotCarState'].alwaysOnLateralEnabled
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
