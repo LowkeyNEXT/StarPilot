@@ -73,7 +73,7 @@ EV9_HIGH_ANGLE_GAIN_MIN = 0.004
 EV9_LOW_SPEED_HIGH_ANGLE_V_EGO = 0.5
 EV9_DRIVER_OVERRIDE_ANGLE_SYNC_GAIN = 0.02
 EV9_DRIVER_OVERRIDE_RELEASE_FRAMES = 75
-EV9_DRIVER_OVERRIDE_RELEASE_V_EGO = 20.0
+EV9_DRIVER_OVERRIDE_RELEASE_V_EGO = 0.5
 EV9_DRIVER_OVERRIDE_GAIN_BP = [125.0, 250.0, 375.0]
 EV9_DRIVER_OVERRIDE_GAIN_CAP_V = [0.70, 0.12, 0.0]
 
@@ -703,10 +703,7 @@ class CarController(CarControllerBase):
     drive_gear = gear == structs.CarState.GearShifter.drive
     if is_ev9_angle_lkas_alt:
       steering_msg_active = steering_msg_active and drive_gear
-      ev9_manual_override = steering_msg_active and (
-        getattr(CS.out, "steeringPressed", False) or
-        abs(getattr(CS.out, "steeringTorque", 0.0)) >= EV9_DRIVER_OVERRIDE_GAIN_BP[0]
-      )
+      ev9_manual_override = steering_msg_active and getattr(CS.out, "steeringPressed", False)
       if ev9_manual_override:
         apply_torque = 0.0
         apply_angle = CS.out.steeringAngleDeg
