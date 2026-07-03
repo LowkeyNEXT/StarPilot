@@ -1814,6 +1814,34 @@ class TestHyundaiFingerprint:
     assert parser.vl["CCNC_0x161"]["ALERTS_2"] == 9
     assert parser.vl["CCNC_0x161"]["SOUNDS_4"] == 2
 
+  def test_ev9_lka_steering_parses_ccnc_lfa_icon_source(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CCNC)
+    CP.openpilotLongitudinalControl = False
+
+    car_state = CarState(CP, SimpleNamespace(flags=0))
+    parsers = car_state.get_can_parsers_canfd(CP)
+    can_bus = CanBus(CP)
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    msg = packer.make_can_msg("CCNC_0x161", can_bus.ECAN, {
+      "LFA_ICON": 2,
+      "CENTERLINE": 1,
+      "LKA_ICON": 3,
+      "ALERTS_2": 9,
+      "SOUNDS_4": 2,
+    })
+
+    parsers[Bus.pt].update([(1, [msg])])
+    car_state.update_canfd(parsers)
+
+    assert car_state.msg_161["LFA_ICON"] == 2
+    assert car_state.msg_161["CENTERLINE"] == 1
+    assert car_state.msg_161["LKA_ICON"] == 3
+    assert car_state.msg_161["ALERTS_2"] == 9
+    assert car_state.msg_161["SOUNDS_4"] == 2
+
   def test_ev9_driver_override_sets_ccnc_lfa_icon_gray(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9

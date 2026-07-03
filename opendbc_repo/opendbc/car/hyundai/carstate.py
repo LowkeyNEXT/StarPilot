@@ -450,12 +450,17 @@ class CarState(CarStateBase):
     ret.steerFaultTemporary = cp.vl["MDPS"]["LKA_FAULT"] != 0
 
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
+    ccnc_lka_steering = self.CP.flags & HyundaiFlags.CCNC and self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
     if ccnc_non_hda2:
       self.msg_161 = copy.copy(cp_cam.vl["CCNC_0x161"])
       self.msg_162 = copy.copy(cp_cam.vl["CCNC_0x162"])
       self.msg_1b5 = copy.copy(cp_cam.vl["FR_CMR_03_50ms"])
       cp_cruise_info = cp_cam if self.CP.flags & HyundaiFlags.CANFD_CAMERA_SCC else cp
       self.cruise_info = copy.copy(cp_cruise_info.vl["SCC_CONTROL"])
+    elif ccnc_lka_steering:
+      self.msg_161 = copy.copy(cp.vl["CCNC_0x161"])
+      self.msg_162 = copy.copy(cp.vl["CCNC_0x162"])
+      self.msg_1b5 = copy.copy(cp.vl["FR_CMR_03_50ms"])
 
     use_alt_lamp = cp.vl["BLINKERS"]["USE_ALT_LAMP"] == 1 or bool(self.CP.flags & HyundaiFlags.CCNC)
     left_blinker_sig, right_blinker_sig = self.get_canfd_blinker_sig_names(self.CP.carFingerprint, use_alt_lamp)
@@ -578,6 +583,11 @@ class CarState(CarStateBase):
     if CP.flags & HyundaiFlags.CANFD_LKA_STEERING:
       msgs.append(("FR_CMR_02_100ms", 10))
       msgs.append(("FR_CMR_03_50ms", 0))
+      if CP.flags & HyundaiFlags.CCNC:
+        msgs += [
+          ("CCNC_0x161", 0),
+          ("CCNC_0x162", 0),
+        ]
       cam_msgs.append(("LKAS_ALT" if CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT else "LKAS", 0))
     else:
       cam_msgs.append(("FR_CMR_02_100ms", 0))  # optional: not all non-LKA CANFD cars have this on CAM bus
