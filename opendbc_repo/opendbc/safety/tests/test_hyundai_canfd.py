@@ -121,11 +121,11 @@ class TestHyundaiCanfdBase(HyundaiButtonBase, common.CarSafetyTest, common.Drive
     values = {
       "CRUISE_BUTTONS": 0,
       "ADAPTIVE_CRUISE_MAIN_BTN": 0,
-      "LFA_BTN": 1,
+      "LDA_BTN": 1,
       "COUNTER": 0,
     }
     self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS", self.PT_BUS, values))
-    self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS", self.PT_BUS, {**values, "LFA_BTN": 0}))
+    self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS", self.PT_BUS, {**values, "LDA_BTN": 0}))
 
     self._aol_state = toggle_on
     return None  # avoid duplicate message in harness
@@ -423,11 +423,11 @@ class TestHyundaiCanfdLFASteeringAltButtonsBase(TestHyundaiCanfdLFASteeringBase)
     values = {
       "CRUISE_BUTTONS_ALT": 0,
       "ADAPTIVE_CRUISE_MAIN_BTN": 0,
-      "LFA_BTN": 1,
+      "LDA_BTN": 1,
       "COUNTER": 0,
     }
     self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS_ALT", self.PT_BUS, values))
-    self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS_ALT", self.PT_BUS, {**values, "LFA_BTN": 0}))
+    self._rx(self.packer.make_can_msg_panda("CRUISE_BUTTONS_ALT", self.PT_BUS, {**values, "LDA_BTN": 0}))
 
     self._aol_state = toggle_on
     return None  # avoid duplicate message in harness
@@ -611,6 +611,19 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     values = {"GEAR": gear, "ACCELERATOR_PEDAL": 0}
     return self.packer.make_can_msg_safety("ACCELERATOR", self.PT_BUS, values)
 
+  def _lka_button_msg(self, pressed):
+    values = {
+      "CRUISE_BUTTONS": 0,
+      "ADAPTIVE_CRUISE_MAIN_BTN": 0,
+      "LDA_BTN": int(pressed),
+      "SET_ME_1": 1,
+    }
+    return self.packer.make_can_msg_safety("CRUISE_BUTTONS", self.PT_BUS, values)
+
+  def _toggle_lka_on(self):
+    self._rx(self._lka_button_msg(True))
+    self._rx(self._lka_button_msg(False))
+
   def test_lka_alt_stock_forwarding_depends_on_controls_allowed(self):
     for addr in (0x110, 0x362):
       self.safety.set_controls_allowed(False)
@@ -618,6 +631,21 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
 
       self.safety.set_controls_allowed(True)
       self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
+
+  def test_lka_alt_aol_off_forwards_stock_even_with_acc_active(self):
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(True)
+    self._toggle_aol(False)
+    self._rx(self._gear_msg(5))
+
+    for addr in (0x110, 0x362):
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, addr))
+
+    self._reset_angle_measurement(0)
+    self._reset_speed_measurement(1)
+    self._set_prev_desired_angle(0)
+    self.assertFalse(self._tx(self._angle_cmd_msg(0, enabled=True)))
+    self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
 
   def test_lka_alt_stock_forwarding_blocks_openpilot_tx(self):
     self.safety.set_controls_allowed(False)
@@ -631,7 +659,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
   def test_lka_alt_aol_blocks_stock_forwarding_and_allows_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
     self.safety.set_controls_allowed(False)
-    self._toggle_aol(True)
+    self._toggle_lka_on()
     self._rx(self._gear_msg(5))
 
     for addr in (0x110, 0x362):
@@ -646,7 +674,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
   def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
     self.safety.set_controls_allowed(False)
-    self._toggle_aol(True)
+    self._toggle_lka_on()
 
     for gear in (0, 6, 7):
       with self.subTest(gear=gear):

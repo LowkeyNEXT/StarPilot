@@ -696,7 +696,16 @@ class CarController(CarControllerBase):
     drive_gear = gear == structs.CarState.GearShifter.drive
     if is_ev9_angle_lkas_alt:
       steering_msg_active = steering_msg_active and drive_gear
-    forward_stock_lkas = is_ev9_angle_lkas_alt and not (drive_gear and (CC.latActive or CC.enabled))
+      ev9_manual_override = CC.latActive and drive_gear and (
+        getattr(CS.out, "steeringPressed", False) or
+        abs(getattr(CS.out, "steeringTorque", 0.0)) >= EV9_DRIVER_OVERRIDE_GAIN_BP[0]
+      )
+      if ev9_manual_override:
+        steering_msg_active = False
+        apply_torque = 0.0
+        apply_angle = CS.out.steeringAngleDeg
+        lka_icon = 1
+    forward_stock_lkas = is_ev9_angle_lkas_alt and not (drive_gear and CC.latActive)
     if not forward_stock_lkas:
       can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled,
                                                              steering_msg_active, apply_torque, apply_angle,

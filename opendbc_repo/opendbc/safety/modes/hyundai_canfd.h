@@ -86,7 +86,9 @@ static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
 }
 
 static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
-  return (aol_allowed || controls_allowed) && (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
+  const bool aol_configured = (alternative_experience & ALT_EXP_ALWAYS_ON_LATERAL) != 0;
+  const bool lateral_allowed = aol_configured ? lkas_on : controls_allowed;
+  return lateral_allowed && (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
 }
 
 static bool hyundai_canfd_lka_alt_stock_forwarding(void) {
