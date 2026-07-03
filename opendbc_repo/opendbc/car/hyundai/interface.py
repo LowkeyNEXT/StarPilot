@@ -150,7 +150,10 @@ class CarInterface(CarInterfaceBase):
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_ANGLE_STEERING.value
         if candidate == CAR.KIA_EV9:
           ret.steerAtStandstill = True
-      if ret.flags & HyundaiFlags.CCNC and not ret.flags & HyundaiFlags.CANFD_LKA_STEERING:
+      if ret.flags & HyundaiFlags.CCNC and (
+        not ret.flags & HyundaiFlags.CANFD_LKA_STEERING or
+        ret.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
+      ):
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CCNC.value
 
     else:

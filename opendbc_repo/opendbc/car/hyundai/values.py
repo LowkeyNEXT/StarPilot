@@ -764,7 +764,7 @@ class CAR(Platforms):
       HyundaiCarDocs("Kia EV9 2025-26", car_parts=CarParts.common([CarHarness.hyundai_r]))
     ],
     CarSpecs(mass=2664, wheelbase=3.1, steerRatio=16),
-    flags=HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING,
+    flags=HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CCNC,
     radar_dbc=HYUNDAI_MRR35_RADAR_DBC,
   )
   KIA_CARNIVAL_4TH_GEN = HyundaiCanFDPlatformConfig(

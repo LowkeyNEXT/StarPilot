@@ -241,8 +241,10 @@ class TestHyundaiFingerprint:
     assert not CP.openpilotLongitudinalControl
     assert not CP.radarUnavailable
     assert CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
+    assert CP.flags & HyundaiFlags.CCNC
     assert not (CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.LONG)
     assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANFD_ANGLE_STEERING
+    assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CCNC
 
     CP = CarInterface.get_params(CAR.KIA_EV9, fingerprint, [], True, False, False, None)
     assert not CP.openpilotLongitudinalControl
