@@ -219,6 +219,14 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     .steer_ratio = 13.7,
     .wheelbase = 2.756,
   };
+  const AngleSteeringParams HYUNDAI_CANFD_EV9_ANGLE_STEERING_PARAMS = {
+    .slip_factor = -0.0005410588125765342,
+    .steer_ratio = 16.0,
+    .wheelbase = 3.1,
+  };
+  const bool ev9_angle_steering = hyundai_canfd_lka_steering_alt && hyundai_canfd_angle_steering && hyundai_ev_gas_signal;
+  const AngleSteeringParams hyundai_canfd_angle_steering_params = ev9_angle_steering ?
+    HYUNDAI_CANFD_EV9_ANGLE_STEERING_PARAMS : HYUNDAI_CANFD_ANGLE_STEERING_PARAMS;
 
   bool tx = true;
 
@@ -238,7 +246,7 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
 
       if (steer_angle_cmd_checks_vm(desired_angle, steer_angle_req,
                                     HYUNDAI_CANFD_ANGLE_STEERING_LIMITS,
-                                    HYUNDAI_CANFD_ANGLE_STEERING_PARAMS)) {
+                                    hyundai_canfd_angle_steering_params)) {
         tx = false;
       }
     }
@@ -264,7 +272,7 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
 
       if (steer_angle_cmd_checks_vm(desired_angle, steer_angle_req,
                                     HYUNDAI_CANFD_ANGLE_STEERING_LIMITS,
-                                    HYUNDAI_CANFD_ANGLE_STEERING_PARAMS) || gain_violation) {
+                                    hyundai_canfd_angle_steering_params) || gain_violation) {
         tx = false;
       }
     } else {

@@ -337,8 +337,9 @@ class TestHyundaiFingerprint:
     sportage_cp = SimpleNamespace(carFingerprint=CAR.KIA_SPORTAGE_HEV_2026, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
 
     assert carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 0.0)
+    assert carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 13.6)
     assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, True, 120, 100, 0.0)
-    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 2.0)
+    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 25.0)
     assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 220, 100, 0.0)
     assert not carcontroller.ev9_driver_override_release_active(ev9_cp, False, False, 120, 100, 0.0)
     assert not carcontroller.ev9_driver_override_release_active(sportage_cp, True, False, 120, 100, 0.0)
@@ -349,6 +350,13 @@ class TestHyundaiFingerprint:
 
     assert ev9_cp.steerAtStandstill
     assert not sportage_cp.steerAtStandstill
+
+  def test_ev9_angle_controller_uses_ev9_vehicle_geometry(self):
+    CP = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], False, False, False, None)
+    controller = CarController(DBC[CP.carFingerprint], CP)
+
+    assert controller.BASELINE_VM.sR == pytest.approx(CP.steerRatio)
+    assert controller.BASELINE_VM.l == pytest.approx(CP.wheelbase)
 
   def test_ccnc_hda2_lka_layout_does_not_set_ccnc_safety_param(self):
     fingerprint = gen_empty_fingerprint()

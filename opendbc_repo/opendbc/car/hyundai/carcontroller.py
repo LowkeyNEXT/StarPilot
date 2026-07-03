@@ -72,7 +72,7 @@ EV9_HIGH_ANGLE_GAIN_MIN = 0.004
 EV9_LOW_SPEED_HIGH_ANGLE_V_EGO = 0.5
 EV9_DRIVER_OVERRIDE_ANGLE_SYNC_GAIN = 0.02
 EV9_DRIVER_OVERRIDE_RELEASE_FRAMES = 75
-EV9_DRIVER_OVERRIDE_RELEASE_V_EGO = 0.5
+EV9_DRIVER_OVERRIDE_RELEASE_V_EGO = 20.0
 EV9_DRIVER_OVERRIDE_GAIN_BP = [125.0, 250.0, 375.0]
 EV9_DRIVER_OVERRIDE_GAIN_CAP_V = [0.70, 0.12, 0.0]
 
@@ -256,6 +256,11 @@ def is_ev9_angle_steering(CP) -> bool:
   return CP.carFingerprint == CAR.KIA_EV9 and CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING
 
 
+def use_angle_safety_baseline(CP) -> bool:
+  return CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and str(CP.carFingerprint) != ANGLE_SAFETY_BASELINE_MODEL and \
+    not is_ev9_angle_steering(CP)
+
+
 def apply_ev9_high_angle_gain_cap(CP, gain: float, steering_angle_deg: float, lat_active: bool,
                                   steering_torque: float = 0.0, steering_pressed: bool = False,
                                   v_ego: float | None = None) -> float:
@@ -334,7 +339,7 @@ class CarController(CarControllerBase):
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.angle_limit_counter = 0
     self.VM = VehicleModel(CP)
-    self.BASELINE_VM = VehicleModel(get_baseline_safety_cp()) if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING else self.VM
+    self.BASELINE_VM = VehicleModel(get_baseline_safety_cp()) if use_angle_safety_baseline(CP) else self.VM
     self.angle_filter = FirstOrderFilter(0.0, 0.2, DT_CTRL)
 
     self.accel_last = 0
@@ -465,7 +470,7 @@ class CarController(CarControllerBase):
       apply_angle = apply_steer_angle_limits_vm(desired_angle, self.apply_angle_last, v_ego_raw,
                                                 CS.out.steeringAngleDeg, CC.latActive, self.params, self.VM)
 
-      if str(self.CP.carFingerprint) != ANGLE_SAFETY_BASELINE_MODEL:
+      if use_angle_safety_baseline(self.CP):
         apply_angle = apply_steer_angle_limits_vm(apply_angle or desired_angle, self.apply_angle_last, v_ego_raw,
                                                   CS.out.steeringAngleDeg, CC.latActive, self.params, self.BASELINE_VM)
 

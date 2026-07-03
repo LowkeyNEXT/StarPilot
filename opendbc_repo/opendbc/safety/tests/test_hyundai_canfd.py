@@ -688,6 +688,14 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
         self.assertFalse(self._tx(self._angle_cmd_msg(0, enabled=True)))
         self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
 
+  def test_lka_alt_ev9_geometry_allows_ramp_class_angle(self):
+    self.safety.set_controls_allowed(True)
+    self._reset_angle_measurement(49)
+    self._reset_speed_measurement(13.6)
+    self._set_prev_desired_angle(49)
+
+    self.assertTrue(self._tx(self._angle_cmd_msg(50, enabled=True)))
+
   def test_angle_cmd_when_disabled(self):
     for controls_allowed in (True, False):
       self.safety.set_controls_allowed(controls_allowed)
