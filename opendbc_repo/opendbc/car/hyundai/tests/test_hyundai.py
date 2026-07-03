@@ -11,9 +11,11 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              update_ioniq_6_longitudinal_tuning, \
                                              update_genesis_g90_longitudinal_tuning, egmp_dynamic_longitudinal_tuning, \
                                              should_reset_ev6_gt_line_longitudinal_tuning, reset_ev6_gt_line_longitudinal_tuning, \
-                                             get_angle_smoothing_alpha, apply_ev9_high_angle_gain_cap, ev9_driver_override_active
+                                             get_angle_smoothing_alpha, apply_ev9_high_angle_gain_cap, ev9_driver_override_active, \
+                                             should_sync_ev9_driver_override_angle
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state
 from opendbc.car.hyundai.interface import CarInterface
+from opendbc.car.hyundai import carcontroller
 from opendbc.car.hyundai import hyundaican, hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import MRREVO14F_RADAR_START_ADDR, MRR30_RADAR_START_ADDR, MRR35_RADAR_START_ADDR, \
@@ -295,10 +297,14 @@ class TestHyundaiFingerprint:
     assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 60.0, True) == pytest.approx(0.70)
     assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 120.0, True) == pytest.approx(0.55)
     assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 320.0, True) == pytest.approx(0.16)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 320.0, True, v_ego=0.01) == pytest.approx(0.004)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 320.0, True, v_ego=1.0) == pytest.approx(0.16)
     assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.0, 320.0, True) > 0.0
     assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 320.0, False) == pytest.approx(0.70)
-    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 350.0, True) == pytest.approx(0.20)
-    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 600.0, True) == pytest.approx(0.04)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 350.0, False) == pytest.approx(0.024)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 600.0, False) == pytest.approx(0.0)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 350.0, True) == pytest.approx(0.024)
+    assert apply_ev9_high_angle_gain_cap(ev9_cp, 0.70, 30.0, True, 600.0, True) == pytest.approx(0.0)
     assert apply_ev9_high_angle_gain_cap(sportage_cp, 0.70, 320.0, True) == pytest.approx(0.70)
     assert apply_ev9_high_angle_gain_cap(sportage_cp, 0.70, 30.0, True, 400.0, True) == pytest.approx(0.70)
 
@@ -307,9 +313,35 @@ class TestHyundaiFingerprint:
     sportage_cp = SimpleNamespace(carFingerprint=CAR.KIA_SPORTAGE_HEV_2026, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
 
     assert ev9_driver_override_active(ev9_cp, 0.0, True, True)
-    assert ev9_driver_override_active(ev9_cp, 200.0, False, True)
+    assert not ev9_driver_override_active(ev9_cp, 200.0, False, True)
     assert not ev9_driver_override_active(ev9_cp, 200.0, False, False)
     assert not ev9_driver_override_active(sportage_cp, 400.0, True, True)
+
+  def test_ev9_driver_override_angle_sync_only_at_high_angle_low_gain(self):
+    ev9_cp = SimpleNamespace(carFingerprint=CAR.KIA_EV9, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
+    sportage_cp = SimpleNamespace(carFingerprint=CAR.KIA_SPORTAGE_HEV_2026, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
+
+    assert should_sync_ev9_driver_override_angle(ev9_cp, 0.0, 351.4, True, 404.0, True)
+    assert should_sync_ev9_driver_override_angle(ev9_cp, 0.0, -351.4, True, -404.0, True)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.02, 351.4, True, 404.0, False)
+    assert should_sync_ev9_driver_override_angle(ev9_cp, 0.004, -351.4, True, 0.0, False, v_ego=0.01)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.0, -351.4, True, 404.0, False, v_ego=0.01)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.004, -351.4, True, 0.0, False, v_ego=1.0)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.024, 351.4, True, 404.0, True)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.0, 30.0, True, 404.0, True)
+    assert not should_sync_ev9_driver_override_angle(ev9_cp, 0.0, 351.4, False, 404.0, True)
+    assert not should_sync_ev9_driver_override_angle(sportage_cp, 0.0, 351.4, True, 404.0, True)
+
+  def test_ev9_stopped_driver_override_release_holds_temporarily(self):
+    ev9_cp = SimpleNamespace(carFingerprint=CAR.KIA_EV9, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
+    sportage_cp = SimpleNamespace(carFingerprint=CAR.KIA_SPORTAGE_HEV_2026, flags=int(HyundaiFlags.CANFD_ANGLE_STEERING))
+
+    assert carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 0.0)
+    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, True, 120, 100, 0.0)
+    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 120, 100, 2.0)
+    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, True, False, 220, 100, 0.0)
+    assert not carcontroller.ev9_driver_override_release_active(ev9_cp, False, False, 120, 100, 0.0)
+    assert not carcontroller.ev9_driver_override_release_active(sportage_cp, True, False, 120, 100, 0.0)
 
   def test_ev9_allows_lateral_at_standstill_without_changing_other_angle_platforms(self):
     ev9_cp = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], False, False, False, None)

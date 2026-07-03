@@ -69,8 +69,12 @@ DEFAULT_ANGLE_SMOOTHING_ALPHA_V = [0.2, 0.1, 0.0]
 EV9_HIGH_ANGLE_GAIN_BP = [70.0, 120.0, 220.0, 320.0]
 EV9_HIGH_ANGLE_GAIN_CAP_V = [0.85, 0.55, 0.30, 0.16]
 EV9_HIGH_ANGLE_GAIN_MIN = 0.004
-EV9_DRIVER_OVERRIDE_GAIN_BP = [175.0, 350.0, 525.0]
-EV9_DRIVER_OVERRIDE_GAIN_CAP_V = [0.70, 0.20, 0.04]
+EV9_LOW_SPEED_HIGH_ANGLE_V_EGO = 0.5
+EV9_DRIVER_OVERRIDE_ANGLE_SYNC_GAIN = 0.02
+EV9_DRIVER_OVERRIDE_RELEASE_FRAMES = 75
+EV9_DRIVER_OVERRIDE_RELEASE_V_EGO = 0.5
+EV9_DRIVER_OVERRIDE_GAIN_BP = [125.0, 250.0, 375.0]
+EV9_DRIVER_OVERRIDE_GAIN_CAP_V = [0.70, 0.12, 0.0]
 
 
 def egmp_dynamic_longitudinal_tuning(CP) -> bool:
@@ -248,12 +252,19 @@ def compute_torque_reduction_gain(steering_torque, v_ego, lat_active, last_gain)
   return round(gain / 0.004) * 0.004
 
 
+def is_ev9_angle_steering(CP) -> bool:
+  return CP.carFingerprint == CAR.KIA_EV9 and CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING
+
+
 def apply_ev9_high_angle_gain_cap(CP, gain: float, steering_angle_deg: float, lat_active: bool,
-                                  steering_torque: float = 0.0, steering_pressed: bool = False) -> float:
-  if CP.carFingerprint != CAR.KIA_EV9 or not CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING or not lat_active:
+                                  steering_torque: float = 0.0, steering_pressed: bool = False,
+                                  v_ego: float | None = None) -> float:
+  if not is_ev9_angle_steering(CP) or not lat_active:
     return gain
 
   cap = float(np.interp(abs(steering_angle_deg), EV9_HIGH_ANGLE_GAIN_BP, EV9_HIGH_ANGLE_GAIN_CAP_V))
+  if v_ego is not None and v_ego <= EV9_LOW_SPEED_HIGH_ANGLE_V_EGO and abs(steering_angle_deg) >= EV9_HIGH_ANGLE_GAIN_BP[0]:
+    cap = min(cap, EV9_HIGH_ANGLE_GAIN_MIN)
   gain = max(EV9_HIGH_ANGLE_GAIN_MIN, min(gain, cap))
 
   if steering_pressed or abs(steering_torque) >= EV9_DRIVER_OVERRIDE_GAIN_BP[0]:
@@ -265,8 +276,30 @@ def apply_ev9_high_angle_gain_cap(CP, gain: float, steering_angle_deg: float, la
 
 
 def ev9_driver_override_active(CP, steering_torque: float, steering_pressed: bool, lat_active: bool) -> bool:
-  return CP.carFingerprint == CAR.KIA_EV9 and CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and lat_active and \
-         (steering_pressed or abs(steering_torque) >= EV9_DRIVER_OVERRIDE_GAIN_BP[0])
+  return is_ev9_angle_steering(CP) and lat_active and steering_pressed
+
+
+def ev9_driver_override_release_active(CP, lat_active: bool, steering_pressed: bool, frame: int,
+                                       last_override_frame: int, v_ego: float) -> bool:
+  return is_ev9_angle_steering(CP) and lat_active and not steering_pressed and \
+         v_ego <= EV9_DRIVER_OVERRIDE_RELEASE_V_EGO and \
+         0 <= frame - last_override_frame <= EV9_DRIVER_OVERRIDE_RELEASE_FRAMES
+
+
+def should_sync_ev9_driver_override_angle(CP, gain: float, steering_angle_deg: float, lat_active: bool,
+                                          steering_torque: float = 0.0, steering_pressed: bool = False,
+                                          v_ego: float | None = None) -> bool:
+  if not is_ev9_angle_steering(CP) or not lat_active:
+    return False
+
+  driver_override = steering_pressed
+  low_speed_high_angle = v_ego is not None and v_ego <= EV9_LOW_SPEED_HIGH_ANGLE_V_EGO and \
+    abs(steering_torque) < EV9_DRIVER_OVERRIDE_GAIN_BP[0]
+  return (
+    (driver_override or low_speed_high_angle) and
+    abs(steering_angle_deg) >= EV9_HIGH_ANGLE_GAIN_BP[0] and
+    gain <= EV9_DRIVER_OVERRIDE_ANGLE_SYNC_GAIN
+  )
 
 
 def process_hud_alert(enabled, fingerprint, hud_control):
@@ -307,6 +340,7 @@ class CarController(CarControllerBase):
     self.accel_last = 0
     self.apply_torque_last = 0
     self.apply_angle_last = 0.0
+    self.ev9_driver_override_frame = -1_000_000
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
     self.redneck_button_frame = 0
@@ -413,9 +447,13 @@ class CarController(CarControllerBase):
       desired_angle = float(np.clip(actuators.steeringAngleDeg,
                                     -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
                                     self.params.ANGLE_LIMITS.STEER_ANGLE_MAX))
-      ev9_driver_override = ev9_driver_override_active(self.CP, CS.out.steeringTorque, CS.out.steeringPressed, CC.latActive)
+      driver_override = ev9_driver_override_active(self.CP, CS.out.steeringTorque, CS.out.steeringPressed, CC.latActive)
+      if driver_override:
+        self.ev9_driver_override_frame = self.frame
+      driver_override_release = ev9_driver_override_release_active(self.CP, CC.latActive, CS.out.steeringPressed,
+                                                                   self.frame, self.ev9_driver_override_frame, v_ego_raw)
 
-      if ev9_driver_override:
+      if driver_override or driver_override_release:
         desired_angle = float(np.clip(CS.out.steeringAngleDeg,
                                       -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
                                       self.params.ANGLE_LIMITS.STEER_ANGLE_MAX))
@@ -433,7 +471,15 @@ class CarController(CarControllerBase):
 
       apply_torque = compute_torque_reduction_gain(CS.out.steeringTorque, v_ego_raw, CC.latActive, self.apply_torque_last)
       apply_torque = apply_ev9_high_angle_gain_cap(self.CP, apply_torque, CS.out.steeringAngleDeg, CC.latActive,
-                                                   CS.out.steeringTorque, CS.out.steeringPressed)
+                                                   CS.out.steeringTorque, CS.out.steeringPressed, v_ego_raw)
+      if driver_override_release:
+        apply_torque = 0.0
+      if should_sync_ev9_driver_override_angle(self.CP, apply_torque, CS.out.steeringAngleDeg, CC.latActive,
+                                               CS.out.steeringTorque, CS.out.steeringPressed, v_ego_raw):
+        apply_angle = float(np.clip(CS.out.steeringAngleDeg,
+                                    -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
+                                    self.params.ANGLE_LIMITS.STEER_ANGLE_MAX))
+        self.angle_filter.x = apply_angle
       apply_steer_req = CC.latActive and apply_torque != 0.0
       torque_fault = False
 
@@ -638,20 +684,20 @@ class CarController(CarControllerBase):
 
     # steering control
     preserve_stock_lkas = bool(self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING) and not self.long_active_ecu
-    ev9_angle_lkas_alt = self.CP.carFingerprint == CAR.KIA_EV9 and self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and \
+    is_ev9_angle_lkas_alt = is_ev9_angle_steering(self.CP) and \
       self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
     steering_msg_active = apply_steer_req
-    if self.CP.carFingerprint == CAR.KIA_EV9 and self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
+    if is_ev9_angle_steering(self.CP):
       # EV9 faults if the angle-steering status drops inactive during torque limiting.
       # Hold the angle status active while lateral is active; VM/safety limits handle actuation.
       steering_msg_active = CC.latActive
 
-    ev9_gear = getattr(getattr(CS, "out", None), "gearShifter", None)
-    ev9_drive_gear = ev9_gear == structs.CarState.GearShifter.drive
-    if ev9_angle_lkas_alt:
-      steering_msg_active = steering_msg_active and ev9_drive_gear
-    ev9_forward_stock_lkas = ev9_angle_lkas_alt and not (ev9_drive_gear and (CC.latActive or CC.enabled))
-    if not ev9_forward_stock_lkas:
+    gear = getattr(getattr(CS, "out", None), "gearShifter", None)
+    drive_gear = gear == structs.CarState.GearShifter.drive
+    if is_ev9_angle_lkas_alt:
+      steering_msg_active = steering_msg_active and drive_gear
+    forward_stock_lkas = is_ev9_angle_lkas_alt and not (drive_gear and (CC.latActive or CC.enabled))
+    if not forward_stock_lkas:
       can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled,
                                                              steering_msg_active, apply_torque, apply_angle,
                                                              CS.stock_lfa_msg,
@@ -660,8 +706,8 @@ class CarController(CarControllerBase):
 
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     suppress_lfa = bool(lka_steering)
-    if self.CP.carFingerprint == CAR.KIA_EV9 and self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
-      suppress_lfa = bool(lka_steering and CC.latActive and ev9_drive_gear)
+    if is_ev9_angle_steering(self.CP):
+      suppress_lfa = bool(lka_steering and CC.latActive and drive_gear)
     if self.frame % 5 == 0 and suppress_lfa:
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
                                                         self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))

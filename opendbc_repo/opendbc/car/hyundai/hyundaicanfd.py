@@ -96,7 +96,7 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
                              lfa_base_values=None, lkas_base_values=None, lka_icon=None):
   if lka_icon is None:
     lka_icon = 2 if enabled else 1
-  ev9_angle_lkas_alt = str(CP.carFingerprint) == "KIA_EV9" and CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and \
+  is_ev9_angle_lkas_alt = str(CP.carFingerprint) == "KIA_EV9" and CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and \
     CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
 
   control_values = {
@@ -130,7 +130,7 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
     lkas_values["ADAS_StrAnglReqVal"] = apply_angle
     lkas_values["LKAS_ANGLE_ACTIVE"] = 2 if lat_active else 1
     lkas_values["ADAS_ACIAnglTqRedcGainVal"] = apply_torque if lat_active else 0.0
-    if ev9_angle_lkas_alt:
+    if is_ev9_angle_lkas_alt:
       if lat_active:
         lkas_values = {
           "LKA_OptUsmSta": 0,
