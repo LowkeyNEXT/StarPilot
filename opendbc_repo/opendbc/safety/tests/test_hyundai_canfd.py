@@ -682,6 +682,14 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     return self.packer.make_can_msg_safety("SCC_CONTROL", 1, values)
 
 
+class TestHyundaiCanfdCCNCLKALong(TestHyundaiCanfdLKASteeringAltAngleLongEV):
+
+  TX_MSGS = TestHyundaiCanfdLKASteeringAltAngleLongEV.TX_MSGS + [
+    [0xCB, 1], [0x161, 1], [0x162, 1], [0x38C, 1], [0x57A, 1],
+  ]
+  SAFETY_PARAM = TestHyundaiCanfdLKASteeringAltAngleLongEV.SAFETY_PARAM | HyundaiSafetyFlags.CCNC
+
+
 # Tests longitudinal for ICE, hybrid, EV cars with LFA steering
 class TestHyundaiCanfdLFASteeringLongBase(HyundaiLongitudinalBase, TestHyundaiCanfdLFASteeringBase):
 

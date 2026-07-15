@@ -8,7 +8,8 @@ from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, CAR, DBC, Buttons, CarControllerParams, \
-                                       hyundai_cancel_button_enables_cruise, ALT_BUS_LDA_BUTTON_CARS, ALT_BUS_LDA_BUTTON_SWL_STAT_CARS
+                                       CANFD_ANGLE_LONGITUDINAL_CAR, hyundai_cancel_button_enables_cruise, ALT_BUS_LDA_BUTTON_CARS, \
+                                       ALT_BUS_LDA_BUTTON_SWL_STAT_CARS
 from opendbc.car.interfaces import CarStateBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -136,6 +137,9 @@ class CarState(CarStateBase):
     self.blindspots_front_corner_1_ts = 0
     self.left_blindspot_from_radar = False
     self.right_blindspot_from_radar = False
+    self.main_cruise_enabled = False
+    self.angle_steering_angle = 0.0
+    self.angle_steering_fault = False
 
     # On some cars, CLU15->CF_Clu_VehicleSpeed can oscillate faster than the dash updates. Sample at 5 Hz
     self.cluster_speed = 0
@@ -148,6 +152,15 @@ class CarState(CarStateBase):
     # To avoid re-engaging when openpilot cancels, check user engagement intention via buttons
     # Main button also can trigger an engagement on these cars
     return any(btn in ENABLE_BUTTONS for btn in self.cruise_buttons) or any(self.main_buttons)
+
+  def get_main_cruise(self, ret: structs.CarState) -> bool:
+    if self.FPCP.flags & HyundaiStarPilotFlags.LONGITUDINAL_MAIN_CRUISE_TOGGLEABLE:
+      if any(be.type == ButtonType.mainCruise and be.pressed for be in ret.buttonEvents):
+        self.main_cruise_enabled = not self.main_cruise_enabled
+    else:
+      self.main_cruise_enabled = True
+
+    return self.main_cruise_enabled if ret.cruiseState.available else False
 
   def create_cruise_button_events(self, cur_button: int, prev_button: int) -> list[structs.CarState.ButtonEvent]:
     if cur_button != prev_button and prev_button != Buttons.CANCEL and cur_button == Buttons.CANCEL:
@@ -448,6 +461,10 @@ class CarState(CarStateBase):
     ret.steeringTorqueEps = cp.vl["MDPS"]["STEERING_OUT_TORQUE"]
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > self.params.STEER_THRESHOLD, 5)
     ret.steerFaultTemporary = cp.vl["MDPS"]["LKA_FAULT"] != 0
+    if self.CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR:
+      self.angle_steering_angle = cp.vl["MDPS"]["STEERING_ANGLE"]
+      self.angle_steering_fault = cp.vl["MDPS"]["LKA_ANGLE_FAULT"] != 0
+      ret.steerFaultTemporary = ret.steerFaultTemporary or self.angle_steering_fault
 
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
     if ccnc_non_hda2:
@@ -463,11 +480,12 @@ class CarState(CarStateBase):
                                                                       cp.vl["BLINKERS"][right_blinker_sig])
     self.left_blindspot_from_radar = False
     self.right_blindspot_from_radar = False
-    if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
+    direct_radar_bsm = self.CP.carFingerprint in (CAR.HYUNDAI_IONIQ_6, CAR.KIA_EV9)
+    if direct_radar_bsm:
       self.left_blindspot_from_radar, self.right_blindspot_from_radar = decode_ioniq_6_blindspot_radar_state(
         cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
     if self.CP.enableBsm:
-      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
+      if direct_radar_bsm:
         ret.leftBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"]) or
                              self.left_blindspot_from_radar)
         ret.rightBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_RtIndSta"]) or
@@ -544,6 +562,7 @@ class CarState(CarStateBase):
                         *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise}),
                         *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas}),
                         *create_button_events(self.left_paddle, prev_left_paddle, {1: ButtonType.altButton2})]
+    ret.cruiseState.available = self.get_main_cruise(ret)
 
     ret.blockPcmEnable = not self.recent_button_interaction()
 
@@ -592,6 +611,12 @@ class CarState(CarStateBase):
       ("LFAHDA_CLUSTER", 0),  # optional: carries cluster icon state on some variants
       ("BLINKER_STALKS", 0),  # optional: some trims publish live stalk/light state on ECAN during turn camera events
     ]
+    if CP.carFingerprint == CAR.KIA_EV9 and CP.enableBsm:
+      # Keep the suppressed ADAS BSM output optional.
+      msgs.append(("BLINDSPOTS_REAR_CORNERS", 0))
+    if CP.carFingerprint == CAR.KIA_EV9:
+      # EV9 uses the live Ioniq 6 corner-radar BSM path.
+      msgs.append(("BLINDSPOTS_FRONT_CORNER_2", 0))
     if CP.flags & HyundaiFlags.EV:
       msgs.append(("DRIVE_MODE_EV", 0))  # optional: not all CAN-FD EV variants publish drive mode
       msgs.append(("MANUAL_SPEED_LIMIT_ASSIST", 0))  # optional: used for non-adaptive cruise state and Ioniq 6 i-Pedal latch detection
