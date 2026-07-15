@@ -25,7 +25,7 @@ private:
 
   QSet<QString> chryslerKeys = {"JeepBrakeHold"};
   QSet<QString> gmKeys = {"GMPedalLongitudinal", "GMDashSpoofOffsets", "IgnoreIgnitionLine", "LongPitch", "RemoteStartBootsComma", "RemapCancelToDistance", "VoltSNG"};
-  QSet<QString> hkgKeys = {"HKGRemoteStartBootsComma"};
+  QSet<QString> hkgKeys = {"EV9LongPreinitPanda", "HKGRemoteStartBootsComma"};
   QSet<QString> longitudinalKeys = {"FrogsGoMoosTweak", "GMDashSpoofOffsets", "LongPitch", "RemapCancelToDistance", "SNGHack", "VoltSNG"};
   QSet<QString> subaruKeys = {"SubaruSNG", "SubaruSNGManualParkingBrake"};
   QSet<QString> toyotaKeys = {"ClusterOffset", "FrogsGoMoosTweak", "LockDoorsTimer", "SNGHack", "ToyotaDoors"};

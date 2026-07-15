@@ -171,12 +171,16 @@ build_project("panda_remote", base_project_f4, "./board/main.c", ["-DPANDA_GM_RE
 build_project("panda_h7_remote", base_project_h7, "./board/main.c", ["-DPANDA_GM_REMOTE_START_C9"])
 build_project("panda_hkg_remote", base_project_f4, "./board/main.c", ["-DPANDA_HKG_REMOTE_START"])
 build_project("panda_h7_hkg_remote", base_project_h7, "./board/main.c", ["-DPANDA_HKG_REMOTE_START"])
+build_project("panda_h7_ev9_long_preinit", base_project_h7, "./board/main.c", ["-DPANDA_EV9_LONG_PREINIT"])
+build_project("panda_h7_ev9_long_preinit_hkg_remote", base_project_h7, "./board/main.c", ["-DPANDA_EV9_LONG_PREINIT", "-DPANDA_HKG_REMOTE_START"])
 build_project("panda_can_ignition_only", base_project_f4, "./board/main.c", ["-DPANDA_IGNORE_IGNITION_LINE"])
 build_project("panda_h7_can_ignition_only", base_project_h7, "./board/main.c", ["-DPANDA_IGNORE_IGNITION_LINE"])
+build_project("panda_h7_ev9_long_preinit_can_ignition_only", base_project_h7, "./board/main.c", ["-DPANDA_EV9_LONG_PREINIT", "-DPANDA_IGNORE_IGNITION_LINE"])
 build_project("panda_remote_can_ignition_only", base_project_f4, "./board/main.c", ["-DPANDA_GM_REMOTE_START_C9", "-DPANDA_IGNORE_IGNITION_LINE"])
 build_project("panda_h7_remote_can_ignition_only", base_project_h7, "./board/main.c", ["-DPANDA_GM_REMOTE_START_C9", "-DPANDA_IGNORE_IGNITION_LINE"])
 build_project("panda_hkg_remote_can_ignition_only", base_project_f4, "./board/main.c", ["-DPANDA_HKG_REMOTE_START", "-DPANDA_IGNORE_IGNITION_LINE"])
 build_project("panda_h7_hkg_remote_can_ignition_only", base_project_h7, "./board/main.c", ["-DPANDA_HKG_REMOTE_START", "-DPANDA_IGNORE_IGNITION_LINE"])
+build_project("panda_h7_ev9_long_preinit_hkg_remote_can_ignition_only", base_project_h7, "./board/main.c", ["-DPANDA_EV9_LONG_PREINIT", "-DPANDA_HKG_REMOTE_START", "-DPANDA_IGNORE_IGNITION_LINE"])
 
 # panda jungle fw
 flags = [

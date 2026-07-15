@@ -341,6 +341,10 @@ int main(void) {
   // enable CAN TXs
   enable_can_transceivers(true);
 
+  #ifdef PANDA_EV9_LONG_PREINIT
+  ev9_long_preinit_init();
+  #endif
+
   // init watchdog for heartbeat loop, fed at 8Hz
   simple_watchdog_init(FAULT_HEARTBEAT_LOOP_WATCHDOG, (3U * 1000000U / 8U));
 
@@ -368,6 +372,9 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
+    #ifdef PANDA_EV9_LONG_PREINIT
+    ev9_long_preinit_tick(microsecond_timer_get());
+    #endif
     if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {

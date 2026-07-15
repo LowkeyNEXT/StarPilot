@@ -1,5 +1,5 @@
 import time
-from opendbc.car import get_safety_config, structs, uds
+from opendbc.car import CanData, get_safety_config, structs, uds
 from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, CarControllerParams, \
@@ -30,11 +30,25 @@ ENABLE_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.can
 ECU_DISABLE_TIMESTAMP = 0.0
 EV9_EARLY_SUPPRESSION_ACTIVE = False
 KONA_NON_SCC_FCA_RADAR_ADDR = 0x602
-# Keep ADAS receive enabled while disabling normal-message transmission.
-EV9_COMMUNICATION_CONTROL_REQUEST = b"\x28\x01\x01"
-EV9_COMMUNICATION_CONTROL_RESTORE = b"\x28\x00\x01"
+EV9_PANDA_PREINIT_HANDOFF_WAIT = 0.15
+# Keep ADAS receive enabled while disabling normal and network-management transmission.
+EV9_COMMUNICATION_CONTROL_REQUEST = b"\x28\x01\x03"
+EV9_COMMUNICATION_CONTROL_RESTORE = b"\x28\x00\x03"
 EV9_START_ACCEL = 0.20
 EV9_STARTING_SPEED = 0.5
+
+
+def ev9_panda_preinit_active(messages: list[CanData]) -> bool:
+  """Recognize the EV9 pre-init firmware by its returned neutral streams."""
+  marker = any(msg.src == 0x81 and msg.address == 0x730 and bytes(msg.dat[:3]) == b"\x02\x3e\x80" for msg in messages)
+  heartbeat = any(msg.src == 0x80 and msg.address == 0x100 and len(msg.dat) == 24 for msg in messages)
+  scc_control = any(msg.src == 0x81 and msg.address == 0x1A0 and len(msg.dat) == 32 for msg in messages)
+  return marker and heartbeat and scc_control
+
+
+def ev9_panda_preinit_baselines(messages: list[CanData]) -> list[CanData]:
+  """Treat Panda's returned neutral bridge frames as the captured bus set."""
+  return [CanData(msg.address, msg.dat, msg.src - 0x80 if 0x80 <= msg.src < 0xC0 else msg.src) for msg in messages]
 
 
 def apply_platform_longitudinal_params(ret: structs.CarParams) -> None:
@@ -101,6 +115,16 @@ def attempt_ev9_pre_fingerprint_suppression(cached_params, params, can_recv, can
     for packet in packets:
       observed_can_messages.extend(packet)
     return packets
+
+  if params.get_bool("EV9LongPreinitPanda") and can_recv is not None:
+    handoff_deadline = time.monotonic() + EV9_PANDA_PREINIT_HANDOFF_WAIT
+    while not ev9_panda_preinit_active(observed_can_messages) and time.monotonic() < handoff_deadline:
+      observing_can_recv(wait_for_one=True)
+    if ev9_panda_preinit_active(observed_can_messages):
+      EV9_EARLY_SUPPRESSION_ACTIVE = True
+      hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
+      ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted returned neutral streams ===")
+      return True
 
   ecu_log("=== EV9 PRE-FINGERPRINT SUPPRESSION ATTEMPT ===")
   observed_recv = observing_can_recv if can_recv is not None else can_recv

@@ -189,6 +189,7 @@ StarPilotVehiclesPanel::StarPilotVehiclesPanel(StarPilotSettingsWindow *parent, 
     {"VoltSNG", tr("Stop-and-Go Hack"), tr("<b>Force stop-and-go</b> on the 2017 Chevy Volt."), ""},
 
     {"HKGToggles", tr("Hyundai/Kia/Genesis Settings"), tr("<b>StarPilot features for Hyundai/Kia/Genesis vehicles.</b>"), ""},
+    {"EV9LongPreinitPanda", tr("EV9 Early Long Initialization"), tr("<b>Let Panda disable the EV9 ADAS ECU before READY.</b><br><br>Disable this to use comma-only initialization. Requires a Panda flash."), ""},
     {"HKGRemoteStartBootsComma", tr("EV Remote Climate"), tr("<b>Use the remote-climate Hyundai/Kia/Genesis CAN-FD panda firmware at boot.</b><br><br>Required for EV remote-climate startup signal behavior."), ""},
 
     {"SubaruToggles", tr("Subaru Settings"), tr("<b>StarPilot features for Subaru vehicles.</b>"), ""},
@@ -353,6 +354,7 @@ StarPilotVehiclesPanel::StarPilotVehiclesPanel(StarPilotSettingsWindow *parent, 
   };
 
   connectPandaFlashToggle("IgnoreIgnitionLine", tr("CAN Ignition Only requires a Panda firmware update. Flash the Panda now?"));
+  connectPandaFlashToggle("EV9LongPreinitPanda", tr("EV9 early longitudinal initialization requires a Panda firmware update. Flash the Panda now?"));
   connectPandaFlashToggle("HKGRemoteStartBootsComma", tr("EV Remote Climate requires a Panda firmware update. Flash the Panda now?"));
   connectPandaFlashToggle("RemoteStartBootsComma", tr("Remote Start requires a Panda firmware update. Flash the Panda now?"));
 
@@ -439,6 +441,10 @@ void StarPilotVehiclesPanel::updateToggles() {
 
       if (longitudinalKeys.contains(key)) {
         setVisible &= parent->hasOpenpilotLongitudinal;
+      }
+
+      if (key == "EV9LongPreinitPanda") {
+        setVisible &= params.get("CarModel") == "KIA_EV9";
       }
 
       if (key == "SNGHack") {

@@ -459,6 +459,16 @@ class VehicleSettingsManagerView(PanelManagerView):
         "set_state": lambda s: self._controller._on_toggle("NostalgiaMode"),
       })
 
+    if cs.isEV9 and cs.hasAlphaLongitudinal:
+      toggles.append({
+        "title": tr("EV9 Early Long Initialization"),
+        "subtitle": tr("Let Panda disable the EV9 ADAS ECU before READY. Disable this to use comma-only initialization."),
+        "get_state": lambda: self._controller._params.get_bool("EV9LongPreinitPanda"),
+        "set_state": lambda s: self._controller._on_panda_firmware_toggle(
+          "EV9LongPreinitPanda", tr("EV9 early longitudinal initialization requires a Panda firmware update."),
+        ),
+      })
+
     return toggles
 
   def _rebuild_toggle_grid(self):

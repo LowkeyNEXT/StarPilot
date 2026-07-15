@@ -24,6 +24,7 @@ class StarPilotCarState:
     isTorqueCar: bool = False
     isTSK: bool = False
     isHKGCanFd: bool = False
+    isEV9: bool = False
     
     # ========== Car Capabilities ==========
     hasBSM: bool = False
@@ -103,6 +104,7 @@ class StarPilotState:
         if fallback_model:
             self.params.put("CarModel", fallback_model)
             self.car_state.isJeep = fallback_model.startswith("JEEP_")
+            self.car_state.isEV9 = fallback_model == "KIA_EV9"
 
         if not starpilot_toggles:
             self.car_state.hasOpenpilotLongitudinal = True
@@ -166,6 +168,7 @@ class StarPilotState:
             self.car_state.isGM = car_make == "gm"
             self.car_state.isHKG = car_make == "hyundai"
             self.car_state.isHKGCanFd = self.car_state.isHKG and safety_model == car.CarParams.SafetyModel.hyundaiCanfd
+            self.car_state.isEV9 = car_fingerprint == "KIA_EV9"
             self.car_state.isJeep = car_make == "chrysler" and car_fingerprint.startswith("JEEP_")
             self.car_state.isSubaru = car_make == "subaru"
             self.car_state.isToyota = car_make == "toyota"

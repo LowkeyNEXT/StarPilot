@@ -1,5 +1,9 @@
 #include "can_common_declarations.h"
 
+#ifdef PANDA_EV9_LONG_PREINIT
+#include "board/ev9_long_preinit.h"
+#endif
+
 uint32_t safety_tx_blocked = 0;
 uint32_t safety_rx_invalid = 0;
 uint32_t tx_buffer_overflow = 0;
@@ -278,6 +282,11 @@ bool can_check_checksum(CANPacket_t *packet) {
 
 void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
   if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
+    #ifdef PANDA_EV9_LONG_PREINIT
+    if (!skip_tx_hook) {
+      ev9_long_preinit_host_tx_hook(to_push);
+    }
+    #endif
     if (bus_number < PANDA_CAN_CNT) {
       // add CAN packet to send queue
       tx_buffer_overflow += can_push(can_queues[bus_number], to_push) ? 0U : 1U;
