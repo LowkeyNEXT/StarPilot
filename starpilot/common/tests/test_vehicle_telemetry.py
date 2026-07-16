@@ -92,6 +92,32 @@ def test_legacy_cloudflare_push_config_is_supported(tmp_path, monkeypatch):
   assert config["push"]["vehicleId"] == "legacy-vehicle"
 
 
+def test_existing_galaxy_telemetry_cache_is_not_treated_as_config(tmp_path, monkeypatch):
+  cache_path = tmp_path / vehicle_telemetry.VEHICLE_TELEMETRY_LEGACY_COMBINED_CONFIG_FILENAME
+  cache_path.write_text(json.dumps({
+    "stateOfChargePercent": 90.0,
+    "distanceToEmptyKilometers": 483.0,
+    "updatedAt": 1234.5,
+  }))
+  cache_path.chmod(0o600)
+  monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
+
+  config = vehicle_telemetry.load_vehicle_telemetry_config()
+  assert not config["fetch"]["enabled"]
+  assert not config["push"]["enabled"]
+
+
+def test_legacy_combined_config_is_migrated_only_when_config_shaped(tmp_path, monkeypatch):
+  legacy_path = tmp_path / vehicle_telemetry.VEHICLE_TELEMETRY_LEGACY_COMBINED_CONFIG_FILENAME
+  legacy_path.write_text(json.dumps({
+    "fetch": {"enabled": True, "token": "f" * 32},
+  }))
+  legacy_path.chmod(0o600)
+  monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
+
+  assert vehicle_telemetry.load_vehicle_telemetry_config()["fetch"]["enabled"]
+
+
 def test_fetch_requires_long_bearer_token_and_constant_time_comparison(tmp_path):
   open_config = {"fetch": {"enabled": True, "token": ""}}
   short_config = {"fetch": {"enabled": True, "token": "short"}}

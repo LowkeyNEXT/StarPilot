@@ -21,7 +21,8 @@ import requests
 
 
 VEHICLE_TELEMETRY_SCHEMA_VERSION = 1
-VEHICLE_TELEMETRY_CONFIG_FILENAME = "vehicle_telemetry.json"
+VEHICLE_TELEMETRY_CONFIG_FILENAME = "vehicle_telemetry_config.json"
+VEHICLE_TELEMETRY_LEGACY_COMBINED_CONFIG_FILENAME = "vehicle_telemetry.json"
 VEHICLE_TELEMETRY_LEGACY_CONFIG_FILENAME = "telemetry_push.json"
 VEHICLE_TELEMETRY_CACHE_FILENAME = "vehicle_telemetry_latest.json"
 VEHICLE_TELEMETRY_STATUS_FILENAME = "vehicle_telemetry_status.json"
@@ -192,6 +193,15 @@ def _load_legacy_push_config(path: Path):
 def load_vehicle_telemetry_config(path=None):
   config_path = Path(path) if path is not None else vehicle_telemetry_config_path()
   raw = _read_owner_only_json(config_path)
+  if raw is None and path is None:
+    legacy_combined = _read_owner_only_json(vehicle_telemetry_dir() / VEHICLE_TELEMETRY_LEGACY_COMBINED_CONFIG_FILENAME)
+    # Older development builds used vehicle_telemetry.json for the combined
+    # config, while deployed Galaxy builds already use that filename as their
+    # SOC/DTE cache. Only migrate a document that is unambiguously config-shaped.
+    if isinstance(legacy_combined, dict) and (
+      isinstance(legacy_combined.get("fetch"), dict) or isinstance(legacy_combined.get("push"), dict)
+    ):
+      raw = legacy_combined
   if raw is None and path is None:
     raw = _load_legacy_push_config(vehicle_telemetry_dir() / VEHICLE_TELEMETRY_LEGACY_CONFIG_FILENAME)
   return _normalize_vehicle_telemetry_config(raw)

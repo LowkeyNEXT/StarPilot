@@ -37,7 +37,7 @@ as `cached`, including after the vehicle turns off or the daemon restarts.
 
 ## Configuration
 
-Create `/data/galaxy/vehicle_telemetry.json` as an owner-only file:
+Create `/data/galaxy/vehicle_telemetry_config.json` as an owner-only file:
 
 ```json
 {
@@ -67,7 +67,10 @@ must be HTTPS, cannot include user info or fragments, and redirects are not
 followed.
 
 Legacy `/data/galaxy/telemetry_push.json` push configuration remains supported for
-migration, but new installations should use the combined file.
+migration. An older combined `/data/galaxy/vehicle_telemetry.json` is accepted only
+when it contains a `fetch` or `push` object; telemetry-shaped Galaxy cache files at
+that path are never interpreted as configuration. New installations should use the
+explicit `_config.json` filename.
 
 ## Fetch API
 
