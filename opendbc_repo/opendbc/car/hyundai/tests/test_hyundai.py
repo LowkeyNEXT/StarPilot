@@ -116,6 +116,44 @@ def get_test_toggles() -> SimpleNamespace:
   return SimpleNamespace(always_on_lateral_lkas=False, force_torque_controller=False, nnff=False, nnff_lite=False)
 
 
+class TestEV9EnergyTelemetry:
+  def test_dbc_signals(self):
+    dbc = DBC[CAR.KIA_EV9][Bus.pt]
+    packer = CANPacker(dbc)
+    parser = CANParser(dbc, [
+      ("EV_RANGE_STATUS", 0),
+      ("EV_ENERGY_STATUS_REDUNDANT", 0),
+      ("EV_CHARGE_STATUS", 0),
+      ("EV_ENERGY_STATUS", 0),
+    ], 1)
+    messages = [
+      packer.make_can_msg("EV_RANGE_STATUS", 1, {"DISTANCE_TO_EMPTY": 511}),
+      packer.make_can_msg("EV_ENERGY_STATUS_REDUNDANT", 1, {
+        "BATTERY_SOC_REDUNDANT": 97.5,
+        "CHARGING_STATE_AUX": 0,
+      }),
+      packer.make_can_msg("EV_CHARGE_STATUS", 1, {
+        "CHARGE_PORT_CONNECTED": 1,
+        "CHARGING_ACTIVE_REDUNDANT": 1,
+        "CHARGE_PORT_CONNECTED_REDUNDANT": 1,
+      }),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {
+        "BATTERY_SOC": 97.5,
+        "CHARGING_ACTIVE": 1,
+      }),
+    ]
+
+    parser.update([1_000_000_000, messages])
+
+    assert parser.vl["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"] == 511
+    assert parser.vl["EV_ENERGY_STATUS"]["BATTERY_SOC"] == 97.5
+    assert parser.vl["EV_ENERGY_STATUS"]["CHARGING_ACTIVE"] == 1
+    assert parser.vl["EV_ENERGY_STATUS_REDUNDANT"]["BATTERY_SOC_REDUNDANT"] == 97.5
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] == 1
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"] == 1
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] == 1
+
+
 class TestHyundaiFingerprint:
   def test_feature_detection(self):
     # LKA steering

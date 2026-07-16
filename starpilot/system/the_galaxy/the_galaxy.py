@@ -46,6 +46,14 @@ from panda import Panda
 
 from openpilot.starpilot.assets.model_manager import canonical_model_key, is_builtin_model_key, model_key_aliases
 from openpilot.starpilot.assets.theme_manager import HOLIDAY_THEME_PATH, THEME_COMPONENT_PARAMS
+from openpilot.starpilot.system.vehicle_telemetry import (
+  VehicleTelemetryCache,
+  is_fetch_authorized,
+  load_vehicle_telemetry_config,
+  load_vehicle_telemetry_status,
+  public_vehicle_telemetry_config,
+  telemetry_response,
+)
 from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
@@ -3846,6 +3854,39 @@ def setup(app):
     except Exception:
       pass
     return jsonify({"result": False})
+
+  @app.route("/api/galaxy/telemetry", methods=["GET"])
+  @app.route("/api/vehicle/telemetry", methods=["GET"])
+  def vehicle_telemetry():
+    config = load_vehicle_telemetry_config()
+    if not config["fetch"]["enabled"]:
+      return jsonify({"error": "Vehicle telemetry fetch is disabled."}), 404
+    if not is_fetch_authorized(config, request.headers.get("Authorization")):
+      response = jsonify({"error": "Vehicle telemetry authorization failed."})
+      response.status_code = 401
+      response.headers["WWW-Authenticate"] = 'Bearer realm="vehicle-telemetry"'
+      return response
+
+    response_payload = telemetry_response(VehicleTelemetryCache().load())
+    if response_payload is None:
+      return jsonify({"error": "No validated vehicle telemetry has been cached yet."}), 503
+    response = jsonify(response_payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+  @app.route("/api/vehicle/telemetry/status", methods=["GET"])
+  def vehicle_telemetry_status():
+    config = load_vehicle_telemetry_config()
+    if not config["fetch"]["enabled"] or not is_fetch_authorized(config, request.headers.get("Authorization")):
+      return jsonify({"error": "Vehicle telemetry fetch is disabled or unauthorized."}), 404
+
+    response = jsonify({
+      "config": public_vehicle_telemetry_config(config),
+      "cache": telemetry_response(VehicleTelemetryCache().load()),
+      "exporter": load_vehicle_telemetry_status(),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
   @app.route("/api/doors/lock", methods=["POST"])
   def lock_doors():
