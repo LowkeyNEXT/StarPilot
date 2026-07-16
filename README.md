@@ -29,6 +29,10 @@ Stop by to chat or ask questions!
 Please see [https://wiki.firestar.link](https://wiki.firestar.link) for hardware lists,
 installation guides, and software configuration.
 
+Developer/operator documentation for the normalized SOC/DTE cache and optional
+Galaxy fetch/HTTPS push service is available in
+[`docs/vehicle-telemetry.md`](docs/vehicle-telemetry.md).
+
 ## Features
 
 * Full support for Comma C3, C3X, and C4
