@@ -747,6 +747,7 @@ class CarController(CarControllerBase):
                                                              CS.stock_lkas_msg if preserve_stock_lkas else None,
                                                              lka_icon=lka_icon))
     direct_steering_active = lka_alt_long and drive_gear and CC.latActive and not CS.angle_steering_fault
+    direct_steering_actuating = direct_steering_active and apply_steer_req
     if lka_alt_long and drive_gear:
       can_sends.append(hyundaicanfd.create_angle_adas_cmd(
         self.packer, self.CAN,
@@ -805,7 +806,7 @@ class CarController(CarControllerBase):
         if self.CP.carFingerprint == CAR.KIA_EV9:
           adrv_messages = hyundaicanfd.create_ev9_adrv_messages(
             self.packer, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
-            CS.out, CS.is_metric, CC.latActive, direct_steering_active,
+            CS.out, CS.is_metric, CC.latActive, direct_steering_actuating,
             CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker,
           )
         else:
