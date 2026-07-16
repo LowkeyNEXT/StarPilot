@@ -161,7 +161,7 @@ def _normalize_vehicle_telemetry_config(raw):
   battery_capacity = _finite_float(push_raw.get("maximumBatteryCapacityKilowattHours"), 0.0)
 
   config["fetch"] = {
-    "enabled": bool(fetch_raw.get("enabled", False)),
+    "enabled": bool(fetch_raw.get("enabled", False)) and len(fetch_token) >= 32,
     "token": fetch_token if len(fetch_token) >= 32 else "",
   }
   config["push"] = {
@@ -226,7 +226,7 @@ def is_fetch_authorized(config, authorization_header):
     return False
   expected = fetch["token"]
   if not expected:
-    return True
+    return False
   supplied = str(authorization_header or "")
   prefix = "Bearer "
   return supplied.startswith(prefix) and hmac.compare_digest(supplied[len(prefix):].strip(), expected)

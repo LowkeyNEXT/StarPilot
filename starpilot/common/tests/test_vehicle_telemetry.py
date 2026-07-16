@@ -92,10 +92,14 @@ def test_legacy_cloudflare_push_config_is_supported(tmp_path, monkeypatch):
   assert config["push"]["vehicleId"] == "legacy-vehicle"
 
 
-def test_fetch_bearer_auth_is_optional_or_constant_time_compatible():
+def test_fetch_requires_long_bearer_token_and_constant_time_comparison(tmp_path):
   open_config = {"fetch": {"enabled": True, "token": ""}}
+  short_config = {"fetch": {"enabled": True, "token": "short"}}
   token_config = {"fetch": {"enabled": True, "token": "s" * 32}}
-  assert vehicle_telemetry.is_fetch_authorized(open_config, None)
+  assert not vehicle_telemetry.save_vehicle_telemetry_config(open_config, tmp_path / "open.json")["fetch"]["enabled"]
+  assert not vehicle_telemetry.save_vehicle_telemetry_config(short_config, tmp_path / "short.json")["fetch"]["enabled"]
+  assert not vehicle_telemetry.is_fetch_authorized(open_config, None)
+  assert not vehicle_telemetry.is_fetch_authorized(short_config, "Bearer short")
   assert vehicle_telemetry.is_fetch_authorized(token_config, f"Bearer {'s' * 32}")
   assert not vehicle_telemetry.is_fetch_authorized(token_config, f"Bearer {'x' * 32}")
   assert not vehicle_telemetry.is_fetch_authorized({"fetch": {"enabled": False}}, None)
