@@ -51,7 +51,6 @@ static ev9_preinit_replay_t ev9_preinit_replay[] = {
   {.addr = 0x200U, .len = 8U,  .period_us = 50000U},
   {.addr = 0x345U, .len = 8U,  .period_us = 200000U},
   {.addr = 0x38CU, .len = 32U, .period_us = 200000U},
-  {.addr = 0x57AU, .len = 32U, .period_us = 100000U},
 };
 
 static const uint8_t ev9_preinit_heartbeat_template[24] = {
@@ -78,9 +77,6 @@ static const uint8_t ev9_preinit_fallback_200[8] = "\x00\x00\x00\x14\x80\x1a\x00
 static const uint8_t ev9_preinit_fallback_345[8] = "\x00\x00\x00\x15\x00\x56\x00\x00";
 static const uint8_t ev9_preinit_fallback_38c[32] =
   "\x00\x00\x00\xf7\x1f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-static const uint8_t ev9_preinit_fallback_57a[32] =
-  "\x7a\x50\x00\x08\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-
 static ev9_preinit_state_t ev9_preinit_state = EV9_PREINIT_COLLECTING;
 static uint32_t ev9_preinit_first_can_us = 0U;
 static uint32_t ev9_preinit_state_started_us = 0U;
@@ -209,7 +205,6 @@ static void ev9_long_preinit_init(void) {
       case 0x200U: fallback = ev9_preinit_fallback_200; break;
       case 0x345U: fallback = ev9_preinit_fallback_345; break;
       case 0x38CU: fallback = ev9_preinit_fallback_38c; break;
-      case 0x57AU: fallback = ev9_preinit_fallback_57a; break;
       default: break;
     }
     if (fallback != NULL) {
@@ -315,8 +310,7 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
 
     if (packet->bus == EV9_PREINIT_BUS_ECAN) {
       for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
-        if ((packet->addr == ev9_preinit_replay[i].addr) && (GET_LEN(packet) == ev9_preinit_replay[i].len) &&
-            ((packet->addr == 0x57AU) || valid_canfd_crc)) {
+        if ((packet->addr == ev9_preinit_replay[i].addr) && (GET_LEN(packet) == ev9_preinit_replay[i].len) && valid_canfd_crc) {
           if (packet->addr == 0x160U) {
             ev9_preinit_replay[i].packet = ev9_preinit_make_packet(0x160U, EV9_PREINIT_BUS_ECAN, 16U);
             (void)memcpy(ev9_preinit_replay[i].packet.data, ev9_preinit_fallback_160, sizeof(ev9_preinit_fallback_160));
@@ -453,15 +447,9 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     ev9_preinit_replay_t *replay = &ev9_preinit_replay[i];
     if (replay->captured && (get_ts_elapsed(now_us, replay->last_tx_us) >= replay->period_us)) {
       CANPacket_t packet = replay->packet;
-      if (packet.addr != 0x57AU) {
-        packet.data[2] += 1U;
-      }
+      packet.data[2] += 1U;
       ev9_preinit_neutralize(&packet);
-      if (packet.addr != 0x57AU) {
-        ev9_preinit_update_crc(&packet);
-      } else {
-        can_set_checksum(&packet);
-      }
+      ev9_preinit_update_crc(&packet);
       can_send(&packet, EV9_PREINIT_BUS_ECAN, true);
       replay->packet = packet;
       replay->last_tx_us = now_us;

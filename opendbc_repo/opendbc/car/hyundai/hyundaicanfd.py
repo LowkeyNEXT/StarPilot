@@ -797,8 +797,6 @@ def create_ev9_adrv_messages(packer, CAN, frame, enabled, main_cruise_enabled, h
     create_ev9_adrv_message(address, CAN.ECAN, frame // period)
     for address, period in _KIA_EV9_ADRV_PERIODS.items() if frame % period == 0
   ]
-  if frame % 10 == 0:
-    ret.append(create_ev9_raw_adrv_message(0x57A, CAN.ECAN))
   if frame % 5 == 0:
     ret.extend(create_ev9_dash_status_messages(
       packer, CAN, frame // 5, enabled, main_cruise_enabled, hud, out, is_metric, lat_active, steering_active,
@@ -859,15 +857,9 @@ _KIA_EV9_ADRV_PERIODS = {
   0x38C: 20,
 }
 
-# 0x57A has no standard rolling CRC/counter; preserve its captured payload.
-_KIA_EV9_RAW_ADRV_TEMPLATES = {
-  0x57A: bytes.fromhex("7a50000800000000000001000000000000000000000000000000000000000000"),
-}
-
 # Preserve the last READY-state payload and continue its counter after suppression.
 _KIA_EV9_ADRV_LIVE_TEMPLATES: dict[int, bytes] = {}
 _KIA_EV9_ADRV_COUNTER_BASES: dict[int, int] = {}
-_KIA_EV9_RAW_ADRV_LIVE_TEMPLATES: dict[int, bytes] = {}
 _KIA_EV9_SCC_CONTROL_LIVE_TEMPLATE: bytes | None = None
 _KIA_EV9_SCC_CONTROL_COUNTER_BASE = 0
 
@@ -876,7 +868,6 @@ def set_ev9_adrv_baselines(messages: list[CanData]) -> None:
   global _KIA_EV9_SCC_CONTROL_LIVE_TEMPLATE, _KIA_EV9_SCC_CONTROL_COUNTER_BASE
   _KIA_EV9_ADRV_LIVE_TEMPLATES.clear()
   _KIA_EV9_ADRV_COUNTER_BASES.clear()
-  _KIA_EV9_RAW_ADRV_LIVE_TEMPLATES.clear()
   _KIA_EV9_SCC_CONTROL_LIVE_TEMPLATE = None
   _KIA_EV9_SCC_CONTROL_COUNTER_BASE = 0
   for msg in messages:
@@ -888,8 +879,6 @@ def set_ev9_adrv_baselines(messages: list[CanData]) -> None:
       # 0x160 inherits only its counter so AEB remains unavailable.
       if msg.address != 0x160:
         _KIA_EV9_ADRV_LIVE_TEMPLATES[msg.address] = dat
-    elif msg.address in _KIA_EV9_RAW_ADRV_TEMPLATES and len(dat) == len(_KIA_EV9_RAW_ADRV_TEMPLATES[msg.address]):
-      _KIA_EV9_RAW_ADRV_LIVE_TEMPLATES[msg.address] = dat
     elif msg.address == 0x1A0 and len(dat) == 32:
       _KIA_EV9_SCC_CONTROL_LIVE_TEMPLATE = dat
       _KIA_EV9_SCC_CONTROL_COUNTER_BASE = dat[2]
@@ -1030,8 +1019,3 @@ def create_ev9_dash_status_messages(packer, CAN, counter: int, enabled: bool = F
     _create_ev9_adrv_message_with_signals(packer, CAN, 0x161, counter, "CCNC_0x161", values_161),
     _create_ev9_adrv_message_with_signals(packer, CAN, 0x162, counter, "CCNC_0x162", values_162),
   ]
-
-
-def create_ev9_raw_adrv_message(address: int, bus: int) -> CanData:
-  """Replay an EV9 ADAS status frame that has no standard rolling CRC."""
-  return CanData(address, _KIA_EV9_RAW_ADRV_LIVE_TEMPLATES.get(address, _KIA_EV9_RAW_ADRV_TEMPLATES[address]), bus)
