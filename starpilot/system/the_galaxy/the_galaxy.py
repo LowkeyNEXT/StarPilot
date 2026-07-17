@@ -3876,7 +3876,12 @@ def setup(app):
 
   @app.route("/api/galaxy/telemetry", methods=["GET"])
   @app.route("/api/vehicle/telemetry", methods=["GET"])
-  def vehicle_telemetry():
+  @app.route("/<galaxy_slug>/api/vehicle/telemetry", methods=["GET"])
+  def vehicle_telemetry(galaxy_slug=None):
+    if galaxy_slug is not None:
+      configured_slug = _read_galaxy_text(GALAXY_SLUG_FILE)
+      if not configured_slug or not secrets.compare_digest(str(galaxy_slug), configured_slug):
+        return jsonify({"error": "Galaxy route not found."}), 404
     config = load_vehicle_telemetry_config()
     if not config["fetch"]["enabled"]:
       return jsonify({"error": "Vehicle telemetry fetch is disabled."}), 404

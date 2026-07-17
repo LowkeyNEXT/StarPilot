@@ -129,6 +129,18 @@ def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch
   assert connection["capabilities"]["galaxySession"]["cookieName"] == "galaxy_session"
   assert connection["capabilities"]["galaxySession"]["sessionToken"] == f"testGalaxySlug01%3A{'s' * 64}"
 
+  bearer = connection["capabilities"]["vehicleTelemetry"]["bearerToken"]
+  remote_telemetry = client.get(
+    "/testGalaxySlug01/api/vehicle/telemetry",
+    headers={"Authorization": f"Bearer {bearer}"},
+  )
+  assert remote_telemetry.status_code == 503
+  wrong_route = client.get(
+    "/wrongGalaxySlug/api/vehicle/telemetry",
+    headers={"Authorization": f"Bearer {bearer}"},
+  )
+  assert wrong_route.status_code == 404
+
 
 def test_external_app_pairing_requires_cloud_session_when_requested(monkeypatch, tmp_path):
   monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
