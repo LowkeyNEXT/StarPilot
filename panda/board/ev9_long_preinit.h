@@ -266,6 +266,51 @@ static bool ev9_preinit_required_baselines_ready(void) {
   return ready;
 }
 
+static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_heartbeat,
+                                      bool valid_canfd_crc, uint32_t now_us) {
+  if (stock_heartbeat) {
+    ev9_preinit_fingerprint |= EV9_FP_HEARTBEAT;
+    // Keep the route-backed neutral payload and only continue the stock counter.
+    ev9_preinit_heartbeat_counter = packet->data[2] + 1U;
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+             (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) {
+    ev9_preinit_fingerprint |= EV9_FP_POWERTRAIN;
+    // Byte 4 stays at 0x10 through IGN-ON and clears when READY begins.
+    ev9_preinit_pre_ready = packet->data[4] == 0x10U;
+    if (ev9_preinit_first_can_us == 0U) {
+      ev9_preinit_first_can_us = now_us;
+    }
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+             (packet->addr == 0xA0U) && (GET_LEN(packet) == 24U)) {
+    ev9_preinit_fingerprint |= EV9_FP_WHEEL_SPEEDS;
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+             (packet->addr == 0x1A0U) && (GET_LEN(packet) == 32U)) {
+    ev9_preinit_fingerprint |= EV9_FP_SCC;
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+             (packet->addr == 0x160U) && (GET_LEN(packet) == 16U)) {
+    ev9_preinit_fingerprint |= EV9_FP_FCA_STATUS;
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+             (packet->addr == 0x1BAU) && (GET_LEN(packet) == 24U)) {
+    ev9_preinit_fingerprint |= EV9_FP_BSM_STATUS;
+  } else {
+  }
+
+  if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN)) {
+    for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
+      if ((packet->addr == ev9_preinit_replay[i].addr) && (GET_LEN(packet) == ev9_preinit_replay[i].len)) {
+        if (packet->addr == 0x160U) {
+          ev9_preinit_replay[i].packet = ev9_preinit_make_packet(0x160U, EV9_PREINIT_BUS_ECAN, 16U);
+          (void)memcpy(ev9_preinit_replay[i].packet.data, ev9_preinit_fallback_160, sizeof(ev9_preinit_fallback_160));
+          ev9_preinit_replay[i].packet.data[2] = packet->data[2];
+        } else {
+          ev9_preinit_replay[i].packet = *packet;
+        }
+        ev9_preinit_replay[i].captured = true;
+      }
+    }
+  }
+}
+
 static bool ev9_preinit_is_adas_frame(const CANPacket_t *packet) {
   bool adas_frame = (packet->bus == EV9_PREINIT_BUS_RADAR) && (packet->addr == 0x100U) && (GET_LEN(packet) == 24U);
   if (packet->bus == EV9_PREINIT_BUS_ECAN) {
@@ -309,10 +354,14 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
     return;
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
-    if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_COMM_CONTROL_DELAY_US) {
+    const uint32_t elapsed = get_ts_elapsed(now_us, ev9_preinit_state_started_us);
+    if ((elapsed >= EV9_PREINIT_COMM_CONTROL_DELAY_US) && ev9_preinit_required_baselines_ready()) {
       ev9_preinit_attempts = 1U;
       ev9_preinit_state_started_us = now_us;
       ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
+    } else if (elapsed > EV9_PREINIT_FINGERPRINT_TIMEOUT_US) {
+      ev9_preinit_abort(now_us);
+    } else {
     }
     return;
   }
@@ -358,54 +407,23 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     return;
   }
 
-  if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
+  const bool capture_baselines = (ev9_preinit_state == EV9_PREINIT_COLLECTING) ||
+                                 (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
+                                 (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL);
+  if (capture_baselines) {
     const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
     const bool valid_canfd_crc = packet->fd && (ev9_preinit_crc(packet) == checksum);
-    if (stock_heartbeat) {
-      ev9_preinit_fingerprint |= EV9_FP_HEARTBEAT;
-      if (ev9_preinit_first_can_us == 0U) {
-        ev9_preinit_first_can_us = now_us;
-      }
-    } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) {
-      ev9_preinit_fingerprint |= EV9_FP_POWERTRAIN;
-      // Byte 4 stays at 0x10 through IGN-ON and clears when READY begins.
-      ev9_preinit_pre_ready = packet->data[4] == 0x10U;
-    } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0xA0U) && (GET_LEN(packet) == 24U)) {
-      ev9_preinit_fingerprint |= EV9_FP_WHEEL_SPEEDS;
-    } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x1A0U) && (GET_LEN(packet) == 32U)) {
-      ev9_preinit_fingerprint |= EV9_FP_SCC;
-    } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x160U) && (GET_LEN(packet) == 16U)) {
-      ev9_preinit_fingerprint |= EV9_FP_FCA_STATUS;
-    } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x1BAU) && (GET_LEN(packet) == 24U)) {
-      ev9_preinit_fingerprint |= EV9_FP_BSM_STATUS;
-    } else {
-    }
+    ev9_preinit_capture_frame(packet, stock_heartbeat, valid_canfd_crc, now_us);
+  }
 
-    if (packet->bus == EV9_PREINIT_BUS_ECAN) {
-      for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
-        if ((packet->addr == ev9_preinit_replay[i].addr) && (GET_LEN(packet) == ev9_preinit_replay[i].len) && valid_canfd_crc) {
-          if (packet->addr == 0x160U) {
-            ev9_preinit_replay[i].packet = ev9_preinit_make_packet(0x160U, EV9_PREINIT_BUS_ECAN, 16U);
-            (void)memcpy(ev9_preinit_replay[i].packet.data, ev9_preinit_fallback_160, sizeof(ev9_preinit_fallback_160));
-            ev9_preinit_replay[i].packet.data[2] = packet->data[2];
-          } else {
-            ev9_preinit_replay[i].packet = *packet;
-          }
-          ev9_preinit_replay[i].captured = true;
-        }
-      }
-    }
-
-    if ((ev9_preinit_fingerprint == EV9_FP_REQUIRED) && ev9_preinit_required_baselines_ready()) {
-      if (ev9_preinit_pre_ready) {
-        ev9_preinit_attempts = 0U;
-        ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
-        ev9_preinit_state_started_us = now_us;
-      } else {
-        ev9_preinit_abort(now_us);
-      }
-    }
-  } else {
+  // This firmware is selected only for a cached EV9. Enter the diagnostic
+  // session on the first verified pre-READY powertrain frame, then collect the
+  // ADAS baselines while the ECU is still transmitting.
+  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) &&
+      ((ev9_preinit_fingerprint & EV9_FP_POWERTRAIN) != 0U) && ev9_preinit_pre_ready) {
+    ev9_preinit_attempts = 0U;
+    ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
+    ev9_preinit_state_started_us = now_us;
   }
 
   // The EV9 can return eight-byte UDS responses as either classic CAN or CAN FD.
