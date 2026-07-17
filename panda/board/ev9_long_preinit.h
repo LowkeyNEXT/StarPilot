@@ -88,6 +88,8 @@ static uint8_t ev9_preinit_last_service = 0U;
 static uint8_t ev9_preinit_last_response = 0U;
 static uint8_t ev9_preinit_last_nrc = 0U;
 static CANPacket_t ev9_preinit_heartbeat_packet;
+static bool ev9_preinit_last_outcome_valid = false;
+static ev9_long_preinit_status_t ev9_preinit_last_outcome;
 
 #define EV9_FP_HEARTBEAT 0x01U
 #define EV9_FP_POWERTRAIN 0x02U
@@ -176,6 +178,22 @@ static void ev9_preinit_restore(void) {
 static void ev9_preinit_abort(uint32_t now_us) {
   ev9_preinit_state = EV9_PREINIT_ABORTED;
   ev9_preinit_state_started_us = now_us;
+}
+
+static void ev9_preinit_snapshot_outcome(void) {
+  ev9_preinit_last_outcome = (ev9_long_preinit_status_t) {
+    .version = EV9_LONG_PREINIT_STATUS_VERSION,
+    .state = (uint8_t)ev9_preinit_state,
+    .fingerprint = ev9_preinit_fingerprint,
+    .attempts = ev9_preinit_attempts,
+    .last_service = ev9_preinit_last_service,
+    .last_response = ev9_preinit_last_response,
+    .last_nrc = ev9_preinit_last_nrc,
+    .communication_type = EV9_PREINIT_COMMUNICATION_TYPE,
+    .first_can_us = ev9_preinit_first_can_us,
+    .state_started_us = ev9_preinit_state_started_us,
+  };
+  ev9_preinit_last_outcome_valid = true;
 }
 
 static void ev9_long_preinit_init(void) {
@@ -373,6 +391,10 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
 }
 
 static ev9_long_preinit_status_t ev9_long_preinit_get_status(void) {
+  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && (ev9_preinit_fingerprint == 0U) &&
+      ev9_preinit_last_outcome_valid) {
+    return ev9_preinit_last_outcome;
+  }
   return (ev9_long_preinit_status_t) {
     .version = EV9_LONG_PREINIT_STATUS_VERSION,
     .state = (uint8_t)ev9_preinit_state,
@@ -424,6 +446,7 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     const bool vehicle_bus_stopped = (ev9_preinit_last_vehicle_frame_us != 0U) &&
       (get_ts_elapsed(now_us, ev9_preinit_last_vehicle_frame_us) > 5000000U);
     if (aborted_heartbeat_stopped || vehicle_bus_stopped) {
+      ev9_preinit_snapshot_outcome();
       ev9_long_preinit_init();
     }
     return;
@@ -485,6 +508,7 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
   // both replacement streams. Bus sleep is the only non-host cleanup path.
   if ((ev9_preinit_last_vehicle_frame_us != 0U) &&
       (get_ts_elapsed(now_us, ev9_preinit_last_vehicle_frame_us) > 5000000U)) {
+    ev9_preinit_snapshot_outcome();
     ev9_preinit_restore();
     ev9_long_preinit_init();
     return;
