@@ -95,8 +95,9 @@ values.
 
 ## Push API
 
-StarPilot sends an authenticated JSON envelope to the configured URL. A typical
-full EV9 envelope is about **443 bytes of JSON**:
+StarPilot sends an authenticated JSON envelope to the configured URL. A live EV9
+validation sample with vehicle name and battery capacity configured produced a
+**465-byte JSON body** and a **651-byte prepared HTTP/1.1 request before TLS**:
 
 ```json
 {
@@ -115,12 +116,12 @@ full EV9 envelope is about **443 bytes of JSON**:
 }
 ```
 
-At a 60-second driving interval, JSON payload alone is approximately **26 KiB per
-hour**. Including HTTP headers and normal TLS/TCP overhead, budget roughly **0.1 to
-0.2 MB per driving hour**. A 30-second interval doubles the JSON payload to about
-52 KiB/hour. Parked at the default 15-minute interval, JSON payload is under
-2 KiB/hour. Connection behavior and mobile-network retransmissions can raise actual
-on-wire usage.
+At a 60-second driving interval, this is approximately **27.2 KiB/hour of JSON**
+or **38.1 KiB/hour before TLS**. Including TLS/TCP overhead and connection setup,
+budget roughly **0.1 to 0.2 MB per driving hour**. A 30-second interval doubles the
+JSON body to about 54.5 KiB/hour. Parked at the default 15-minute interval, the
+JSON body is under 2 KiB/hour. Connection behavior and mobile-network
+retransmissions can raise actual on-wire usage.
 
 The publisher uses openpilot's on-road state for driving cadence, so traffic lights
 and other momentary stops do not create parked/driving transition uploads. Charging
