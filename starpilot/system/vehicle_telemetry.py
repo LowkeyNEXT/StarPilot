@@ -134,6 +134,7 @@ def default_vehicle_telemetry_config():
     "fetch": {
       "enabled": False,
       "token": "",
+      "clients": [],
     },
     "push": {
       "enabled": False,
@@ -157,13 +158,27 @@ def _normalize_vehicle_telemetry_config(raw):
   fetch_raw = raw.get("fetch") if isinstance(raw.get("fetch"), dict) else {}
   push_raw = raw.get("push") if isinstance(raw.get("push"), dict) else {}
   fetch_token = str(fetch_raw.get("token") or "").strip()
+  fetch_clients = []
+  raw_clients = fetch_raw.get("clients") if isinstance(fetch_raw.get("clients"), list) else []
+  for raw_client in raw_clients[:8]:
+    if not isinstance(raw_client, dict):
+      continue
+    client_token = str(raw_client.get("token") or "").strip()
+    if len(client_token) < 32 or any(client["token"] == client_token for client in fetch_clients):
+      continue
+    fetch_clients.append({
+      "name": str(raw_client.get("name") or "External app").strip()[:80] or "External app",
+      "token": client_token,
+      "createdAt": _finite_float(raw_client.get("createdAt"), 0.0),
+    })
   push_token = str(push_raw.get("token") or "").strip()
   push_url = _valid_https_url(push_raw.get("url"))
   battery_capacity = _finite_float(push_raw.get("maximumBatteryCapacityKilowattHours"), 0.0)
 
   config["fetch"] = {
-    "enabled": bool(fetch_raw.get("enabled", False)) and len(fetch_token) >= 32,
+    "enabled": bool(fetch_raw.get("enabled", False)) and (len(fetch_token) >= 32 or bool(fetch_clients)),
     "token": fetch_token if len(fetch_token) >= 32 else "",
+    "clients": fetch_clients,
   }
   config["push"] = {
     "enabled": bool(push_raw.get("enabled", False)) and bool(push_url and len(push_token) >= 32),
@@ -223,6 +238,7 @@ def public_vehicle_telemetry_config(config):
     "fetch": {
       "enabled": fetch["enabled"],
       "hasToken": bool(fetch["token"]),
+      "pairedClientCount": len(fetch["clients"]),
     },
     "push": {
       key: value for key, value in push.items() if key != "token"
@@ -234,12 +250,13 @@ def is_fetch_authorized(config, authorization_header):
   fetch = _normalize_vehicle_telemetry_config(config)["fetch"]
   if not fetch["enabled"]:
     return False
-  expected = fetch["token"]
-  if not expected:
-    return False
   supplied = str(authorization_header or "")
   prefix = "Bearer "
-  return supplied.startswith(prefix) and hmac.compare_digest(supplied[len(prefix):].strip(), expected)
+  if not supplied.startswith(prefix):
+    return False
+  token = supplied[len(prefix):].strip()
+  expected_tokens = [fetch["token"], *(client["token"] for client in fetch["clients"])]
+  return any(expected and hmac.compare_digest(token, expected) for expected in expected_tokens)
 
 
 def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerprint=""):

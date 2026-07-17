@@ -141,6 +141,26 @@ def test_fetch_requires_long_bearer_token_and_constant_time_comparison(tmp_path)
   assert not vehicle_telemetry.is_fetch_authorized({"fetch": {"enabled": False}}, None)
 
 
+def test_fetch_accepts_independent_external_app_tokens(tmp_path):
+  config = vehicle_telemetry.save_vehicle_telemetry_config({
+    "fetch": {
+      "enabled": True,
+      "clients": [
+        {"name": "RangeBridge", "token": "r" * 32, "createdAt": 1234.0},
+        {"name": "Galaxy Nav", "token": "g" * 32, "createdAt": 1235.0},
+      ],
+    },
+  }, tmp_path / "config.json")
+
+  assert config["fetch"]["enabled"]
+  assert vehicle_telemetry.is_fetch_authorized(config, f"Bearer {'r' * 32}")
+  assert vehicle_telemetry.is_fetch_authorized(config, f"Bearer {'g' * 32}")
+  assert not vehicle_telemetry.is_fetch_authorized(config, f"Bearer {'x' * 32}")
+  public = vehicle_telemetry.public_vehicle_telemetry_config(config)
+  assert public["fetch"]["pairedClientCount"] == 2
+  assert "clients" not in public["fetch"]
+
+
 class FakeResponse:
   status_code = 202
 

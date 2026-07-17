@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import importlib
+import ipaddress
 import math
 import numbers
 import os
@@ -54,6 +55,7 @@ from openpilot.starpilot.system.vehicle_telemetry import (
   public_vehicle_telemetry_config,
   telemetry_response,
 )
+from openpilot.starpilot.system.external_app_pairing import create_pairing, complete_pairing
 from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
@@ -560,6 +562,23 @@ def _build_galaxy_session_value(slug, token):
   if not slug or not token:
     return ""
   return quote(f"{slug}:{token}", safe="")
+
+
+def _is_lan_ip(value):
+  try:
+    address = ipaddress.ip_address(str(value or "").split("%", 1)[0])
+    if getattr(address, "ipv4_mapped", None) is not None:
+      address = address.ipv4_mapped
+    return address.is_private or address.is_link_local or address.is_loopback
+  except ValueError:
+    return False
+
+
+def _request_is_lan():
+  if not _is_lan_ip(request.remote_addr):
+    return False
+  host = (request.host.split(":", 1)[0] if not request.host.startswith("[") else request.host.split("]", 1)[0][1:]).lower()
+  return _is_lan_ip(host) or host in ("localhost", "comma") or host.endswith(".local")
 
 
 def _parse_last_gps_position(raw_value):
@@ -3888,6 +3907,54 @@ def setup(app):
     response.headers["Cache-Control"] = "no-store"
     return response
 
+  @app.route("/api/external-app/pairing", methods=["POST"])
+  def create_external_app_pairing():
+    if not _request_is_lan():
+      return jsonify({"error": "External-app pairing is available only on the local network."}), 403
+    try:
+      pairing = create_pairing(GALAXY_DIR, request.host_url)
+      try:
+        import qrcode
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=3)
+        qr.add_data(pairing["qrData"])
+        qr.make(fit=True)
+        output = BytesIO()
+        qr.make_image(fill_color="black", back_color="white").save(output, format="PNG")
+        pairing["qrImageDataURL"] = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+      except Exception:
+        # Text copy remains a complete fallback if the optional QR renderer is unavailable.
+        pairing["qrImageDataURL"] = ""
+      response = jsonify(pairing)
+      response.headers["Cache-Control"] = "no-store"
+      return response
+    except ValueError as error:
+      return jsonify({"error": str(error)}), 400
+
+  @app.route("/api/external-app/pair", methods=["POST"])
+  def pair_external_app():
+    if not _request_is_lan():
+      return jsonify({"error": "External-app pairing is available only on the local network."}), 403
+    data = request.get_json(silent=True) or {}
+    slug = _read_galaxy_text(GALAXY_SLUG_FILE)
+    session_token = _build_galaxy_session_value(slug, _read_galaxy_text(GALAXY_SESSION_FILE))
+    legacy_connection = {
+      "portalURL": f"https://galaxy.firestar.link/{slug}" if slug else "",
+      "cookieName": GALAXY_COOKIE_NAME,
+      "sessionToken": session_token,
+    }
+    connection, error = complete_pairing(
+      GALAXY_DIR,
+      data.get("code", ""),
+      data.get("clientName", "External app"),
+      requested_capabilities=data.get("requestedCapabilities") if isinstance(data.get("requestedCapabilities"), list) else None,
+      legacy_connection=legacy_connection,
+    )
+    if error:
+      return jsonify({"error": error}), 401
+    response = jsonify(connection)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
   @app.route("/api/doors/lock", methods=["POST"])
   def lock_doors():
     can_parser = CANParser("toyota_nodsu_pt_generated", [("DOOR_LOCKS", 3)], bus=0)
@@ -6168,9 +6235,8 @@ def setup(app):
     paired = len(_read_galaxy_text(GALAXY_AUTH_FILE)) == 64 and bool(slug and token)
     return jsonify({
       "appUrl": GALAXY_PLAY_STORE_URL,
-      "cookieName": GALAXY_COOKIE_NAME,
       "paired": paired,
-      "sessionToken": _build_galaxy_session_value(slug, token),
+      "hasSession": bool(token),
     })
 
   @app.route("/api/galaxy/pair", methods=["POST"])
@@ -7290,7 +7356,21 @@ def main():
     print("\"The Galaxy\" is not running on a comma device, enabling debug mode")
 
   app.secret_key = secrets.token_hex(32)
-  app.run(host=host, port=port, debug=debug, use_reloader=use_reloader)
+  mdns_process = None
+  if on_device and shutil.which("avahi-publish-service"):
+    try:
+      mdns_process = subprocess.Popen(
+        ["avahi-publish-service", "StarPilot Galaxy", "_sp-galaxy._tcp", str(port), "path=/"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+      )
+    except OSError:
+      mdns_process = None
+  try:
+    app.run(host=host, port=port, debug=debug, use_reloader=use_reloader)
+  finally:
+    if mdns_process is not None:
+      mdns_process.terminate()
 
 if __name__ == "__main__":
   main()

@@ -93,6 +93,35 @@ authentication returns `401`, and an enabled endpoint without a validated cached
 snapshot returns `503`. Diagnostic output reports token presence but never token
 values.
 
+### External app pairing
+
+The Galaxy advertises `StarPilot Galaxy._sp-galaxy._tcp.local` on port 8082.
+In **Galaxy → App Keys**, choose **Create Pairing QR**. The page shows both a QR
+code and a six-digit code for 10 minutes. An external app can scan the QR, or use
+mDNS to find the comma and submit the six-digit code.
+
+Pairing creation and exchange accept only RFC1918/link-local/loopback clients and
+local hostnames. A code is one-time, expires after 10 minutes, and is removed
+after five invalid attempts. The QR contains only the local exchange URL and the
+one-time code; it never contains a reusable bearer or Galaxy session.
+
+```http
+POST /api/external-app/pair
+Content-Type: application/json
+
+{
+  "code": "123456",
+  "clientName": "RangeBridge",
+  "requestedCapabilities": ["vehicleTelemetry"]
+}
+```
+
+The response supplies the local telemetry URL, path, and a client-specific bearer
+token. Each paired app gets its own token, so pairing a second app does not break
+the first. RangeBridge requests only `vehicleTelemetry`. Galaxy Nav can also
+request `galaxySession`; only that explicit capability returns the portal URL,
+cookie name, and Galaxy session token after the one-time LAN exchange.
+
 ## Push API
 
 StarPilot sends an authenticated JSON envelope to the configured URL. A live EV9
