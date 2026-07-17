@@ -334,10 +334,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     }
 
     if ((ev9_preinit_fingerprint == EV9_FP_REQUIRED) && ev9_preinit_required_baselines_ready()) {
-      ev9_preinit_attempts = 1U;
+      ev9_preinit_attempts = 0U;
       ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
       ev9_preinit_state_started_us = now_us;
-      ev9_preinit_send_diag(0x10U, 0x03U, 0U);
     }
   } else {
   }
@@ -345,7 +344,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   // The EV9 can return eight-byte UDS responses as either classic CAN or CAN FD.
   const bool diag_response = (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == EV9_PREINIT_DIAG_RESP_ADDR) &&
     (GET_LEN(packet) == 8U) && (packet->data[0] >= 3U) && (packet->data[0] <= 7U);
-  if (diag_response) {
+  const bool waiting_for_diag_response = (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
+                                         (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL);
+  if (diag_response && waiting_for_diag_response) {
     ev9_preinit_last_response = packet->data[1];
     ev9_preinit_last_nrc = packet->data[1] == 0x7FU ? packet->data[3] : 0U;
     if ((packet->data[1] == 0x7FU) && ((packet->data[2] == 0x10U) || (packet->data[2] == 0x28U))) {
@@ -409,6 +410,13 @@ static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
 }
 
 static void ev9_long_preinit_tick(uint32_t now_us) {
+  const bool preinit_owns_tx = (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
+                               (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) ||
+                               (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) ||
+                               (ev9_preinit_state == EV9_PREINIT_ACTIVE);
+  if (preinit_owns_tx && (current_safety_mode == SAFETY_NOOUTPUT)) {
+    heartbeat_counter = 0U;
+  }
   if ((ev9_preinit_state == EV9_PREINIT_ABORTED) || (ev9_preinit_state == EV9_PREINIT_HANDOFF)) {
     const bool aborted_heartbeat_stopped = (ev9_preinit_state == EV9_PREINIT_ABORTED) &&
       (ev9_preinit_last_stock_heartbeat_us != 0U) &&
@@ -427,6 +435,16 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     return;
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) || (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL)) {
+    if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (ev9_preinit_attempts == 0U)) {
+      if (current_safety_mode == SAFETY_SILENT) {
+        set_safety_mode(SAFETY_NOOUTPUT, 0U);
+      }
+      heartbeat_counter = 0U;
+      ev9_preinit_attempts = 1U;
+      ev9_preinit_state_started_us = now_us;
+      ev9_preinit_send_diag(0x10U, 0x03U, 0U);
+      return;
+    }
     if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
       if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_COMM_CONTROL_DELAY_US) {
         ev9_preinit_attempts = 1U;
