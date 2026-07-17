@@ -82,7 +82,7 @@ def _bounded_interval(value, default, minimum, maximum=3600.0):
   return max(minimum, min(maximum, parsed))
 
 
-def _atomic_write_json(path: Path, payload: dict, mode=0o600):
+def _atomic_write_json(path: Path, payload: dict, mode=0o600, durable=True):
   path = Path(path)
   path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
   try:
@@ -97,7 +97,8 @@ def _atomic_write_json(path: Path, payload: dict, mode=0o600):
     with os.fdopen(descriptor, "wb") as output:
       output.write(encoded)
       output.flush()
-      os.fsync(output.fileno())
+      if durable:
+        os.fsync(output.fileno())
     os.chmod(temp_path, mode)
     os.replace(temp_path, path)
   finally:
@@ -344,7 +345,9 @@ class VehicleTelemetryCache:
     self.latest = dict(snapshot)
     if signature == self._last_signature and not heartbeat_due:
       return False
-    _atomic_write_json(self.path, self.latest)
+    # Keep the 1 Hz driving cache off the synchronous storage path. Config and
+    # status writes remain durable; this cache is refreshed continuously.
+    _atomic_write_json(self.path, self.latest, durable=False)
     self._last_signature = signature
     self._last_write_monotonic = now_mono
     return True

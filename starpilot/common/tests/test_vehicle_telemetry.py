@@ -61,6 +61,18 @@ def test_persistent_cache_reports_live_then_cached(tmp_path):
   assert vehicle_telemetry.telemetry_response(snapshot, now=1100.0)["availability"] == "cached"
 
 
+def test_live_cache_does_not_fsync(tmp_path, monkeypatch):
+  fsync_calls = []
+  monkeypatch.setattr(vehicle_telemetry.os, "fsync", lambda descriptor: fsync_calls.append(descriptor))
+
+  cache = vehicle_telemetry.VehicleTelemetryCache(tmp_path / "latest.json")
+  assert cache.store({"schemaVersion": 1, "updatedAt": 1000.0, "stateOfChargePercent": 80.0})
+  assert fsync_calls == []
+
+  vehicle_telemetry.save_vehicle_telemetry_config({}, tmp_path / "config.json")
+  assert len(fsync_calls) == 1
+
+
 def test_telemetry_response_adds_configured_vehicle_identity():
   snapshot = {"schemaVersion": 1, "updatedAt": 1000.0, "stateOfChargePercent": 80.0}
 
