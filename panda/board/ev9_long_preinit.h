@@ -16,6 +16,7 @@
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
 #define EV9_PREINIT_SUPPRESSION_TIMEOUT_US 300000U
 #define EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US 2000000U
+#define EV9_PREINIT_COMM_CONTROL_DELAY_US 50000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
 
@@ -358,8 +359,7 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     } else if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (packet->data[1] == 0x50U) && (packet->data[2] == 0x03U)) {
       ev9_preinit_state = EV9_PREINIT_WAIT_COMM_CONTROL;
       ev9_preinit_state_started_us = now_us;
-      ev9_preinit_attempts = 1U;
-      ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
+      ev9_preinit_attempts = 0U;
     } else if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (packet->data[1] == 0x68U) && (packet->data[2] == 0x01U)) {
       // A positive response is not enough: the EV9 also acknowledges 28 01 01
       // without silencing every required stream. Wait for the ADAS frames to stop.
@@ -427,6 +427,14 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     return;
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) || (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL)) {
+    if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
+      if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_COMM_CONTROL_DELAY_US) {
+        ev9_preinit_attempts = 1U;
+        ev9_preinit_state_started_us = now_us;
+        ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
+      }
+      return;
+    }
     // Match the host's stock 100 ms response window plus 100 ms retry delay.
     if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) > EV9_PREINIT_RETRY_INTERVAL_US) {
       if (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS) {
