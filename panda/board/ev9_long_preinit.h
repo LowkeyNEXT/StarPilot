@@ -341,9 +341,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   } else {
   }
 
-  const bool diag_response = !packet->fd && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
-    (packet->addr == EV9_PREINIT_DIAG_RESP_ADDR) && (GET_LEN(packet) == 8U) &&
-    (packet->data[0] >= 3U) && (packet->data[0] <= 7U);
+  // The EV9 can return eight-byte UDS responses as either classic CAN or CAN FD.
+  const bool diag_response = (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == EV9_PREINIT_DIAG_RESP_ADDR) &&
+    (GET_LEN(packet) == 8U) && (packet->data[0] >= 3U) && (packet->data[0] <= 7U);
   if (diag_response) {
     ev9_preinit_last_response = packet->data[1];
     ev9_preinit_last_nrc = packet->data[1] == 0x7FU ? packet->data[3] : 0U;
