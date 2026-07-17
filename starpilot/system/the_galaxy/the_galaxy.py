@@ -3886,7 +3886,10 @@ def setup(app):
       response.headers["WWW-Authenticate"] = 'Bearer realm="vehicle-telemetry"'
       return response
 
-    response_payload = telemetry_response(VehicleTelemetryCache().load())
+    response_payload = telemetry_response(
+      VehicleTelemetryCache().load(),
+      vehicle_id=config["push"]["vehicleId"],
+    )
     if response_payload is None:
       return jsonify({"error": "No validated vehicle telemetry has been cached yet."}), 503
     response = jsonify(response_payload)
@@ -3901,7 +3904,10 @@ def setup(app):
 
     response = jsonify({
       "config": public_vehicle_telemetry_config(config),
-      "cache": telemetry_response(VehicleTelemetryCache().load()),
+      "cache": telemetry_response(
+        VehicleTelemetryCache().load(),
+        vehicle_id=config["push"]["vehicleId"],
+      ),
       "exporter": load_vehicle_telemetry_status(),
     })
     response.headers["Cache-Control"] = "no-store"
@@ -3937,6 +3943,9 @@ def setup(app):
     data = request.get_json(silent=True) or {}
     slug = _read_galaxy_text(GALAXY_SLUG_FILE)
     session_token = _build_galaxy_session_value(slug, _read_galaxy_text(GALAXY_SESSION_FILE))
+    requested_capabilities = data.get("requestedCapabilities") if isinstance(data.get("requestedCapabilities"), list) else None
+    if requested_capabilities and "galaxySession" in requested_capabilities and (not slug or not session_token):
+      return jsonify({"error": "Pair StarPilot Galaxy with its cloud portal before connecting this external app."}), 409
     legacy_connection = {
       "portalURL": f"https://galaxy.firestar.link/{slug}" if slug else "",
       "cookieName": GALAXY_COOKIE_NAME,
@@ -3946,7 +3955,7 @@ def setup(app):
       GALAXY_DIR,
       data.get("code", ""),
       data.get("clientName", "External app"),
-      requested_capabilities=data.get("requestedCapabilities") if isinstance(data.get("requestedCapabilities"), list) else None,
+      requested_capabilities=requested_capabilities,
       legacy_connection=legacy_connection,
     )
     if error:

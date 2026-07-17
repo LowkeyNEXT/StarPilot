@@ -11,6 +11,7 @@ import hmac
 import json
 import math
 import os
+import re
 import threading
 import time
 
@@ -302,19 +303,25 @@ def _vehicle_telemetry_signature(payload):
   return tuple(payload.get(key) for key in _TELEMETRY_FIELDS if key != "updatedAt")
 
 
-def telemetry_response(snapshot, now=None):
+def telemetry_response(snapshot, now=None, vehicle_id=""):
   if not isinstance(snapshot, dict):
     return None
   timestamp = time.time() if now is None else float(now)  # noqa: TID251 - compare persisted wall-clock timestamp
   updated_at = _finite_float(snapshot.get("updatedAt"), 0.0)
   age_seconds = max(0.0, timestamp - updated_at) if updated_at > 0.0 else None
   is_live = age_seconds is not None and age_seconds <= VEHICLE_TELEMETRY_LIVE_SECONDS
-  return {
+  response = {
     **snapshot,
     "availability": "live" if is_live else "cached",
     "isLive": is_live,
     "ageSeconds": round(age_seconds, 1) if age_seconds is not None else None,
   }
+  identifier = str(vehicle_id or "").strip()[:128]
+  if identifier:
+    response["vehicleId"] = identifier
+    if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", identifier, re.IGNORECASE):
+      response["vin"] = identifier.upper()
+  return response
 
 
 class VehicleTelemetryCache:

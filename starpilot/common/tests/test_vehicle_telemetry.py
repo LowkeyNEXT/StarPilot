@@ -61,6 +61,28 @@ def test_persistent_cache_reports_live_then_cached(tmp_path):
   assert vehicle_telemetry.telemetry_response(snapshot, now=1100.0)["availability"] == "cached"
 
 
+def test_telemetry_response_adds_configured_vehicle_identity():
+  snapshot = {"schemaVersion": 1, "updatedAt": 1000.0, "stateOfChargePercent": 80.0}
+
+  response = vehicle_telemetry.telemetry_response(
+    snapshot,
+    now=1010.0,
+    vehicle_id="5xyaefs52tg015616",
+  )
+
+  assert response["vehicleId"] == "5xyaefs52tg015616"
+  assert response["vin"] == "5XYAEFS52TG015616"
+
+
+def test_non_vin_vehicle_identity_is_not_exposed_as_vin():
+  snapshot = {"schemaVersion": 1, "updatedAt": 1000.0, "stateOfChargePercent": 80.0}
+
+  response = vehicle_telemetry.telemetry_response(snapshot, now=1010.0, vehicle_id="my-ev")
+
+  assert response["vehicleId"] == "my-ev"
+  assert "vin" not in response
+
+
 def test_config_is_owner_only_https_and_secret_redacted(tmp_path):
   config_path = tmp_path / "vehicle_telemetry.json"
   raw = {
