@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <memory>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #include "cereal/gen/cpp/car.capnp.h"
@@ -58,6 +59,19 @@ static bool is_tesla_preap(Params &params) {
     return cp.getCarFingerprint() == "TESLA_MODEL_S_PREAP";
   } catch (...) {
     return false;
+  }
+}
+
+static const char *ev9_preinit_state_name(uint8_t state) {
+  switch (state) {
+    case EV9_PREINIT_COLLECTING: return "collecting";
+    case EV9_PREINIT_WAIT_SESSION: return "wait_session";
+    case EV9_PREINIT_WAIT_COMM_CONTROL: return "wait_comm_control";
+    case EV9_PREINIT_WAIT_SUPPRESSION: return "wait_suppression";
+    case EV9_PREINIT_ACTIVE: return "active";
+    case EV9_PREINIT_HANDOFF: return "handoff";
+    case EV9_PREINIT_ABORTED: return "aborted";
+    default: return "unknown";
   }
 }
 
@@ -362,6 +376,7 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
 
 void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engaged, bool is_onroad,
                          bool spoofing_started, bool ignore_ignition_line) {
+  static std::unordered_map<std::string, uint64_t> ev9_preinit_statuses;
   std::vector<std::string> connected_serials;
   for (Panda *p : pandas) {
     connected_serials.push_back(p->hw_serial());
@@ -398,6 +413,23 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
     }
 
     for (const auto &panda : pandas) {
+      if (getenv("BOARDD_EV9_LONG_PREINIT")) {
+        const auto status = panda->get_ev9_long_preinit_status();
+        if (status && status->version == EV9_LONG_PREINIT_STATUS_VERSION) {
+          const uint64_t summary = status->state | (status->fingerprint << 8U) | (status->attempts << 16U) |
+                                   (status->last_service << 24U) | ((uint64_t)status->last_response << 32U) |
+                                   ((uint64_t)status->last_nrc << 40U);
+          const std::string serial = panda->hw_serial();
+          const auto previous_status = ev9_preinit_statuses.find(serial);
+          if (previous_status == ev9_preinit_statuses.end() || previous_status->second != summary) {
+            ev9_preinit_statuses[serial] = summary;
+            LOGW("EV9 Panda preinit state=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_can_us=%u state_started_us=%u",
+                 ev9_preinit_state_name(status->state), status->state, status->fingerprint, status->attempts,
+                 status->last_service, status->last_response, status->last_nrc, status->first_can_us,
+                 status->state_started_us);
+          }
+        }
+      }
       panda->send_heartbeat(engaged);
     }
   }

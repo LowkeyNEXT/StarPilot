@@ -229,9 +229,13 @@ def main() -> None:
           cloudlog.event("panda.som_reset_triggered", health=health, serial=panda.get_usb_serial())
 
         if first_run:
-          # reset panda to ensure we're in a good state
-          cloudlog.info(f"Resetting panda {panda.get_usb_serial()}")
-          panda.reset(reconnect=True)
+          if ev9_long_preinit:
+            cloudlog.warning(f"Preserving EV9 Panda preinit state on {panda.get_usb_serial()}: "
+                             f"{panda.get_ev9_long_preinit_status()}")
+          else:
+            # reset panda to ensure we're in a good state
+            cloudlog.info(f"Resetting panda {panda.get_usb_serial()}")
+            panda.reset(reconnect=True)
 
       for p in pandas:
         p.close()
@@ -255,6 +259,10 @@ def main() -> None:
       os.environ["BOARDD_SKIP_FW_CHECK"] = "1"
     else:
       os.environ.pop("BOARDD_SKIP_FW_CHECK", None)
+    if get_ev9_long_preinit_panda(params):
+      os.environ["BOARDD_EV9_LONG_PREINIT"] = "1"
+    else:
+      os.environ.pop("BOARDD_EV9_LONG_PREINIT", None)
     os.environ['MANAGER_DAEMON'] = 'pandad'
     process = subprocess.Popen(["./pandad", *panda_serials], cwd=os.path.join(BASEDIR, "selfdrive/pandad"))
     process.wait()

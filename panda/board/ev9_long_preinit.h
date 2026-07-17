@@ -1,5 +1,7 @@
 #pragma once
 
+#include "board/ev9_long_preinit_status.h"
+
 // Early bridge for the EV9 ADAS communication-control startup race. This is
 // only compiled into EV9 preinit firmware and never sends active actuation.
 
@@ -13,18 +15,9 @@
 #define EV9_PREINIT_HEARTBEAT_INTERVAL_US 10000U
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
 #define EV9_PREINIT_SUPPRESSION_TIMEOUT_US 300000U
+#define EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US 2000000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
-
-typedef enum {
-  EV9_PREINIT_COLLECTING = 0,
-  EV9_PREINIT_WAIT_SESSION,
-  EV9_PREINIT_WAIT_COMM_CONTROL,
-  EV9_PREINIT_WAIT_SUPPRESSION,
-  EV9_PREINIT_ACTIVE,
-  EV9_PREINIT_HANDOFF,
-  EV9_PREINIT_ABORTED,
-} ev9_preinit_state_t;
 
 typedef struct {
   uint16_t addr;
@@ -84,11 +77,15 @@ static uint32_t ev9_preinit_last_tester_present_us = 0U;
 static uint32_t ev9_preinit_last_heartbeat_tx_us = 0U;
 static uint32_t ev9_preinit_last_vehicle_frame_us = 0U;
 static uint32_t ev9_preinit_last_adas_frame_us = 0U;
+static uint32_t ev9_preinit_last_stock_heartbeat_us = 0U;
 static uint8_t ev9_preinit_attempts = 0U;
 static uint8_t ev9_preinit_fingerprint = 0U;
 static uint8_t ev9_preinit_heartbeat_counter = 0U;
 static bool ev9_preinit_host_heartbeat = false;
 static bool ev9_preinit_host_scc = false;
+static uint8_t ev9_preinit_last_service = 0U;
+static uint8_t ev9_preinit_last_response = 0U;
+static uint8_t ev9_preinit_last_nrc = 0U;
 static CANPacket_t ev9_preinit_heartbeat_packet;
 
 #define EV9_FP_HEARTBEAT 0x01U
@@ -153,6 +150,9 @@ static CANPacket_t ev9_preinit_make_packet(uint16_t addr, uint8_t bus, uint8_t l
 }
 
 static void ev9_preinit_send_diag(uint8_t service, uint8_t subfunction, uint8_t control_type) {
+  ev9_preinit_last_service = service;
+  ev9_preinit_last_response = 0U;
+  ev9_preinit_last_nrc = 0U;
   CANPacket_t packet = ev9_preinit_make_packet(EV9_PREINIT_DIAG_ADDR, EV9_PREINIT_BUS_ECAN, 8U);
   if (service == 0x28U) {
     packet.data[0] = 3U;
@@ -172,8 +172,9 @@ static void ev9_preinit_restore(void) {
   ev9_preinit_send_diag(0x28U, 0x00U, EV9_PREINIT_COMMUNICATION_TYPE);
 }
 
-static void ev9_preinit_abort(void) {
+static void ev9_preinit_abort(uint32_t now_us) {
   ev9_preinit_state = EV9_PREINIT_ABORTED;
+  ev9_preinit_state_started_us = now_us;
 }
 
 static void ev9_long_preinit_init(void) {
@@ -184,11 +185,15 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_last_heartbeat_tx_us = 0U;
   ev9_preinit_last_vehicle_frame_us = 0U;
   ev9_preinit_last_adas_frame_us = 0U;
+  ev9_preinit_last_stock_heartbeat_us = 0U;
   ev9_preinit_attempts = 0U;
   ev9_preinit_fingerprint = 0U;
   ev9_preinit_heartbeat_counter = 0U;
   ev9_preinit_host_heartbeat = false;
   ev9_preinit_host_scc = false;
+  ev9_preinit_last_service = 0U;
+  ev9_preinit_last_response = 0U;
+  ev9_preinit_last_nrc = 0U;
   ev9_preinit_heartbeat_packet = ev9_preinit_make_packet(0x100U, EV9_PREINIT_BUS_RADAR, 24U);
   (void)memcpy(ev9_preinit_heartbeat_packet.data, ev9_preinit_heartbeat_template, sizeof(ev9_preinit_heartbeat_template));
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
@@ -275,6 +280,10 @@ static void ev9_preinit_neutralize(CANPacket_t *packet) {
 }
 
 static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us) {
+  const bool stock_heartbeat = ev9_preinit_is_stock_heartbeat(packet);
+  if (stock_heartbeat) {
+    ev9_preinit_last_stock_heartbeat_us = now_us;
+  }
   if (((packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) ||
       ((packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0xA0U) && (GET_LEN(packet) == 24U))) {
     ev9_preinit_last_vehicle_frame_us = now_us;
@@ -290,7 +299,7 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
     const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
     const bool valid_canfd_crc = packet->fd && (ev9_preinit_crc(packet) == checksum);
-    if (ev9_preinit_is_stock_heartbeat(packet)) {
+    if (stock_heartbeat) {
       ev9_preinit_fingerprint |= EV9_FP_HEARTBEAT;
       if (ev9_preinit_first_can_us == 0U) {
         ev9_preinit_first_can_us = now_us;
@@ -336,8 +345,16 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     (packet->addr == EV9_PREINIT_DIAG_RESP_ADDR) && (GET_LEN(packet) == 8U) &&
     (packet->data[0] >= 3U) && (packet->data[0] <= 7U);
   if (diag_response) {
+    ev9_preinit_last_response = packet->data[1];
+    ev9_preinit_last_nrc = packet->data[1] == 0x7FU ? packet->data[3] : 0U;
     if ((packet->data[1] == 0x7FU) && ((packet->data[2] == 0x10U) || (packet->data[2] == 0x28U))) {
-      ev9_preinit_abort();
+      const bool retryable = (packet->data[2] == ev9_preinit_last_service) && (packet->data[3] == 0x22U) &&
+                             (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS);
+      if (retryable) {
+        ev9_preinit_state_started_us = now_us;
+      } else {
+        ev9_preinit_abort(now_us);
+      }
     } else if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (packet->data[1] == 0x50U) && (packet->data[2] == 0x03U)) {
       ev9_preinit_state = EV9_PREINIT_WAIT_COMM_CONTROL;
       ev9_preinit_state_started_us = now_us;
@@ -352,6 +369,21 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     } else {
     }
   }
+}
+
+static ev9_long_preinit_status_t ev9_long_preinit_get_status(void) {
+  return (ev9_long_preinit_status_t) {
+    .version = EV9_LONG_PREINIT_STATUS_VERSION,
+    .state = (uint8_t)ev9_preinit_state,
+    .fingerprint = ev9_preinit_fingerprint,
+    .attempts = ev9_preinit_attempts,
+    .last_service = ev9_preinit_last_service,
+    .last_response = ev9_preinit_last_response,
+    .last_nrc = ev9_preinit_last_nrc,
+    .communication_type = EV9_PREINIT_COMMUNICATION_TYPE,
+    .first_can_us = ev9_preinit_first_can_us,
+    .state_started_us = ev9_preinit_state_started_us,
+  };
 }
 
 static void ev9_preinit_start_bridge(uint32_t now_us) {
@@ -378,15 +410,19 @@ static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
 
 static void ev9_long_preinit_tick(uint32_t now_us) {
   if ((ev9_preinit_state == EV9_PREINIT_ABORTED) || (ev9_preinit_state == EV9_PREINIT_HANDOFF)) {
-    if ((ev9_preinit_last_vehicle_frame_us != 0U) &&
-        (get_ts_elapsed(now_us, ev9_preinit_last_vehicle_frame_us) > 5000000U)) {
+    const bool aborted_heartbeat_stopped = (ev9_preinit_state == EV9_PREINIT_ABORTED) &&
+      (ev9_preinit_last_stock_heartbeat_us != 0U) &&
+      (get_ts_elapsed(now_us, ev9_preinit_last_stock_heartbeat_us) > EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US);
+    const bool vehicle_bus_stopped = (ev9_preinit_last_vehicle_frame_us != 0U) &&
+      (get_ts_elapsed(now_us, ev9_preinit_last_vehicle_frame_us) > 5000000U);
+    if (aborted_heartbeat_stopped || vehicle_bus_stopped) {
       ev9_long_preinit_init();
     }
     return;
   }
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
     if ((ev9_preinit_first_can_us != 0U) && (get_ts_elapsed(now_us, ev9_preinit_first_can_us) > EV9_PREINIT_FINGERPRINT_TIMEOUT_US)) {
-      ev9_preinit_abort();
+      ev9_preinit_abort(now_us);
     }
     return;
   }
@@ -402,7 +438,7 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
           ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
         }
       } else {
-        ev9_preinit_abort();
+        ev9_preinit_abort(now_us);
       }
     }
     return;
@@ -412,7 +448,7 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
       ev9_preinit_start_bridge(now_us);
     } else if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_SUPPRESSION_TIMEOUT_US) {
       ev9_preinit_restore();
-      ev9_preinit_abort();
+      ev9_preinit_abort(now_us);
     }
     return;
   }

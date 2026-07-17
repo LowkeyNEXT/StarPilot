@@ -118,6 +118,12 @@ std::optional<can_health_t> Panda::get_can_state(uint16_t can_number) {
   return err >= 0 ? std::make_optional(can_health) : std::nullopt;
 }
 
+std::optional<ev9_long_preinit_status_t> Panda::get_ev9_long_preinit_status() {
+  ev9_long_preinit_status_t status = {0};
+  int err = handle->control_read(0xe9, 0, 0, (unsigned char*)&status, sizeof(status));
+  return err == sizeof(status) ? std::make_optional(status) : std::nullopt;
+}
+
 void Panda::set_loopback(bool loopback) {
   handle->control_write(0xe5, loopback, 0);
 }

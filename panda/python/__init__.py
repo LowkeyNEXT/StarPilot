@@ -125,6 +125,7 @@ class Panda:
   CAN_HEALTH_PACKET_VERSION = 5
   HEALTH_STRUCT = struct.Struct("<IIIIIIIIBBBBBHBBBHfBBHBHHB")
   CAN_HEALTH_STRUCT = struct.Struct("<BIBBBBBBBBIIIIIIIHHBBBIIII")
+  EV9_LONG_PREINIT_STATUS_STRUCT = struct.Struct("<8BII")
 
   F4_DEVICES = [HW_TYPE_WHITE, HW_TYPE_BLACK, HW_TYPE_DOS]
   H7_DEVICES = [HW_TYPE_RED_PANDA, HW_TYPE_TRES, HW_TYPE_CUATRO, HW_TYPE_BODY]
@@ -600,6 +601,24 @@ class Panda:
       "irq1_call_rate": a[23],
       "irq2_call_rate": a[24],
       "can_core_reset_count": a[25],
+    }
+
+  def get_ev9_long_preinit_status(self):
+    dat = self._handle.controlRead(Panda.REQUEST_IN, 0xe9, 0, 0, self.EV9_LONG_PREINIT_STATUS_STRUCT.size)
+    if len(dat) != self.EV9_LONG_PREINIT_STATUS_STRUCT.size:
+      return None
+    a = self.EV9_LONG_PREINIT_STATUS_STRUCT.unpack(dat)
+    return {
+      "version": a[0],
+      "state": a[1],
+      "fingerprint": a[2],
+      "attempts": a[3],
+      "last_service": a[4],
+      "last_response": a[5],
+      "last_nrc": a[6],
+      "communication_type": a[7],
+      "first_can_us": a[8],
+      "state_started_us": a[9],
     }
 
   # ******************* control *******************

@@ -272,6 +272,16 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
     case 0xe8:
       bus_config[req->param1].canfd_auto = req->param2 > 0U;
       break;
+    #ifdef PANDA_EV9_LONG_PREINIT
+    // **** 0xe9: get EV9 early longitudinal initialization status
+    case 0xe9: {
+      const ev9_long_preinit_status_t status = ev9_long_preinit_get_status();
+      COMPILE_TIME_ASSERT(sizeof(status) <= USBPACKET_MAX_SIZE);
+      (void)memcpy(resp, (const uint8_t *)&status, sizeof(status));
+      resp_len = sizeof(status);
+      break;
+    }
+    #endif
     // **** 0xf1: Clear CAN ring buffer.
     case 0xf1:
       if (req->param1 == 0xFFFFU) {
