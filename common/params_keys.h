@@ -286,7 +286,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicPathWidth", {PERSISTENT, BOOL, "0", "0", 2}},
     {"DynamicPedalsOnUI", {PERSISTENT, BOOL, "1", "0", 1}},
     {"EngageVolume", {PERSISTENT, INT, "101", "101", 2}},
-    {"EV9LongPreinitPanda", {PERSISTENT, BOOL, "1", "1"}},
+    {"EV9LongPreinitPanda", {PERSISTENT, BOOL, "0", "0"}},
     {"EVTuning", {PERSISTENT, BOOL, "0", "0", 3}},
     {"Fahrenheit", {PERSISTENT, BOOL, "0", "0", 3}},
     {"FlashPanda", {CLEAR_ON_MANAGER_START, BOOL, "0", "0"}},
