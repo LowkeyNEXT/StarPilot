@@ -832,7 +832,7 @@ class CarController(CarControllerBase):
                                                                          CS.right_blindspot_from_radar,
                                                                          CC.leftBlinker,
                                                                          CC.rightBlinker))
-      if self.CP.carFingerprint in (CAR.HYUNDAI_IONIQ_6, CAR.KIA_EV9) and lane_change_ui_side is None:
+      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and lane_change_ui_side is None:
         can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_blindspot_messages(self.CAN, self.frame,
                                                                                  CS.left_blindspot_from_radar,
                                                                                  CS.right_blindspot_from_radar,
