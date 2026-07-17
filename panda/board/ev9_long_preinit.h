@@ -216,18 +216,19 @@ static void ev9_long_preinit_init(void) {
   }
 }
 
-static bool ev9_preinit_heartbeat_matches(const CANPacket_t *packet) {
+static bool ev9_preinit_is_stock_heartbeat(const CANPacket_t *packet) {
   const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
   if (!packet->fd || (packet->bus != EV9_PREINIT_BUS_RADAR) || (packet->addr != 0x100U) ||
       (GET_LEN(packet) != 24U) || (ev9_preinit_crc(packet) != checksum)) {
     return false;
   }
-  for (uint8_t i = 3U; i < 24U; i++) {
-    if ((i != 4U) && (i != 22U) && (packet->data[i] != ev9_preinit_heartbeat_template[i])) {
-      return false;
-    }
-  }
-  return true;
+  return (packet->data[3] == 0x00U) && (packet->data[7] == 0xFFU) &&
+         (packet->data[8] == 0x00U) && (packet->data[9] == 0x00U) &&
+         (packet->data[10] == 0x00U) && (packet->data[11] == 0x00U) &&
+         (packet->data[14] == 0x00U) && (packet->data[17] == 0xFFU) &&
+         (packet->data[18] == 0xFFU) && (packet->data[19] == 0x00U) &&
+         (packet->data[21] == 0x00U) && (packet->data[22] == 0x00U) &&
+         (packet->data[23] == 0x00U);
 }
 
 static bool ev9_preinit_required_baselines_ready(void) {
@@ -289,9 +290,8 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
     const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
     const bool valid_canfd_crc = packet->fd && (ev9_preinit_crc(packet) == checksum);
-    if (ev9_preinit_heartbeat_matches(packet)) {
+    if (ev9_preinit_is_stock_heartbeat(packet)) {
       ev9_preinit_fingerprint |= EV9_FP_HEARTBEAT;
-      ev9_preinit_heartbeat_packet = *packet;
       if (ev9_preinit_first_can_us == 0U) {
         ev9_preinit_first_can_us = now_us;
       }
