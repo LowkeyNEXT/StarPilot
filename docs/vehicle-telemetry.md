@@ -118,9 +118,17 @@ Content-Type: application/json
 
 The response supplies the local telemetry URL, path, and a client-specific bearer
 token. Each paired app gets its own token, so pairing a second app does not break
-the first. RangeBridge requests only `vehicleTelemetry`. Galaxy Nav can also
-request `galaxySession`; only that explicit capability returns the portal URL,
-cookie name, and Galaxy session token after the one-time LAN exchange.
+the first. RangeBridge requests `vehicleTelemetry` and `galaxySession` for LAN and
+remote fallback. Galaxy Nav can use the same capability contract; only an explicit
+`galaxySession` request returns the portal URL, cookie name, and Galaxy session
+token after the one-time LAN exchange.
+
+The hosted Galaxy tunnel preserves the device routing slug when forwarding API
+requests. Remote telemetry therefore uses
+`https://galaxy.firestar.link/<slug>/api/vehicle/telemetry` with both the paired
+Galaxy cookie and the app-specific telemetry bearer. Galaxy exposes that exact
+slug-prefixed route and rejects a slug that does not match the device's current
+registration. LAN clients continue to use `/api/vehicle/telemetry` directly.
 
 ## Push API
 
