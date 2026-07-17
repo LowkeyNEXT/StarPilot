@@ -14,7 +14,7 @@ from openpilot.starpilot.system.vehicle_telemetry import (
 
 
 def vehicle_telemetry_thread():
-  sm = messaging.SubMaster(["carState", "carParams"])
+  sm = messaging.SubMaster(["carState", "carParams", "deviceState"])
   cache = VehicleTelemetryCache()
   publisher = VehicleTelemetryPublisher()
   publisher.start()
@@ -25,6 +25,9 @@ def vehicle_telemetry_thread():
   ratekeeper = Ratekeeper(1.0, None)
   while True:
     sm.update(0)
+    if sm.updated["deviceState"] and sm.valid["deviceState"]:
+      publisher.set_onroad(sm["deviceState"].started)
+
     if sm.updated["carParams"] and sm.valid["carParams"]:
       fingerprint = str(sm["carParams"].carFingerprint)
 

@@ -122,10 +122,12 @@ hour**. Including HTTP headers and normal TLS/TCP overhead, budget roughly **0.1
 2 KiB/hour. Connection behavior and mobile-network retransmissions can raise actual
 on-wire usage.
 
-The publisher sends immediately on startup/activity transitions, periodically at
-the configured activity interval, and when parked data materially changes. Failed
-requests use bounded exponential backoff. Tokens remain in headers and are never
-written into the payload or diagnostic status file.
+The publisher uses openpilot's on-road state for driving cadence, so traffic lights
+and other momentary stops do not create parked/driving transition uploads. Charging
+takes priority over on-road state. It sends immediately on startup/activity
+transitions, periodically at the configured activity interval, and when parked data
+materially changes. Failed requests use bounded exponential backoff. Tokens remain
+in headers and are never written into the payload or diagnostic status file.
 
 ## Adding vehicle support
 

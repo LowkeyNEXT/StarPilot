@@ -271,9 +271,11 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
   return {key: value for key, value in payload.items() if value is not None}
 
 
-def vehicle_telemetry_activity(payload):
+def vehicle_telemetry_activity(payload, is_onroad=None):
   if payload.get("isCharging") is True:
     return "charging"
+  if is_onroad is not None:
+    return "driving" if is_onroad else "parked"
   if abs(_finite_float(payload.get("speedMetersPerSecond"), 0.0)) >= 0.5:
     return "driving"
   return "parked"
@@ -333,6 +335,7 @@ class VehicleTelemetryPublisher:
     self.session.trust_env = False
     self._condition = threading.Condition()
     self._latest = None
+    self._is_onroad = None
     self._thread = None
 
   def start(self):
@@ -350,6 +353,13 @@ class VehicleTelemetryPublisher:
       previous = self._latest
       self._latest = compact
       if previous is None or _vehicle_telemetry_signature(previous) != _vehicle_telemetry_signature(compact):
+        self._condition.notify()
+
+  def set_onroad(self, is_onroad):
+    with self._condition:
+      previous = self._is_onroad
+      self._is_onroad = bool(is_onroad)
+      if previous is None or previous != self._is_onroad:
         self._condition.notify()
 
   def _config(self):
@@ -410,12 +420,13 @@ class VehicleTelemetryPublisher:
       push = config["push"]
       with self._condition:
         snapshot = dict(self._latest) if self._latest is not None else None
+        is_onroad = self._is_onroad
       if not push["enabled"] or snapshot is None:
         self._wait(30.0 if not push["enabled"] else 5.0)
         continue
 
       now_mono = time.monotonic()
-      activity = vehicle_telemetry_activity(snapshot)
+      activity = vehicle_telemetry_activity(snapshot, is_onroad)
       signature = _vehicle_telemetry_signature(snapshot)
       interval = push[f"{activity}IntervalSeconds"]
       first_push = last_activity is None

@@ -37,6 +37,16 @@ def test_default_zero_car_state_is_not_valid_telemetry():
   )) is None
 
 
+def test_activity_uses_onroad_state_instead_of_instantaneous_speed():
+  stopped = {"speedMetersPerSecond": 0.0, "standstill": True, "isCharging": False}
+  moving = {"speedMetersPerSecond": 20.0, "standstill": False, "isCharging": False}
+
+  assert vehicle_telemetry.vehicle_telemetry_activity(stopped, is_onroad=True) == "driving"
+  assert vehicle_telemetry.vehicle_telemetry_activity(moving, is_onroad=False) == "parked"
+  assert vehicle_telemetry.vehicle_telemetry_activity({**stopped, "isCharging": True}, is_onroad=True) == "charging"
+  assert vehicle_telemetry.vehicle_telemetry_activity(moving) == "driving"
+
+
 def test_persistent_cache_reports_live_then_cached(tmp_path):
   cache_path = tmp_path / "latest.json"
   cache = vehicle_telemetry.VehicleTelemetryCache(cache_path, heartbeat_seconds=60)
@@ -169,3 +179,13 @@ def test_publisher_disables_redirects_and_keeps_token_in_header_only(tmp_path):
   assert session.request[1]["headers"]["Authorization"] == f"Bearer {'t' * 32}"
   assert "token" not in session.request[1]["json"]
   assert session.response.closed
+
+
+def test_publisher_tracks_onroad_state_without_mutating_telemetry(tmp_path):
+  publisher = vehicle_telemetry.VehicleTelemetryPublisher(status_path=tmp_path / "status.json", session=FakeSession())
+  snapshot = {"updatedAt": 1234.5, "stateOfChargePercent": 80.0, "speedMetersPerSecond": 0.0}
+  publisher.submit(snapshot)
+  publisher.set_onroad(True)
+
+  assert publisher._is_onroad is True
+  assert publisher._latest == {"stateOfChargePercent": 80.0, "speedMetersPerSecond": 0.0, "updatedAt": 1234.5}
