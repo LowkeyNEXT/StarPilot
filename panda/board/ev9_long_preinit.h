@@ -197,6 +197,7 @@ static void ev9_preinit_snapshot_outcome(void) {
 }
 
 static void ev9_long_preinit_init(void) {
+  gen_crc_lookup_table_16(0x1021U, hyundai_canfd_crc_lut);
   ev9_preinit_state = EV9_PREINIT_COLLECTING;
   ev9_preinit_first_can_us = 0U;
   ev9_preinit_state_started_us = 0U;
