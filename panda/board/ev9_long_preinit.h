@@ -87,6 +87,7 @@ static bool ev9_preinit_host_scc = false;
 static uint8_t ev9_preinit_last_service = 0U;
 static uint8_t ev9_preinit_last_response = 0U;
 static uint8_t ev9_preinit_last_nrc = 0U;
+static bool ev9_preinit_pre_ready = false;
 static CANPacket_t ev9_preinit_heartbeat_packet;
 static bool ev9_preinit_last_outcome_valid = false;
 static ev9_long_preinit_status_t ev9_preinit_last_outcome;
@@ -214,6 +215,7 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_last_service = 0U;
   ev9_preinit_last_response = 0U;
   ev9_preinit_last_nrc = 0U;
+  ev9_preinit_pre_ready = false;
   ev9_preinit_heartbeat_packet = ev9_preinit_make_packet(0x100U, EV9_PREINIT_BUS_RADAR, 24U);
   (void)memcpy(ev9_preinit_heartbeat_packet.data, ev9_preinit_heartbeat_template, sizeof(ev9_preinit_heartbeat_template));
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
@@ -299,6 +301,40 @@ static void ev9_preinit_neutralize(CANPacket_t *packet) {
   }
 }
 
+static void ev9_preinit_advance_diag(uint32_t now_us) {
+  if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (ev9_preinit_attempts == 0U)) {
+    ev9_preinit_attempts = 1U;
+    ev9_preinit_state_started_us = now_us;
+    ev9_preinit_send_diag(0x10U, 0x03U, 0U);
+    return;
+  }
+  if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
+    if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_COMM_CONTROL_DELAY_US) {
+      ev9_preinit_attempts = 1U;
+      ev9_preinit_state_started_us = now_us;
+      ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
+    }
+    return;
+  }
+  if (((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
+       (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL)) &&
+      (get_ts_elapsed(now_us, ev9_preinit_state_started_us) > EV9_PREINIT_RETRY_INTERVAL_US)) {
+    if (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS) {
+      ev9_preinit_attempts += 1U;
+      ev9_preinit_state_started_us = now_us;
+      if (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) {
+        ev9_preinit_send_diag(0x10U, 0x03U, 0U);
+      } else {
+        ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
+      }
+    } else {
+      ev9_preinit_abort(now_us);
+    }
+  }
+}
+
+static void ev9_preinit_service_bridge(uint32_t now_us);
+
 static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us) {
   const bool stock_heartbeat = ev9_preinit_is_stock_heartbeat(packet);
   if (stock_heartbeat) {
@@ -312,8 +348,14 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     return;
   }
 
-  if ((ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) && ev9_preinit_is_adas_frame(packet)) {
+  const bool adas_frame = ev9_preinit_is_adas_frame(packet);
+  if ((ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) && adas_frame) {
     ev9_preinit_last_adas_frame_us = now_us;
+  }
+  if ((ev9_preinit_state == EV9_PREINIT_ACTIVE) && adas_frame) {
+    ev9_preinit_restore();
+    ev9_preinit_abort(now_us);
+    return;
   }
 
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
@@ -326,6 +368,8 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
       }
     } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) {
       ev9_preinit_fingerprint |= EV9_FP_POWERTRAIN;
+      // Byte 4 stays at 0x10 through IGN-ON and clears when READY begins.
+      ev9_preinit_pre_ready = packet->data[4] == 0x10U;
     } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0xA0U) && (GET_LEN(packet) == 24U)) {
       ev9_preinit_fingerprint |= EV9_FP_WHEEL_SPEEDS;
     } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x1A0U) && (GET_LEN(packet) == 32U)) {
@@ -353,9 +397,13 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     }
 
     if ((ev9_preinit_fingerprint == EV9_FP_REQUIRED) && ev9_preinit_required_baselines_ready()) {
-      ev9_preinit_attempts = 0U;
-      ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
-      ev9_preinit_state_started_us = now_us;
+      if (ev9_preinit_pre_ready) {
+        ev9_preinit_attempts = 0U;
+        ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
+        ev9_preinit_state_started_us = now_us;
+      } else {
+        ev9_preinit_abort(now_us);
+      }
     }
   } else {
   }
@@ -389,6 +437,8 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     } else {
     }
   }
+  ev9_preinit_advance_diag(now_us);
+  ev9_preinit_service_bridge(now_us);
 }
 
 static ev9_long_preinit_status_t ev9_long_preinit_get_status(void) {
@@ -419,6 +469,49 @@ static void ev9_preinit_start_bridge(uint32_t now_us) {
   }
 }
 
+static void ev9_preinit_service_bridge(uint32_t now_us) {
+  if (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) {
+    if (get_ts_elapsed(now_us, ev9_preinit_last_adas_frame_us) >= EV9_PREINIT_SUPPRESSION_QUIET_US) {
+      ev9_preinit_start_bridge(now_us);
+    } else if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_SUPPRESSION_TIMEOUT_US) {
+      ev9_preinit_restore();
+      ev9_preinit_abort(now_us);
+    }
+  }
+  if (ev9_preinit_state != EV9_PREINIT_ACTIVE) {
+    return;
+  }
+
+  // Until host handoff, the returned tester-present frame also advertises that
+  // Panda owns the successful knockout. The host resumes the normal 1 Hz rate.
+  if (get_ts_elapsed(now_us, ev9_preinit_last_tester_present_us) >= EV9_PREINIT_TESTER_PRESENT_INTERVAL_US) {
+    ev9_preinit_last_tester_present_us = now_us;
+    ev9_preinit_send_diag(0x3EU, 0x80U, 0U);
+  }
+
+  if (get_ts_elapsed(now_us, ev9_preinit_last_heartbeat_tx_us) >= EV9_PREINIT_HEARTBEAT_INTERVAL_US) {
+    CANPacket_t heartbeat = ev9_preinit_heartbeat_packet;
+    heartbeat.data[2] = ev9_preinit_heartbeat_counter++;
+    ev9_preinit_update_crc(&heartbeat);
+    ev9_preinit_heartbeat_packet = heartbeat;
+    ev9_preinit_last_heartbeat_tx_us = now_us;
+    can_send(&heartbeat, EV9_PREINIT_BUS_RADAR, true);
+  }
+
+  for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
+    ev9_preinit_replay_t *replay = &ev9_preinit_replay[i];
+    if (replay->captured && (get_ts_elapsed(now_us, replay->last_tx_us) >= replay->period_us)) {
+      CANPacket_t packet = replay->packet;
+      packet.data[2] += 1U;
+      ev9_preinit_neutralize(&packet);
+      ev9_preinit_update_crc(&packet);
+      replay->packet = packet;
+      replay->last_tx_us = now_us;
+      can_send(&packet, EV9_PREINIT_BUS_ECAN, true);
+    }
+  }
+}
+
 static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
   if (ev9_preinit_state != EV9_PREINIT_ACTIVE) {
     return;
@@ -437,6 +530,9 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
                                (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) ||
                                (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) ||
                                (ev9_preinit_state == EV9_PREINIT_ACTIVE);
+  if (preinit_owns_tx && (current_safety_mode == SAFETY_SILENT)) {
+    set_safety_mode(SAFETY_NOOUTPUT, 0U);
+  }
   if (preinit_owns_tx && (current_safety_mode == SAFETY_NOOUTPUT)) {
     heartbeat_counter = 0U;
   }
@@ -459,47 +555,10 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     return;
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) || (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL)) {
-    if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (ev9_preinit_attempts == 0U)) {
-      if (current_safety_mode == SAFETY_SILENT) {
-        set_safety_mode(SAFETY_NOOUTPUT, 0U);
-      }
-      heartbeat_counter = 0U;
-      ev9_preinit_attempts = 1U;
-      ev9_preinit_state_started_us = now_us;
-      ev9_preinit_send_diag(0x10U, 0x03U, 0U);
-      return;
-    }
-    if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
-      if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_COMM_CONTROL_DELAY_US) {
-        ev9_preinit_attempts = 1U;
-        ev9_preinit_state_started_us = now_us;
-        ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
-      }
-      return;
-    }
-    // Match the host's stock 100 ms response window plus 100 ms retry delay.
-    if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) > EV9_PREINIT_RETRY_INTERVAL_US) {
-      if (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS) {
-        ev9_preinit_attempts += 1U;
-        ev9_preinit_state_started_us = now_us;
-        if (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) {
-          ev9_preinit_send_diag(0x10U, 0x03U, 0U);
-        } else {
-          ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
-        }
-      } else {
-        ev9_preinit_abort(now_us);
-      }
-    }
+    ev9_preinit_advance_diag(now_us);
     return;
   }
   if (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) {
-    if (get_ts_elapsed(now_us, ev9_preinit_last_adas_frame_us) >= EV9_PREINIT_SUPPRESSION_QUIET_US) {
-      ev9_preinit_start_bridge(now_us);
-    } else if (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_SUPPRESSION_TIMEOUT_US) {
-      ev9_preinit_restore();
-      ev9_preinit_abort(now_us);
-    }
     return;
   }
   if (ev9_preinit_state != EV9_PREINIT_ACTIVE) {
@@ -513,33 +572,5 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     ev9_preinit_restore();
     ev9_long_preinit_init();
     return;
-  }
-  // Until host handoff, the returned tester-present frame also advertises that
-  // Panda owns the successful knockout. The host resumes the normal 1 Hz rate.
-  if (get_ts_elapsed(now_us, ev9_preinit_last_tester_present_us) >= EV9_PREINIT_TESTER_PRESENT_INTERVAL_US) {
-    ev9_preinit_send_diag(0x3EU, 0x80U, 0U);
-    ev9_preinit_last_tester_present_us = now_us;
-  }
-
-  CANPacket_t heartbeat = ev9_preinit_heartbeat_packet;
-  if (get_ts_elapsed(now_us, ev9_preinit_last_heartbeat_tx_us) >= EV9_PREINIT_HEARTBEAT_INTERVAL_US) {
-    heartbeat.data[2] = ev9_preinit_heartbeat_counter++;
-    ev9_preinit_update_crc(&heartbeat);
-    can_send(&heartbeat, EV9_PREINIT_BUS_RADAR, true);
-    ev9_preinit_heartbeat_packet = heartbeat;
-    ev9_preinit_last_heartbeat_tx_us = now_us;
-  }
-
-  for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
-    ev9_preinit_replay_t *replay = &ev9_preinit_replay[i];
-    if (replay->captured && (get_ts_elapsed(now_us, replay->last_tx_us) >= replay->period_us)) {
-      CANPacket_t packet = replay->packet;
-      packet.data[2] += 1U;
-      ev9_preinit_neutralize(&packet);
-      ev9_preinit_update_crc(&packet);
-      can_send(&packet, EV9_PREINIT_BUS_ECAN, true);
-      replay->packet = packet;
-      replay->last_tx_us = now_us;
-    }
   }
 }
