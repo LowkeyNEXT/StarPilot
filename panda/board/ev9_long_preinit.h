@@ -305,7 +305,9 @@ static void ev9_long_preinit_init(void) {
       ev9_preinit_replay[i].packet = ev9_preinit_make_packet(ev9_preinit_replay[i].addr, EV9_PREINIT_BUS_ECAN,
                                                              ev9_preinit_replay[i].len);
       (void)memcpy(ev9_preinit_replay[i].packet.data, fallback, ev9_preinit_replay[i].len);
-      ev9_preinit_replay[i].captured = true;
+      // Optional low-rate messages can use a route-backed fallback, but never
+      // suppress ADAS until every required control/status baseline was seen.
+      ev9_preinit_replay[i].captured = !ev9_preinit_replay[i].required;
     }
   }
 }
@@ -370,10 +372,6 @@ static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_hear
         const uint8_t *neutral_fallback = NULL;
         if (packet->addr == 0x160U) {
           neutral_fallback = ev9_preinit_fallback_160;
-        } else if (packet->addr == 0x1A0U) {
-          neutral_fallback = ev9_preinit_fallback_1a0;
-        } else if (packet->addr == 0x1BAU) {
-          neutral_fallback = ev9_preinit_fallback_1ba;
         } else {
         }
         if (neutral_fallback != NULL) {
