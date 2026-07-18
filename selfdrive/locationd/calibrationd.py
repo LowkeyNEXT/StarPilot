@@ -266,9 +266,11 @@ def main() -> NoReturn:
 
   params_reader = Params()
   CP = messaging.log_from_bytes(params_reader.get("CarParams", block=True), car.CarParams)
+  log_producer_health = str(CP.carFingerprint) == "KIA_EV9"
 
   calibrator = Calibrator(param_put=True)
   calibrator.not_car = CP.notCar
+  checks_valid_prev = True
 
   while 1:
     timeout = 0 if sm.frame == -1 else 100
@@ -288,7 +290,14 @@ def main() -> NoReturn:
 
     # 4Hz driven by cameraOdometry
     if sm.frame % 5 == 0:
-      calibrator.send_data(pm, sm.all_checks())
+      checks_valid = sm.all_checks()
+      if log_producer_health and checks_valid_prev and not checks_valid:
+        cloudlog.event("producerInvalid", producer="liveCalibration",
+                       invalid=[s for s, valid in sm.valid.items() if not valid],
+                       not_alive=[s for s, alive in sm.alive.items() if not alive],
+                       not_freq_ok=[s for s, freq_ok in sm.freq_ok.items() if not freq_ok])
+      checks_valid_prev = checks_valid
+      calibrator.send_data(pm, checks_valid)
 
 
 if __name__ == "__main__":

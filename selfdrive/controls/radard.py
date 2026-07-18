@@ -286,6 +286,8 @@ class RadarD:
 
     self.radar_state: capnp._DynamicStructBuilder | None = None
     self.radar_state_valid = False
+    self.radar_state_valid_prev = True
+    self.log_producer_health = False
 
     self.ready = False
 
@@ -320,6 +322,12 @@ class RadarD:
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
+    if self.log_producer_health and self.radar_state_valid_prev and not self.radar_state_valid:
+      cloudlog.event("producerInvalid", producer="radarState",
+                     invalid=[s for s, valid in sm.valid.items() if not valid],
+                     not_alive=[s for s, alive in sm.alive.items() if not alive],
+                     not_freq_ok=[s for s, freq_ok in sm.freq_ok.items() if not freq_ok])
+    self.radar_state_valid_prev = self.radar_state_valid
     self.radar_state = log.RadarState.new_message()
     self.radar_state.mdMonoTime = sm.logMonoTime['modelV2']
     self.radar_state.radarErrors = rr.errors
@@ -396,6 +404,7 @@ def main() -> None:
 
   g90_radar_filter = CP.brand == "hyundai" and CP.carFingerprint == "GENESIS_G90"
   RD = RadarD(radar_ts=radar_ts, delay=CP.radarDelay, g90_radar_filter=g90_radar_filter)
+  RD.log_producer_health = str(CP.carFingerprint) == "KIA_EV9"
 
   sm = sm.extend(['starpilotPlan'])
   pm = pm.extend(['starpilotRadarState'])

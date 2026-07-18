@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import cereal.messaging as messaging
+from cereal import car
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.monitoring.policy import DriverMonitoring
 
 
@@ -13,6 +15,8 @@ def dmonitoringd_thread():
   config_realtime_process([0, 1, 2, 3], 5)
 
   params = Params()
+  CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
+  log_producer_health = str(CP.carFingerprint) == "KIA_EV9"
   pm = messaging.PubMaster(['driverMonitoringState'])
   sm = messaging.SubMaster(
     ['driverStateV2', 'liveCalibration', 'carState', 'selfdriveState', 'modelV2', 'starpilotCarState'],
@@ -28,6 +32,7 @@ def dmonitoringd_thread():
     rhd_override=get_rhd_override(params),
   )
   demo_mode=False
+  valid_prev = True
 
   # 20Hz <- dmonitoringmodeld
   while True:
@@ -37,6 +42,12 @@ def dmonitoringd_thread():
       continue
 
     valid = sm.all_checks()
+    if log_producer_health and valid_prev and not valid:
+      cloudlog.event("producerInvalid", producer="driverMonitoringState",
+                     invalid=[s for s, service_valid in sm.valid.items() if not service_valid],
+                     not_alive=[s for s, alive in sm.alive.items() if not alive],
+                     not_freq_ok=[s for s, freq_ok in sm.freq_ok.items() if not freq_ok])
+    valid_prev = valid
     if demo_mode and sm.valid['driverStateV2']:
       DM.run_step(sm, demo=True)
     elif valid:
