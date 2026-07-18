@@ -483,17 +483,23 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   const bool capture_baselines = (ev9_preinit_state == EV9_PREINIT_COLLECTING) ||
                                  (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
                                  (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL);
+  bool driver_braking = false;
   if (capture_baselines) {
     const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
     const bool valid_canfd_crc = packet->fd && (ev9_preinit_crc(packet) == checksum);
+    driver_braking = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+      (packet->addr == 0x175U) && (GET_LEN(packet) == 24U) && ((packet->data[10] & 0x02U) != 0U);
+    if (driver_braking && (ev9_preinit_first_can_us == 0U)) {
+      ev9_preinit_first_can_us = now_us;
+    }
     ev9_preinit_capture_frame(packet, stock_heartbeat, valid_canfd_crc, now_us);
   }
 
   // This firmware is selected only for a cached EV9. Enter the diagnostic
-  // session on the first verified pre-READY powertrain frame, then collect the
-  // ADAS baselines while the ECU is still transmitting.
+  // session when the driver presses the brake, before physical ignition rises.
+  // Keep the verified pre-READY powertrain state as a fallback trigger.
   if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) &&
-      ((ev9_preinit_fingerprint & EV9_FP_POWERTRAIN) != 0U) && ev9_preinit_pre_ready) {
+      (driver_braking || (((ev9_preinit_fingerprint & EV9_FP_POWERTRAIN) != 0U) && ev9_preinit_pre_ready))) {
     ev9_preinit_attempts = 0U;
     ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
     ev9_preinit_state_started_us = now_us;
