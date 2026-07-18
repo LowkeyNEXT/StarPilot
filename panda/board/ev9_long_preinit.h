@@ -540,10 +540,11 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     ev9_preinit_capture_frame(packet, stock_heartbeat, valid_canfd_crc, now_us);
   }
 
-  // The first route-backed pre-READY powertrain frame is the observed window
-  // where the EV9 ADAS ECU accepts communication control.
-  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && pre_ready) {
-    ev9_preinit_trigger = EV9_PREINIT_TRIGGER_PRE_READY;
+  // Arm on the pre-READY powertrain state, then wait for the stock heartbeat
+  // that confirms the ADAS ECU is awake before starting diagnostics.
+  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && stock_heartbeat &&
+      (ev9_preinit_pre_ready_us != 0U)) {
+    ev9_preinit_trigger = EV9_PREINIT_TRIGGER_ADAS_HEARTBEAT;
     ev9_preinit_trigger_us = now_us;
     ev9_preinit_attempts = 0U;
     ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
