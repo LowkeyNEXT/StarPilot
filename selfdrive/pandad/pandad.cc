@@ -75,6 +75,14 @@ static const char *ev9_preinit_state_name(uint8_t state) {
   }
 }
 
+static const char *ev9_preinit_trigger_name(uint8_t trigger) {
+  switch (trigger) {
+    case EV9_PREINIT_TRIGGER_NONE: return "none";
+    case EV9_PREINIT_TRIGGER_STARTUP_PHASE: return "startup_phase";
+    default: return "unknown";
+  }
+}
+
 bool check_all_connected(const std::vector<Panda *> &pandas) {
   for (const auto& panda : pandas) {
     if (!panda->connected()) {
@@ -418,15 +426,19 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
         if (status && status->version == EV9_LONG_PREINIT_STATUS_VERSION) {
           const uint64_t summary = status->state | (status->fingerprint << 8U) | (status->attempts << 16U) |
                                    (status->last_service << 24U) | ((uint64_t)status->last_response << 32U) |
-                                   ((uint64_t)status->last_nrc << 40U);
+                                   ((uint64_t)status->last_nrc << 40U) | ((uint64_t)status->trigger << 48U);
           const std::string serial = panda->hw_serial();
           const auto previous_status = ev9_preinit_statuses.find(serial);
           if (previous_status == ev9_preinit_statuses.end() || previous_status->second != summary) {
             ev9_preinit_statuses[serial] = summary;
-            LOGW("EV9 Panda preinit state=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_can_us=%u state_started_us=%u",
-                 ev9_preinit_state_name(status->state), status->state, status->fingerprint, status->attempts,
-                 status->last_service, status->last_response, status->last_nrc, status->first_can_us,
+            LOGW("EV9 Panda preinit state=%s(%u) trigger=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_ecan=0x%03x/%u first_can_us=%u state_started_us=%u",
+                 ev9_preinit_state_name(status->state), status->state, ev9_preinit_trigger_name(status->trigger),
+                 status->trigger, status->fingerprint, status->attempts, status->last_service, status->last_response,
+                 status->last_nrc, status->first_ecan_addr, status->first_ecan_len, status->first_can_us,
                  status->state_started_us);
+            LOGW("EV9 Panda preinit timing trigger_us=%u first_ecan_us=%u brake_us=%u startup_phase_us=%u ignition_us=%u session_response_us=%u comm_control_us=%u",
+                 status->trigger_us, status->first_ecan_us, status->driver_braking_us, status->startup_phase_us,
+                 status->ignition_us, status->session_response_us, status->comm_control_us);
           }
         }
       }

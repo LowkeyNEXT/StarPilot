@@ -20,6 +20,8 @@
 #define EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US 2000000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
+#define EV9_PREINIT_STARTUP_PHASE 0x45U
+#define EV9_PREINIT_NOT_READY 0x10U
 
 typedef struct {
   uint16_t addr;
@@ -101,7 +103,16 @@ static bool ev9_preinit_host_scc = false;
 static uint8_t ev9_preinit_last_service = 0U;
 static uint8_t ev9_preinit_last_response = 0U;
 static uint8_t ev9_preinit_last_nrc = 0U;
-static bool ev9_preinit_pre_ready = false;
+static ev9_preinit_trigger_t ev9_preinit_trigger = EV9_PREINIT_TRIGGER_NONE;
+static uint8_t ev9_preinit_first_ecan_len = 0U;
+static uint16_t ev9_preinit_first_ecan_addr = 0U;
+static uint32_t ev9_preinit_trigger_us = 0U;
+static uint32_t ev9_preinit_first_ecan_us = 0U;
+static uint32_t ev9_preinit_driver_braking_us = 0U;
+static uint32_t ev9_preinit_startup_phase_us = 0U;
+static uint32_t ev9_preinit_ignition_us = 0U;
+static uint32_t ev9_preinit_session_response_us = 0U;
+static uint32_t ev9_preinit_comm_control_us = 0U;
 static CANPacket_t ev9_preinit_heartbeat_packet;
 static CANPacket_t ev9_preinit_adrv_heartbeat_packet;
 static CANPacket_t ev9_preinit_radar_status_packet;
@@ -206,8 +217,8 @@ static void ev9_preinit_abort(uint32_t now_us) {
   ev9_preinit_state_started_us = now_us;
 }
 
-static void ev9_preinit_snapshot_outcome(void) {
-  ev9_preinit_last_outcome = (ev9_long_preinit_status_t) {
+static ev9_long_preinit_status_t ev9_preinit_current_status(void) {
+  return (ev9_long_preinit_status_t) {
     .version = EV9_LONG_PREINIT_STATUS_VERSION,
     .state = (uint8_t)ev9_preinit_state,
     .fingerprint = ev9_preinit_fingerprint,
@@ -216,9 +227,23 @@ static void ev9_preinit_snapshot_outcome(void) {
     .last_response = ev9_preinit_last_response,
     .last_nrc = ev9_preinit_last_nrc,
     .communication_type = EV9_PREINIT_COMMUNICATION_TYPE,
+    .trigger = (uint8_t)ev9_preinit_trigger,
+    .first_ecan_len = ev9_preinit_first_ecan_len,
+    .first_ecan_addr = ev9_preinit_first_ecan_addr,
     .first_can_us = ev9_preinit_first_can_us,
     .state_started_us = ev9_preinit_state_started_us,
+    .trigger_us = ev9_preinit_trigger_us,
+    .first_ecan_us = ev9_preinit_first_ecan_us,
+    .driver_braking_us = ev9_preinit_driver_braking_us,
+    .startup_phase_us = ev9_preinit_startup_phase_us,
+    .ignition_us = ev9_preinit_ignition_us,
+    .session_response_us = ev9_preinit_session_response_us,
+    .comm_control_us = ev9_preinit_comm_control_us,
   };
+}
+
+static void ev9_preinit_snapshot_outcome(void) {
+  ev9_preinit_last_outcome = ev9_preinit_current_status();
   ev9_preinit_last_outcome_valid = true;
 }
 
@@ -245,7 +270,16 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_last_service = 0U;
   ev9_preinit_last_response = 0U;
   ev9_preinit_last_nrc = 0U;
-  ev9_preinit_pre_ready = false;
+  ev9_preinit_trigger = EV9_PREINIT_TRIGGER_NONE;
+  ev9_preinit_first_ecan_len = 0U;
+  ev9_preinit_first_ecan_addr = 0U;
+  ev9_preinit_trigger_us = 0U;
+  ev9_preinit_first_ecan_us = 0U;
+  ev9_preinit_driver_braking_us = 0U;
+  ev9_preinit_startup_phase_us = 0U;
+  ev9_preinit_ignition_us = 0U;
+  ev9_preinit_session_response_us = 0U;
+  ev9_preinit_comm_control_us = 0U;
   ev9_preinit_heartbeat_packet = ev9_preinit_make_packet(0x100U, EV9_PREINIT_BUS_RADAR, 24U);
   (void)memcpy(ev9_preinit_heartbeat_packet.data, ev9_preinit_heartbeat_template, sizeof(ev9_preinit_heartbeat_template));
   ev9_preinit_adrv_heartbeat_packet = ev9_preinit_make_packet(0x51U, EV9_PREINIT_BUS_RADAR, 32U);
@@ -320,8 +354,6 @@ static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_hear
   } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
              (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) {
     ev9_preinit_fingerprint |= EV9_FP_POWERTRAIN;
-    // Byte 4 stays at 0x10 through IGN-ON and clears when READY begins.
-    ev9_preinit_pre_ready = packet->data[4] == 0x10U;
     if (ev9_preinit_first_can_us == 0U) {
       ev9_preinit_first_can_us = now_us;
     }
@@ -419,6 +451,9 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
     if (ev9_preinit_required_baselines_ready()) {
       ev9_preinit_attempts = 1U;
       ev9_preinit_state_started_us = now_us;
+      if (ev9_preinit_comm_control_us == 0U) {
+        ev9_preinit_comm_control_us = now_us;
+      }
       ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
     } else if (elapsed > EV9_PREINIT_FINGERPRINT_TIMEOUT_US) {
       ev9_preinit_return_to_default_session();
@@ -484,22 +519,34 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
                                  (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
                                  (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL);
   bool driver_braking = false;
+  bool startup_phase = false;
   if (capture_baselines) {
     const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
     const bool valid_canfd_crc = packet->fd && (ev9_preinit_crc(packet) == checksum);
+    if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) && (ev9_preinit_first_ecan_us == 0U)) {
+      ev9_preinit_first_ecan_addr = packet->addr;
+      ev9_preinit_first_ecan_len = GET_LEN(packet);
+      ev9_preinit_first_ecan_us = now_us;
+    }
     driver_braking = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
       (packet->addr == 0x175U) && (GET_LEN(packet) == 24U) && ((packet->data[10] & 0x02U) != 0U);
-    if (driver_braking && (ev9_preinit_first_can_us == 0U)) {
-      ev9_preinit_first_can_us = now_us;
+    startup_phase = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+      (packet->addr == 0x35U) && (GET_LEN(packet) == 32U) &&
+      (packet->data[3] == EV9_PREINIT_STARTUP_PHASE) && (packet->data[4] == EV9_PREINIT_NOT_READY);
+    if (driver_braking && (ev9_preinit_driver_braking_us == 0U)) {
+      ev9_preinit_driver_braking_us = now_us;
+    }
+    if (startup_phase && (ev9_preinit_startup_phase_us == 0U)) {
+      ev9_preinit_startup_phase_us = now_us;
     }
     ev9_preinit_capture_frame(packet, stock_heartbeat, valid_canfd_crc, now_us);
   }
 
-  // This firmware is selected only for a cached EV9. Enter the diagnostic
-  // session when the driver presses the brake, before physical ignition rises.
-  // Keep the verified pre-READY powertrain state as a fallback trigger.
-  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) &&
-      (driver_braking || (((ev9_preinit_fingerprint & EV9_FP_POWERTRAIN) != 0U) && ev9_preinit_pre_ready))) {
+  // This route-backed powertrain phase precedes READY and is the observed
+  // window where the EV9 ADAS ECU accepts communication control.
+  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && startup_phase) {
+    ev9_preinit_trigger = EV9_PREINIT_TRIGGER_STARTUP_PHASE;
+    ev9_preinit_trigger_us = now_us;
     ev9_preinit_attempts = 0U;
     ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
     ev9_preinit_state_started_us = now_us;
@@ -525,6 +572,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
         ev9_preinit_abort(now_us);
       }
     } else if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (packet->data[1] == 0x50U) && (packet->data[2] == 0x03U)) {
+      if (ev9_preinit_session_response_us == 0U) {
+        ev9_preinit_session_response_us = now_us;
+      }
       ev9_preinit_state = EV9_PREINIT_WAIT_COMM_CONTROL;
       ev9_preinit_state_started_us = now_us;
       ev9_preinit_attempts = 0U;
@@ -546,18 +596,7 @@ static ev9_long_preinit_status_t ev9_long_preinit_get_status(void) {
       ev9_preinit_last_outcome_valid) {
     return ev9_preinit_last_outcome;
   }
-  return (ev9_long_preinit_status_t) {
-    .version = EV9_LONG_PREINIT_STATUS_VERSION,
-    .state = (uint8_t)ev9_preinit_state,
-    .fingerprint = ev9_preinit_fingerprint,
-    .attempts = ev9_preinit_attempts,
-    .last_service = ev9_preinit_last_service,
-    .last_response = ev9_preinit_last_response,
-    .last_nrc = ev9_preinit_last_nrc,
-    .communication_type = EV9_PREINIT_COMMUNICATION_TYPE,
-    .first_can_us = ev9_preinit_first_can_us,
-    .state_started_us = ev9_preinit_state_started_us,
-  };
+  return ev9_preinit_current_status();
 }
 
 static void ev9_preinit_start_bridge(uint32_t now_us) {
@@ -671,17 +710,8 @@ static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
     return;
   }
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
-    // Hardware ignition rises before the direct OFF-to-READY powertrain state.
-    // Enter diagnostics immediately and capture ADAS baselines while it wakes.
-    if (ignition) {
-      ev9_preinit_attempts = 0U;
-      ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
-      ev9_preinit_state_started_us = now_us;
-      ev9_preinit_advance_diag(now_us);
-    } else if ((ev9_preinit_first_can_us != 0U) &&
-               (get_ts_elapsed(now_us, ev9_preinit_first_can_us) > EV9_PREINIT_FINGERPRINT_TIMEOUT_US)) {
-      ev9_preinit_abort(now_us);
-    } else {
+    if (ignition && (ev9_preinit_ignition_us == 0U)) {
+      ev9_preinit_ignition_us = now_us;
     }
     return;
   }

@@ -125,7 +125,7 @@ class Panda:
   CAN_HEALTH_PACKET_VERSION = 5
   HEALTH_STRUCT = struct.Struct("<IIIIIIIIBBBBBHBBBHfBBHBHHB")
   CAN_HEALTH_STRUCT = struct.Struct("<BIBBBBBBBBIIIIIIIHHBBBIIII")
-  EV9_LONG_PREINIT_STATUS_STRUCT = struct.Struct("<8BII")
+  EV9_LONG_PREINIT_STATUS_STRUCT = struct.Struct("<10BH9I")
 
   F4_DEVICES = [HW_TYPE_WHITE, HW_TYPE_BLACK, HW_TYPE_DOS]
   H7_DEVICES = [HW_TYPE_RED_PANDA, HW_TYPE_TRES, HW_TYPE_CUATRO, HW_TYPE_BODY]
@@ -617,8 +617,18 @@ class Panda:
       "last_response": a[5],
       "last_nrc": a[6],
       "communication_type": a[7],
-      "first_can_us": a[8],
-      "state_started_us": a[9],
+      "trigger": a[8],
+      "first_ecan_len": a[9],
+      "first_ecan_addr": a[10],
+      "first_can_us": a[11],
+      "state_started_us": a[12],
+      "trigger_us": a[13],
+      "first_ecan_us": a[14],
+      "driver_braking_us": a[15],
+      "startup_phase_us": a[16],
+      "ignition_us": a[17],
+      "session_response_us": a[18],
+      "comm_control_us": a[19],
     }
 
   # ******************* control *******************
