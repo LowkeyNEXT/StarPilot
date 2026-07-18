@@ -78,7 +78,8 @@ static const char *ev9_preinit_state_name(uint8_t state) {
 static const char *ev9_preinit_trigger_name(uint8_t trigger) {
   switch (trigger) {
     case EV9_PREINIT_TRIGGER_NONE: return "none";
-    case EV9_PREINIT_TRIGGER_IGNITION_ADAS_HEARTBEAT: return "ignition_adas_heartbeat";
+    case EV9_PREINIT_TRIGGER_ADAS_WAKE: return "adas_wake";
+    case EV9_PREINIT_TRIGGER_START_INTENT: return "start_intent";
     default: return "unknown";
   }
 }
