@@ -465,6 +465,14 @@ static void ev9_preinit_neutralize(CANPacket_t *packet) {
   }
 }
 
+static void ev9_preinit_start_session(uint32_t now_us, ev9_preinit_trigger_t trigger) {
+  ev9_preinit_trigger = trigger;
+  ev9_preinit_trigger_us = now_us;
+  ev9_preinit_attempts = 0U;
+  ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
+  ev9_preinit_state_started_us = now_us;
+}
+
 static void ev9_preinit_advance_diag(uint32_t now_us) {
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (ev9_preinit_attempts == 0U)) {
     ev9_preinit_attempts = 1U;
@@ -599,12 +607,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   const bool adas_startup_wake = valid_adas_heartbeat && !stock_heartbeat;
   if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && valid_adas_heartbeat &&
       (adas_startup_wake || ev9_preinit_start_intent)) {
-    ev9_preinit_trigger = ev9_preinit_start_intent ? EV9_PREINIT_TRIGGER_START_INTENT :
-                                                    EV9_PREINIT_TRIGGER_ADAS_WAKE;
-    ev9_preinit_trigger_us = now_us;
-    ev9_preinit_attempts = 0U;
-    ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
-    ev9_preinit_state_started_us = now_us;
+    const ev9_preinit_trigger_t trigger = ev9_preinit_start_intent ? EV9_PREINIT_TRIGGER_START_INTENT :
+                                                                    EV9_PREINIT_TRIGGER_ADAS_WAKE;
+    ev9_preinit_start_session(now_us, trigger);
   }
 
   // The EV9 can return eight-byte UDS responses as either classic CAN or CAN FD.
@@ -758,6 +763,12 @@ static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
       ev9_preinit_ignition_us = now_us;
     }
     ev9_preinit_start_intent = true;
+  }
+  // On a cold comma boot, ignition can precede the transient ADAS heartbeat.
+  // Start the session as soon as validated ECAN proves the vehicle bus is awake.
+  if ((ev9_preinit_state == EV9_PREINIT_COLLECTING) && ev9_preinit_start_intent &&
+      (ev9_preinit_first_ecan_us != 0U)) {
+    ev9_preinit_start_session(now_us, EV9_PREINIT_TRIGGER_START_INTENT);
   }
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
     return;
