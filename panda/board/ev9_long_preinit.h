@@ -408,7 +408,6 @@ static void ev9_preinit_neutralize(CANPacket_t *packet) {
     ev9_preinit_set_bits(packet->data, 140U, 11U, 1023U); // aReqRaw = 0
     ev9_preinit_set_bits(packet->data, 184U, 1U, 0U);  // StopReq
   } else if (packet->addr == 0x12AU) {
-    ev9_preinit_set_bits(packet->data, 41U, 11U, 1024U); // zero torque
     ev9_preinit_set_bits(packet->data, 52U, 1U, 0U);  // STEER_REQ
     ev9_preinit_set_bits(packet->data, 62U, 1U, 0U);  // LKA_ASSIST
     ev9_preinit_set_bits(packet->data, 65U, 3U, 0U);  // STEER_MODE
