@@ -1,6 +1,6 @@
 #pragma once
 
-#define EV9_LONG_PREINIT_STATUS_VERSION 2U
+#define EV9_LONG_PREINIT_STATUS_VERSION 3U
 
 typedef enum {
   EV9_PREINIT_COLLECTING = 0,
@@ -29,6 +29,10 @@ typedef struct __attribute__((packed)) {
   uint8_t communication_type;
   uint8_t trigger;
   uint8_t first_ecan_len;
+  uint8_t powertrain_state;
+  uint8_t powertrain_boot_state;
+  uint8_t powertrain_init_state;
+  uint8_t reserved;
   uint16_t first_ecan_addr;
   uint32_t first_can_us;
   uint32_t state_started_us;
@@ -39,4 +43,6 @@ typedef struct __attribute__((packed)) {
   uint32_t ignition_us;
   uint32_t session_response_us;
   uint32_t comm_control_us;
+  uint32_t last_powertrain_us;
+  uint32_t ready_us;
 } ev9_long_preinit_status_t;

@@ -438,14 +438,15 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
           if (previous_status == ev9_preinit_statuses.end() || previous_status->second != summary) {
             ev9_preinit_statuses[serial] = summary;
             params.putBool("EV9PandaPreinitActive", ev9_preinit_active_state(status->state));
-            LOGW("EV9 Panda preinit state=%s(%u) trigger=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_ecan=0x%03x/%u first_can_us=%u state_started_us=%u",
+            LOGW("EV9 Panda preinit state=%s(%u) trigger=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_ecan=0x%03x/%u powertrain=0x%02x/0x%02x/0x%02x first_can_us=%u state_started_us=%u",
                  ev9_preinit_state_name(status->state), status->state, ev9_preinit_trigger_name(status->trigger),
                  status->trigger, status->fingerprint, status->attempts, status->last_service, status->last_response,
-                 status->last_nrc, status->first_ecan_addr, status->first_ecan_len, status->first_can_us,
-                 status->state_started_us);
-            LOGW("EV9 Panda preinit timing trigger_us=%u first_ecan_us=%u brake_us=%u pre_ready_us=%u ignition_us=%u session_response_us=%u comm_control_us=%u",
+                 status->last_nrc, status->first_ecan_addr, status->first_ecan_len, status->powertrain_state,
+                 status->powertrain_boot_state, status->powertrain_init_state, status->first_can_us, status->state_started_us);
+            LOGW("EV9 Panda preinit timing trigger_us=%u first_ecan_us=%u brake_us=%u pre_ready_us=%u ignition_us=%u session_response_us=%u comm_control_us=%u last_powertrain_us=%u ready_us=%u",
                  status->trigger_us, status->first_ecan_us, status->driver_braking_us, status->pre_ready_us,
-                 status->ignition_us, status->session_response_us, status->comm_control_us);
+                 status->ignition_us, status->session_response_us, status->comm_control_us,
+                 status->last_powertrain_us, status->ready_us);
           }
         }
       }

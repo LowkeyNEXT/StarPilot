@@ -125,7 +125,7 @@ class Panda:
   CAN_HEALTH_PACKET_VERSION = 5
   HEALTH_STRUCT = struct.Struct("<IIIIIIIIBBBBBHBBBHfBBHBHHB")
   CAN_HEALTH_STRUCT = struct.Struct("<BIBBBBBBBBIIIIIIIHHBBBIIII")
-  EV9_LONG_PREINIT_STATUS_STRUCT = struct.Struct("<10BH9I")
+  EV9_LONG_PREINIT_STATUS_STRUCT = struct.Struct("<14BH11I")
 
   F4_DEVICES = [HW_TYPE_WHITE, HW_TYPE_BLACK, HW_TYPE_DOS]
   H7_DEVICES = [HW_TYPE_RED_PANDA, HW_TYPE_TRES, HW_TYPE_CUATRO, HW_TYPE_BODY]
@@ -619,16 +619,21 @@ class Panda:
       "communication_type": a[7],
       "trigger": a[8],
       "first_ecan_len": a[9],
-      "first_ecan_addr": a[10],
-      "first_can_us": a[11],
-      "state_started_us": a[12],
-      "trigger_us": a[13],
-      "first_ecan_us": a[14],
-      "driver_braking_us": a[15],
-      "pre_ready_us": a[16],
-      "ignition_us": a[17],
-      "session_response_us": a[18],
-      "comm_control_us": a[19],
+      "powertrain_state": a[10],
+      "powertrain_boot_state": a[11],
+      "powertrain_init_state": a[12],
+      "first_ecan_addr": a[14],
+      "first_can_us": a[15],
+      "state_started_us": a[16],
+      "trigger_us": a[17],
+      "first_ecan_us": a[18],
+      "driver_braking_us": a[19],
+      "pre_ready_us": a[20],
+      "ignition_us": a[21],
+      "session_response_us": a[22],
+      "comm_control_us": a[23],
+      "last_powertrain_us": a[24],
+      "ready_us": a[25],
     }
 
   # ******************* control *******************

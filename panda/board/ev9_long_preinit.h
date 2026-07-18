@@ -11,6 +11,8 @@
 #define EV9_PREINIT_DIAG_RESP_ADDR 0x738U
 #define EV9_PREINIT_START_TIMEOUT_US 1500000U
 #define EV9_PREINIT_RETRY_INTERVAL_US 200000U
+#define EV9_PREINIT_COMM_CONTROL_MIN_WAKE_US 500000U
+#define EV9_PREINIT_COMM_CONTROL_RETRY_INTERVAL_US 100000U
 #define EV9_PREINIT_TESTER_PRESENT_INTERVAL_US 1000000U
 #define EV9_PREINIT_HEARTBEAT_INTERVAL_US 10000U
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
@@ -21,7 +23,6 @@
 #define EV9_PREINIT_BLINDSPOT_TIMEOUT_US 200000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
-#define EV9_PREINIT_NOT_READY 0x10U
 #define EV9_PREINIT_STARTING_MASK 0x50U
 #define EV9_PREINIT_STARTING_VALUE 0x40U
 #define EV9_PREINIT_BSM_LEFT_MASK 0x10U
@@ -133,6 +134,11 @@ static uint32_t ev9_preinit_ignition_us = 0U;
 static uint32_t ev9_preinit_session_response_us = 0U;
 static uint32_t ev9_preinit_comm_control_us = 0U;
 static uint32_t ev9_preinit_last_blindspot_us = 0U;
+static uint32_t ev9_preinit_last_powertrain_us = 0U;
+static uint32_t ev9_preinit_ready_us = 0U;
+static uint8_t ev9_preinit_powertrain_state = 0U;
+static uint8_t ev9_preinit_powertrain_boot_state = 0U;
+static uint8_t ev9_preinit_powertrain_init_state = 0U;
 static CANPacket_t ev9_preinit_heartbeat_packet;
 static bool ev9_preinit_last_outcome_valid = false;
 static ev9_long_preinit_status_t ev9_preinit_last_outcome;
@@ -247,6 +253,10 @@ static ev9_long_preinit_status_t ev9_preinit_current_status(void) {
     .communication_type = EV9_PREINIT_COMMUNICATION_TYPE,
     .trigger = (uint8_t)ev9_preinit_trigger,
     .first_ecan_len = ev9_preinit_first_ecan_len,
+    .powertrain_state = ev9_preinit_powertrain_state,
+    .powertrain_boot_state = ev9_preinit_powertrain_boot_state,
+    .powertrain_init_state = ev9_preinit_powertrain_init_state,
+    .reserved = 0U,
     .first_ecan_addr = ev9_preinit_first_ecan_addr,
     .first_can_us = ev9_preinit_first_can_us,
     .state_started_us = ev9_preinit_state_started_us,
@@ -257,6 +267,8 @@ static ev9_long_preinit_status_t ev9_preinit_current_status(void) {
     .ignition_us = ev9_preinit_ignition_us,
     .session_response_us = ev9_preinit_session_response_us,
     .comm_control_us = ev9_preinit_comm_control_us,
+    .last_powertrain_us = ev9_preinit_last_powertrain_us,
+    .ready_us = ev9_preinit_ready_us,
   };
 }
 
@@ -301,6 +313,11 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_session_response_us = 0U;
   ev9_preinit_comm_control_us = 0U;
   ev9_preinit_last_blindspot_us = 0U;
+  ev9_preinit_last_powertrain_us = 0U;
+  ev9_preinit_ready_us = 0U;
+  ev9_preinit_powertrain_state = 0U;
+  ev9_preinit_powertrain_boot_state = 0U;
+  ev9_preinit_powertrain_init_state = 0U;
   ev9_preinit_heartbeat_packet = ev9_preinit_make_packet(0x100U, EV9_PREINIT_BUS_RADAR, 24U);
   (void)memcpy(ev9_preinit_heartbeat_packet.data, ev9_preinit_heartbeat_template, sizeof(ev9_preinit_heartbeat_template));
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
@@ -465,6 +482,12 @@ static void ev9_preinit_start_session(uint32_t now_us, ev9_preinit_trigger_t tri
   ev9_preinit_state_started_us = now_us;
 }
 
+static bool ev9_preinit_powertrain_ready(void) {
+  return (ev9_preinit_powertrain_state == 0x45U) ||
+         (ev9_preinit_powertrain_state == 0x51U) ||
+         (ev9_preinit_powertrain_state == 0x55U);
+}
+
 static void ev9_preinit_advance_diag(uint32_t now_us) {
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (ev9_preinit_attempts == 0U)) {
     ev9_preinit_attempts = 1U;
@@ -474,7 +497,12 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
     const uint32_t elapsed = get_ts_elapsed(now_us, ev9_preinit_state_started_us);
-    if (ev9_preinit_start_intent) {
+    const uint32_t wake_elapsed = get_ts_elapsed(now_us, ev9_preinit_first_ecan_us);
+    if (ev9_preinit_powertrain_ready()) {
+      ev9_preinit_return_to_default_session();
+      ev9_preinit_abort(now_us);
+    } else if (ev9_preinit_start_intent && (ev9_preinit_first_ecan_us != 0U) &&
+               (wake_elapsed >= EV9_PREINIT_COMM_CONTROL_MIN_WAKE_US)) {
       ev9_preinit_attempts = 1U;
       ev9_preinit_state_started_us = now_us;
       if (ev9_preinit_comm_control_us == 0U) {
@@ -483,14 +511,21 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
       ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
     } else if (elapsed > EV9_PREINIT_START_TIMEOUT_US) {
       ev9_preinit_return_to_default_session();
-      ev9_long_preinit_init();
+      ev9_preinit_abort(now_us);
     } else {
     }
     return;
   }
+  if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && ev9_preinit_powertrain_ready()) {
+    ev9_preinit_return_to_default_session();
+    ev9_preinit_abort(now_us);
+    return;
+  }
   if (((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
        (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL)) &&
-      (get_ts_elapsed(now_us, ev9_preinit_state_started_us) > EV9_PREINIT_RETRY_INTERVAL_US)) {
+      (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >
+       ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) ? EV9_PREINIT_COMM_CONTROL_RETRY_INTERVAL_US :
+                                                               EV9_PREINIT_RETRY_INTERVAL_US))) {
     if (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS) {
       ev9_preinit_attempts += 1U;
       ev9_preinit_state_started_us = now_us;
@@ -578,20 +613,29 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     }
     driver_braking = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
       (packet->addr == 0x175U) && (GET_LEN(packet) == 24U) && ((packet->data[10] & 0x02U) != 0U);
+    const bool powertrain_frame = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+      (packet->addr == 0x35U) && (GET_LEN(packet) == 32U);
+    if (powertrain_frame) {
+      ev9_preinit_powertrain_state = packet->data[3];
+      ev9_preinit_powertrain_boot_state = packet->data[4];
+      ev9_preinit_powertrain_init_state = packet->data[6];
+      ev9_preinit_last_powertrain_us = now_us;
+      if (ev9_preinit_powertrain_ready() && (ev9_preinit_ready_us == 0U)) {
+        ev9_preinit_ready_us = now_us;
+      }
+    }
     // 0x35 byte 3 moves from 0x01/0x05 to 0x45 before the 0x51/0x55 READY state.
-    const bool powertrain_starting = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
-      (packet->addr == 0x35U) && (GET_LEN(packet) == 32U) &&
+    // The initial byte-4 0x10 state is ECU booting, not a CommunicationControl cue.
+    const bool powertrain_starting = powertrain_frame &&
       ((packet->data[3] & EV9_PREINIT_STARTING_MASK) == EV9_PREINIT_STARTING_VALUE);
-    pre_ready = valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
-      (packet->addr == 0x35U) && (GET_LEN(packet) == 32U) &&
-      ((packet->data[4] == EV9_PREINIT_NOT_READY) || powertrain_starting);
+    pre_ready = powertrain_starting;
     if (driver_braking && (ev9_preinit_driver_braking_us == 0U)) {
       ev9_preinit_driver_braking_us = now_us;
     }
     if (pre_ready && (ev9_preinit_pre_ready_us == 0U)) {
       ev9_preinit_pre_ready_us = now_us;
     }
-    ev9_preinit_start_intent = ev9_preinit_start_intent || driver_braking || pre_ready;
+    ev9_preinit_start_intent = ev9_preinit_start_intent || driver_braking;
     ev9_preinit_capture_frame(packet, stock_heartbeat, valid_canfd_crc, now_us);
   }
 
@@ -614,9 +658,14 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     ev9_preinit_last_response = packet->data[1];
     ev9_preinit_last_nrc = packet->data[1] == 0x7FU ? packet->data[3] : 0U;
     if ((packet->data[1] == 0x7FU) && ((packet->data[2] == 0x10U) || (packet->data[2] == 0x28U))) {
-      const bool retryable = (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) &&
-                             (packet->data[2] == ev9_preinit_last_service) && (packet->data[3] == 0x22U) &&
-                             (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS);
+      const bool session_retryable = (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) &&
+                                     (packet->data[2] == ev9_preinit_last_service) && (packet->data[3] == 0x22U) &&
+                                     (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS);
+      const bool comm_control_retryable = (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) &&
+                                          (packet->data[2] == 0x28U) && (packet->data[3] == 0x22U) &&
+                                          !ev9_preinit_powertrain_ready() &&
+                                          (ev9_preinit_attempts < EV9_PREINIT_MAX_ATTEMPTS);
+      const bool retryable = session_retryable || comm_control_retryable;
       if (retryable) {
         ev9_preinit_state_started_us = now_us;
       } else {
