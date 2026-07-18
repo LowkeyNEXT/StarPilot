@@ -820,8 +820,6 @@ class CarController(CarControllerBase):
           can_sends.append(hyundaicanfd.create_accelerator_brake_alt_spoof(0, self.frame // radar_heartbeat_step,
                                                                             CS.out.brakePressed, CS.out.gasPressed,
                                                                             self.CP.carFingerprint))
-        if self.CP.carFingerprint == CAR.KIA_EV9 and self.frame % 20 == 0:
-          can_sends.append(hyundaicanfd.create_ev9_radar_status(0, self.frame // 20))
       elif not ccnc_non_hda2:
         can_sends.extend(hyundaicanfd.create_fca_warning_light(self.packer, self.CAN, self.frame))
       if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.frame % 5 == 0:

@@ -2178,13 +2178,6 @@ class TestHyundaiFingerprint:
     assert msg.src == 0
     assert msg.dat.hex() == "470c6600ff006f00e80400001201030055ffff0000000000"
 
-  def test_ev9_radar_status_matches_route(self):
-    msg = hyundaicanfd.create_ev9_radar_status(0, 1)
-
-    assert msg.address == 0x500
-    assert msg.src == 0
-    assert msg.dat.hex() == "9cfc0100000000000000000000000000"
-
   def test_ev9_adrv_messages_do_not_add_acan_heartbeat(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9

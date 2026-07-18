@@ -833,7 +833,6 @@ def hkg_can_fd_checksum(address: int, sig, d: bytearray) -> int:
 # brake, and accelerator bits are updated for the radar heartbeat.
 _ACCEL_BRAKE_ALT_TEMPLATE = bytes.fromhex("000000020000fcff000000000020000055ff000068000000")
 _KIA_EV9_ACCEL_BRAKE_ALT_TEMPLATE = bytes.fromhex("00000000ff006f00e80400001201030055ffff0000000000")
-_KIA_EV9_RADAR_STATUS_TEMPLATE = bytes(16)
 _KIA_EV9_ADRV_TEMPLATES = {
   0x160: bytes.fromhex("0000000100000000fffc0100a8001000"),
   0x1DA: bytes.fromhex("0000002200110000000000000000000000000000000000000000000000000000"),
@@ -896,15 +895,6 @@ def create_accelerator_brake_alt_spoof(bus: int, counter: int, brake_pressed: bo
   d[0] = crc & 0xFF
   d[1] = (crc >> 8) & 0xFF
   return CanData(0x100, bytes(d), bus)
-
-
-def create_ev9_radar_status(bus: int, counter: int) -> CanData:
-  d = bytearray(_KIA_EV9_RADAR_STATUS_TEMPLATE)
-  d[2:4] = (counter & 0xFFFF).to_bytes(2, "little")
-  crc = hkg_can_fd_checksum(0x500, None, d)
-  d[0] = crc & 0xFF
-  d[1] = (crc >> 8) & 0xFF
-  return CanData(0x500, bytes(d), bus)
 
 
 def create_ev9_adrv_message(address: int, bus: int, counter: int) -> CanData:
