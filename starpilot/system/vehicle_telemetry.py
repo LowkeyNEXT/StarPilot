@@ -280,7 +280,6 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
     "updatedAt": time.time() if timestamp is None else float(timestamp),  # noqa: TID251 - interoperable wall-clock timestamp
     "vehicleFingerprint": str(vehicle_fingerprint or "")[:160],
     "stateOfChargePercent": round(max(0.0, min(100.0, fuel_gauge * 100.0)), 1) if has_soc else None,
-    "estimatedRangeKilometers": distance_to_empty_km,
     "distanceToEmptyKilometers": distance_to_empty_km,
     "isCharging": bool(getattr(car_state, "charging", False)),
     "isPluggedIn": bool(getattr(car_state, "chargingPortConnected", False)),

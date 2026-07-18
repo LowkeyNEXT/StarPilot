@@ -21,7 +21,6 @@ def test_build_vehicle_telemetry_snapshot_uses_generic_car_state_fields():
     "updatedAt": 1234.5,
     "vehicleFingerprint": "KIA EV9",
     "stateOfChargePercent": 77.5,
-    "estimatedRangeKilometers": 408.0,
     "distanceToEmptyKilometers": 408.0,
     "isCharging": True,
     "isPluggedIn": True,
