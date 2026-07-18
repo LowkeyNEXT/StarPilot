@@ -2185,6 +2185,21 @@ class TestHyundaiFingerprint:
     assert msg.src == 0
     assert msg.dat.hex() == "9cfc0100000000000000000000000000"
 
+  def test_ev9_adrv_messages_include_acan_heartbeat(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    can_bus = CanBus(CP)
+    msgs = hyundaicanfd.create_ev9_adrv_messages(
+      packer, can_bus, 1, False, False, None, None, True, False, False, False, False, False, False,
+    )
+
+    assert len(msgs) == 1
+    assert msgs[0][0] == 0x51
+    assert msgs[0][2] == can_bus.ACAN
+
   def test_ioniq_6_lfahda_cluster_allows_lfa_icon_override(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.HYUNDAI_IONIQ_6
@@ -2315,14 +2330,15 @@ class TestHyundaiFingerprint:
     can_bus = CanBus(CP)
     parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0), ("CCNC_0x162", 0)], can_bus.ECAN)
 
-    parser.update([(1, hyundaicanfd.create_ev9_dash_status_messages(packer, can_bus, 12))])
+    parser.update([(1, hyundaicanfd.create_ev9_dash_status_messages(packer, can_bus, 12, hba_icon=2))])
 
     assert parser.vl["CCNC_0x161"]["FCA_ICON"] == 1
     assert parser.vl["CCNC_0x161"]["FCA_ALT_ICON"] == 0
     assert parser.vl["CCNC_0x161"]["FCA_IMAGE"] == 0
+    assert parser.vl["CCNC_0x161"]["HBA_ICON"] == 2
     assert all(parser.vl["CCNC_0x162"][fault] == 0 for fault in (
       "FAULT_FSS", "FAULT_FCA", "FAULT_LSS", "FAULT_SLA", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW",
-      "FAULT_ESS",
+      "FAULT_HBA", "FAULT_ESS",
     ))
 
     parser.update([(1, hyundaicanfd.create_ev9_dash_status_messages(

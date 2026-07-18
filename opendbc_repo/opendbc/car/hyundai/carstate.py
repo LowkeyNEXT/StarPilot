@@ -130,6 +130,8 @@ class CarState(CarStateBase):
     self.stock_camera_lead_distance = 0.0
     self.stock_camera_lead_rel_speed = 0.0
     self.stock_camera_lead_ts = 0
+    self.hba_icon = 0
+    self.stock_blinker_stalks_msg = {}
     self.stock_blinker_stalks_ts = 0
     self.blindspots_rear_corners = {}
     self.blindspots_front_corner_1 = {}
@@ -585,7 +587,11 @@ class CarState(CarStateBase):
       self.stock_lfa_msg = copy.copy(cp.vl["LFA"])
     if cp.ts_nanos["LFAHDA_CLUSTER"]["CHECKSUM"] > 0:
       self.stock_lfahda_cluster_msg = copy.copy(cp.vl["LFAHDA_CLUSTER"])
+    if self.CP.carFingerprint == CAR.KIA_EV9 and cp.ts_nanos["FR_CMR_01_10ms"]["FR_CMR_Crc1Val"] > 0:
+      hba_state = int(cp.vl["FR_CMR_01_10ms"]["HBA_SysSta"])
+      self.hba_icon = hba_state if hba_state in (1, 2) else 0
     if cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"] > 0:
+      self.stock_blinker_stalks_msg = copy.copy(cp.vl["BLINKER_STALKS"])
       self.stock_blinker_stalks_ts = cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"]
 
     ret.buttonEvents = [*self.create_cruise_button_events(self.cruise_buttons[-1], prev_cruise_buttons),
@@ -647,6 +653,7 @@ class CarState(CarStateBase):
     if CP.carFingerprint == CAR.KIA_EV9:
       # EV9 uses the live Ioniq 6 corner-radar BSM path.
       msgs.append(("BLINDSPOTS_FRONT_CORNER_2", 0))
+      msgs.append(("FR_CMR_01_10ms", 0))
     if CP.flags & HyundaiFlags.EV:
       msgs.append(("DRIVE_MODE_EV", 0))  # optional: not all CAN-FD EV variants publish drive mode
       msgs.append(("MANUAL_SPEED_LIMIT_ASSIST", 0))  # optional: used for non-adaptive cruise state and Ioniq 6 i-Pedal latch detection

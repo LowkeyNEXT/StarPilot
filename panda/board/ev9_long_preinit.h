@@ -13,6 +13,7 @@
 #define EV9_PREINIT_RETRY_INTERVAL_US 200000U
 #define EV9_PREINIT_TESTER_PRESENT_INTERVAL_US 100000U
 #define EV9_PREINIT_HEARTBEAT_INTERVAL_US 10000U
+#define EV9_PREINIT_ADRV_HEARTBEAT_INTERVAL_US 10000U
 #define EV9_PREINIT_RADAR_STATUS_INTERVAL_US 200000U
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
 #define EV9_PREINIT_SUPPRESSION_TIMEOUT_US 300000U
@@ -84,6 +85,7 @@ static uint32_t ev9_preinit_first_can_us = 0U;
 static uint32_t ev9_preinit_state_started_us = 0U;
 static uint32_t ev9_preinit_last_tester_present_us = 0U;
 static uint32_t ev9_preinit_last_heartbeat_tx_us = 0U;
+static uint32_t ev9_preinit_last_adrv_heartbeat_tx_us = 0U;
 static uint32_t ev9_preinit_last_radar_status_tx_us = 0U;
 static uint32_t ev9_preinit_last_vehicle_frame_us = 0U;
 static uint32_t ev9_preinit_last_adas_frame_us = 0U;
@@ -91,7 +93,9 @@ static uint32_t ev9_preinit_last_stock_heartbeat_us = 0U;
 static uint8_t ev9_preinit_attempts = 0U;
 static uint8_t ev9_preinit_fingerprint = 0U;
 static uint8_t ev9_preinit_heartbeat_counter = 0U;
+static uint8_t ev9_preinit_adrv_heartbeat_counter = 0U;
 static uint16_t ev9_preinit_radar_status_counter = 1U;
+static uint8_t ev9_preinit_hba_icon = 0U;
 static bool ev9_preinit_host_heartbeat = false;
 static bool ev9_preinit_host_scc = false;
 static uint8_t ev9_preinit_last_service = 0U;
@@ -99,6 +103,7 @@ static uint8_t ev9_preinit_last_response = 0U;
 static uint8_t ev9_preinit_last_nrc = 0U;
 static bool ev9_preinit_pre_ready = false;
 static CANPacket_t ev9_preinit_heartbeat_packet;
+static CANPacket_t ev9_preinit_adrv_heartbeat_packet;
 static CANPacket_t ev9_preinit_radar_status_packet;
 static bool ev9_preinit_last_outcome_valid = false;
 static ev9_long_preinit_status_t ev9_preinit_last_outcome;
@@ -224,6 +229,7 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_state_started_us = 0U;
   ev9_preinit_last_tester_present_us = 0U;
   ev9_preinit_last_heartbeat_tx_us = 0U;
+  ev9_preinit_last_adrv_heartbeat_tx_us = 0U;
   ev9_preinit_last_radar_status_tx_us = 0U;
   ev9_preinit_last_vehicle_frame_us = 0U;
   ev9_preinit_last_adas_frame_us = 0U;
@@ -231,7 +237,9 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_attempts = 0U;
   ev9_preinit_fingerprint = 0U;
   ev9_preinit_heartbeat_counter = 0U;
+  ev9_preinit_adrv_heartbeat_counter = 0U;
   ev9_preinit_radar_status_counter = 1U;
+  ev9_preinit_hba_icon = 0U;
   ev9_preinit_host_heartbeat = false;
   ev9_preinit_host_scc = false;
   ev9_preinit_last_service = 0U;
@@ -240,6 +248,7 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_pre_ready = false;
   ev9_preinit_heartbeat_packet = ev9_preinit_make_packet(0x100U, EV9_PREINIT_BUS_RADAR, 24U);
   (void)memcpy(ev9_preinit_heartbeat_packet.data, ev9_preinit_heartbeat_template, sizeof(ev9_preinit_heartbeat_template));
+  ev9_preinit_adrv_heartbeat_packet = ev9_preinit_make_packet(0x51U, EV9_PREINIT_BUS_RADAR, 32U);
   ev9_preinit_radar_status_packet = ev9_preinit_make_packet(0x500U, EV9_PREINIT_BUS_RADAR, 16U);
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
     ev9_preinit_replay[i].captured = false;
@@ -301,6 +310,10 @@ static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_hear
     // Keep the route-backed neutral payload and only continue the stock counter.
     ev9_preinit_heartbeat_counter = packet->data[2] + 1U;
   } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_RADAR) &&
+             (packet->addr == 0x51U) && (GET_LEN(packet) == 32U)) {
+    ev9_preinit_adrv_heartbeat_packet = *packet;
+    ev9_preinit_adrv_heartbeat_counter = packet->data[2] + 1U;
+  } else if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_RADAR) &&
              (packet->addr == 0x500U) && (GET_LEN(packet) == 16U)) {
     ev9_preinit_radar_status_packet = *packet;
     ev9_preinit_radar_status_counter = ((uint16_t)packet->data[2] | ((uint16_t)packet->data[3] << 8U)) + 1U;
@@ -356,6 +369,7 @@ static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_hear
 static bool ev9_preinit_is_adas_frame(const CANPacket_t *packet) {
   bool adas_frame = (packet->bus == EV9_PREINIT_BUS_RADAR) &&
                     (((packet->addr == 0x100U) && (GET_LEN(packet) == 24U)) ||
+                     ((packet->addr == 0x51U) && (GET_LEN(packet) == 32U)) ||
                      ((packet->addr == 0x500U) && (GET_LEN(packet) == 16U)));
   if (packet->bus == EV9_PREINIT_BUS_ECAN) {
     for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
@@ -386,7 +400,10 @@ static void ev9_preinit_neutralize(CANPacket_t *packet) {
   } else if (packet->addr == 0x161U) {
     ev9_preinit_set_bits(packet->data, 24U, 3U, 1U);  // expected FCA unavailable icon
     ev9_preinit_set_bits(packet->data, 27U, 3U, 0U);
+    ev9_preinit_set_bits(packet->data, 33U, 3U, ev9_preinit_hba_icon);
     ev9_preinit_set_bits(packet->data, 42U, 3U, 0U);
+  } else if (packet->addr == 0x162U) {
+    ev9_preinit_set_bits(packet->data, 228U, 3U, 0U);  // no HBA fault
   }
 }
 
@@ -440,6 +457,14 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
   if (((packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0x35U) && (GET_LEN(packet) == 32U)) ||
       ((packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == 0xA0U) && (GET_LEN(packet) == 24U))) {
     ev9_preinit_last_vehicle_frame_us = now_us;
+  }
+  if (packet->fd && (packet->bus == EV9_PREINIT_BUS_ECAN) &&
+      (packet->addr == 0x11AU) && (GET_LEN(packet) == 16U)) {
+    const uint16_t checksum = (uint16_t)packet->data[0] | ((uint16_t)packet->data[1] << 8U);
+    if (ev9_preinit_crc(packet) == checksum) {
+      const uint8_t hba_state = (packet->data[3] >> 2U) & 0x07U;
+      ev9_preinit_hba_icon = ((hba_state == 1U) || (hba_state == 2U)) ? hba_state : 0U;
+    }
   }
   if ((ev9_preinit_state == EV9_PREINIT_ABORTED) || (ev9_preinit_state == EV9_PREINIT_HANDOFF)) {
     return;
@@ -533,6 +558,7 @@ static void ev9_preinit_start_bridge(uint32_t now_us) {
   ev9_preinit_state = EV9_PREINIT_ACTIVE;
   ev9_preinit_last_tester_present_us = now_us - EV9_PREINIT_TESTER_PRESENT_INTERVAL_US;
   ev9_preinit_last_heartbeat_tx_us = now_us - EV9_PREINIT_HEARTBEAT_INTERVAL_US;
+  ev9_preinit_last_adrv_heartbeat_tx_us = now_us - EV9_PREINIT_ADRV_HEARTBEAT_INTERVAL_US;
   ev9_preinit_last_radar_status_tx_us = now_us - EV9_PREINIT_RADAR_STATUS_INTERVAL_US;
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
     ev9_preinit_replay[i].last_tx_us = now_us - ev9_preinit_replay[i].period_us;
@@ -566,6 +592,15 @@ static void ev9_preinit_service_bridge(uint32_t now_us) {
     ev9_preinit_heartbeat_packet = heartbeat;
     ev9_preinit_last_heartbeat_tx_us = now_us;
     can_send(&heartbeat, EV9_PREINIT_BUS_RADAR, true);
+  }
+
+  if (get_ts_elapsed(now_us, ev9_preinit_last_adrv_heartbeat_tx_us) >= EV9_PREINIT_ADRV_HEARTBEAT_INTERVAL_US) {
+    CANPacket_t adrv_heartbeat = ev9_preinit_adrv_heartbeat_packet;
+    adrv_heartbeat.data[2] = ev9_preinit_adrv_heartbeat_counter++;
+    ev9_preinit_update_crc(&adrv_heartbeat);
+    ev9_preinit_adrv_heartbeat_packet = adrv_heartbeat;
+    ev9_preinit_last_adrv_heartbeat_tx_us = now_us;
+    can_send(&adrv_heartbeat, EV9_PREINIT_BUS_RADAR, true);
   }
 
   if (get_ts_elapsed(now_us, ev9_preinit_last_radar_status_tx_us) >= EV9_PREINIT_RADAR_STATUS_INTERVAL_US) {

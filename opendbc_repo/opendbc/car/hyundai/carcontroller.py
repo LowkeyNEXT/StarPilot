@@ -808,6 +808,7 @@ class CarController(CarControllerBase):
             self.packer, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
             CS.out, CS.is_metric, CC.latActive, direct_steering_actuating,
             CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker,
+            hba_icon=CS.hba_icon,
           )
         else:
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame)

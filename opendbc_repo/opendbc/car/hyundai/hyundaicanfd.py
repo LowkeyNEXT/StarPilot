@@ -792,14 +792,15 @@ def create_adrv_messages(packer, CAN, frame):
 
 def create_ev9_adrv_messages(packer, CAN, frame, enabled, main_cruise_enabled, hud, out, is_metric,
                              lat_active, steering_active, left_blindspot, right_blindspot,
-                             left_blinker, right_blinker):
-  ret = [
+                             left_blinker, right_blinker, hba_icon=0):
+  ret = [packer.make_can_msg("ADRV_0x51", CAN.ACAN, {})]
+  ret += [
     create_ev9_adrv_message(address, CAN.ECAN, frame // period)
     for address, period in _KIA_EV9_ADRV_PERIODS.items() if frame % period == 0
   ]
   if frame % 5 == 0:
     ret.extend(create_ev9_dash_status_messages(
-      packer, CAN, frame // 5, enabled, main_cruise_enabled, hud, out, is_metric, lat_active, steering_active,
+      packer, CAN, frame // 5, enabled, main_cruise_enabled, hud, out, is_metric, lat_active, steering_active, hba_icon,
     ))
     ret.extend(create_ev9_blindspot_status_messages(
       packer, CAN, frame // 5, left_blindspot, right_blindspot, left_blinker, right_blinker,
@@ -992,7 +993,7 @@ def create_ev9_acc_control(packer, CAN, counter: int, enabled: bool, accel: floa
 def create_ev9_dash_status_messages(packer, CAN, counter: int, enabled: bool = False,
                                     main_cruise_enabled: bool = False, hud=None, out=None,
                                     is_metric: bool = True, lat_active: bool = False,
-                                    steering_active: bool = False) -> list[CanData]:
+                                    steering_active: bool = False, hba_icon: int = 0) -> list[CanData]:
   """Recreate EV9 warnings and non-object HDA status from captured payloads."""
   cruise_speed = round(out.vCruiseCluster * (1 if is_metric else CV.KPH_TO_MPH)) if out is not None else 0
   display_speed = (40 if is_metric else 25) if cruise_speed > (145 if is_metric else 90) else max(cruise_speed, 0)
@@ -1011,6 +1012,7 @@ def create_ev9_dash_status_messages(packer, CAN, counter: int, enabled: bool = F
     "SOUNDS_3": 0,
     "SOUNDS_4": 0,
     "LFA_ICON": (2 if steering_active else 1) if lat_active else 0,
+    "HBA_ICON": hba_icon if hba_icon in (1, 2) else 0,
     "HDA_ICON": 2 if enabled else 1 if main_standby else 0,
     "TARGET": 3 if enabled else 0,
     "SETSPEED": 3 if enabled else 1 if main_standby else 0,
@@ -1022,7 +1024,7 @@ def create_ev9_dash_status_messages(packer, CAN, counter: int, enabled: bool = F
   }
   values_162 = {fault: 0 for fault in (
     "FAULT_FSS", "FAULT_FCA", "FAULT_LSS", "FAULT_SLA", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW",
-    "FAULT_ESS",
+    "FAULT_HBA", "FAULT_ESS",
   )}
   values_162["VIBRATE"] = 0
   return [
