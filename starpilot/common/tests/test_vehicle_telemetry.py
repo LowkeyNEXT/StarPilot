@@ -60,6 +60,23 @@ def test_persistent_cache_reports_live_then_cached(tmp_path):
   assert vehicle_telemetry.telemetry_response(snapshot, now=1100.0)["availability"] == "cached"
 
 
+def test_legacy_starpilot_cache_drops_duplicated_range_alias(tmp_path):
+  cache_path = tmp_path / "latest.json"
+  cache_path.write_text(json.dumps({
+    "schemaVersion": 1,
+    "source": "StarPilot carState",
+    "updatedAt": 1000.0,
+    "estimatedRangeKilometers": 408.0,
+    "distanceToEmptyKilometers": 408.0,
+  }))
+  cache_path.chmod(0o600)
+
+  snapshot = vehicle_telemetry.VehicleTelemetryCache(cache_path).load()
+
+  assert snapshot["distanceToEmptyKilometers"] == 408.0
+  assert "estimatedRangeKilometers" not in snapshot
+
+
 def test_live_cache_does_not_fsync(tmp_path, monkeypatch):
   fsync_calls = []
   monkeypatch.setattr(vehicle_telemetry.os, "fsync", lambda descriptor: fsync_calls.append(descriptor))

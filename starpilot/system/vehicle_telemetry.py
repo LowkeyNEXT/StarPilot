@@ -333,7 +333,14 @@ class VehicleTelemetryCache:
     self._last_signature = _vehicle_telemetry_signature(self.latest) if self.latest else None
 
   def load(self):
-    return _read_owner_only_json(self.path)
+    snapshot = _read_owner_only_json(self.path)
+    if (isinstance(snapshot, dict)
+        and snapshot.get("source") == "StarPilot carState"
+        and snapshot.get("estimatedRangeKilometers") == snapshot.get("distanceToEmptyKilometers")
+        and snapshot.get("distanceToEmptyKilometers") is not None):
+      snapshot = dict(snapshot)
+      snapshot.pop("estimatedRangeKilometers", None)
+    return snapshot
 
   def store(self, snapshot, monotonic_now=None):
     if not isinstance(snapshot, dict):
