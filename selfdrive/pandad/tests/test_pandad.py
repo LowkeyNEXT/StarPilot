@@ -5,11 +5,13 @@ import time
 import cereal.messaging as messaging
 from cereal import log
 from openpilot.common.gpio import gpio_set, gpio_init
+from openpilot.common.params import Params
+from opendbc.car.structs import CarParams
 from panda import Panda, PandaDFU
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.tici.pins import GPIO
-from openpilot.selfdrive.pandad.pandad import ev9_long_preinit_active
+from openpilot.selfdrive.pandad.pandad import ev9_long_preinit_active, get_ev9_long_preinit_panda
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 
@@ -19,6 +21,28 @@ def test_ev9_long_preinit_active():
   assert ev9_long_preinit_active({"state": 5})
   assert not ev9_long_preinit_active({"state": 3})
   assert not ev9_long_preinit_active(None)
+
+
+def test_ev9_long_preinit_uses_previous_route_when_persistent_is_mock(tmp_path):
+  params = Params(str(tmp_path))
+  params.put_bool("EV9LongPreinitPanda", True)
+  params.put_bool("OpenpilotEnabledToggle", True)
+  params.put_bool("AlphaLongitudinalEnabled", True)
+  params.put("CarParamsPersistent", CarParams(brand="mock", carFingerprint="MOCK").to_bytes())
+  params.put("CarParamsPrevRoute", CarParams(brand="hyundai", carFingerprint="KIA_EV9").to_bytes())
+
+  assert get_ev9_long_preinit_panda(params)
+
+
+def test_ev9_long_preinit_rejects_known_non_ev9_persistent_identity(tmp_path):
+  params = Params(str(tmp_path))
+  params.put_bool("EV9LongPreinitPanda", True)
+  params.put_bool("OpenpilotEnabledToggle", True)
+  params.put_bool("AlphaLongitudinalEnabled", True)
+  params.put("CarParamsPersistent", CarParams(brand="hyundai", carFingerprint="HYUNDAI_IONIQ_6").to_bytes())
+  params.put("CarParamsPrevRoute", CarParams(brand="hyundai", carFingerprint="KIA_EV9").to_bytes())
+
+  assert not get_ev9_long_preinit_panda(params)
 
 
 @pytest.mark.tici

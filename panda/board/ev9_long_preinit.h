@@ -328,8 +328,8 @@ static void ev9_long_preinit_init(void) {
       ev9_preinit_replay[i].packet = ev9_preinit_make_packet(ev9_preinit_replay[i].addr, EV9_PREINIT_BUS_ECAN,
                                                              ev9_preinit_replay[i].len);
       (void)memcpy(ev9_preinit_replay[i].packet.data, fallback, ev9_preinit_replay[i].len);
-      // Optional low-rate messages can use a route-backed fallback, but never
-      // suppress ADAS until every required control/status baseline was seen.
+      // Required fallbacks remain disabled until suppression is confirmed.
+      // Live startup frames replace these neutral payloads whenever available.
       ev9_preinit_replay[i].captured = !ev9_preinit_replay[i].required;
     }
   }
@@ -352,14 +352,6 @@ static bool ev9_preinit_is_stock_heartbeat(const CANPacket_t *packet) {
          (packet->data[18] == 0xFFU) && (packet->data[19] == 0x00U) &&
          (packet->data[21] == 0x00U) && (packet->data[22] == 0x00U) &&
          (packet->data[23] == 0x00U);
-}
-
-static bool ev9_preinit_required_baselines_ready(void) {
-  bool ready = true;
-  for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
-    ready = ready && (!ev9_preinit_replay[i].required || ev9_preinit_replay[i].captured);
-  }
-  return ready;
 }
 
 static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_heartbeat,
@@ -482,7 +474,7 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
     const uint32_t elapsed = get_ts_elapsed(now_us, ev9_preinit_state_started_us);
-    if (ev9_preinit_start_intent && ev9_preinit_required_baselines_ready()) {
+    if (ev9_preinit_start_intent) {
       ev9_preinit_attempts = 1U;
       ev9_preinit_state_started_us = now_us;
       if (ev9_preinit_comm_control_us == 0U) {
@@ -572,7 +564,8 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
 
   const bool capture_baselines = (ev9_preinit_state == EV9_PREINIT_COLLECTING) ||
                                  (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
-                                 (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL);
+                                 (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) ||
+                                 (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION);
   bool driver_braking = false;
   bool pre_ready = false;
   if (capture_baselines) {
@@ -666,6 +659,10 @@ static void ev9_preinit_start_bridge(uint32_t now_us) {
   ev9_preinit_last_tester_present_us = now_us - EV9_PREINIT_TESTER_PRESENT_INTERVAL_US;
   ev9_preinit_last_heartbeat_tx_us = now_us - EV9_PREINIT_HEARTBEAT_INTERVAL_US;
   for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
+    // A positive CommunicationControl response is the point of no return for
+    // reconstruction. Use the neutral fallback if a required live frame did
+    // not arrive before ADAS stopped transmitting.
+    ev9_preinit_replay[i].captured = true;
     ev9_preinit_replay[i].last_tx_us = now_us - ev9_preinit_replay[i].period_us;
   }
 }

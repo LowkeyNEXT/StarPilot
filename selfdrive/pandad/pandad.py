@@ -89,15 +89,18 @@ def get_ev9_long_preinit_panda(params: Params) -> bool:
   if not enabled:
     return False
 
-  cached_params = params.get("CarParamsPersistent")
-  if cached_params is None:
-    return False
-  try:
-    with CarParams.from_bytes(cached_params) as CP:
-      return CP.brand == "hyundai" and str(CP.carFingerprint) == "KIA_EV9"
-  except Exception:
-    cloudlog.exception("Unable to read persistent CarParams for EV9 Panda firmware selection")
-    return False
+  for key in ("CarParamsPersistent", "CarParamsPrevRoute"):
+    cached_params = params.get(key)
+    if cached_params is None:
+      continue
+    try:
+      with CarParams.from_bytes(cached_params) as CP:
+        if CP.brand == "mock":
+          continue
+        return CP.brand == "hyundai" and str(CP.carFingerprint) == "KIA_EV9"
+    except Exception:
+      cloudlog.exception(f"Unable to read {key} for EV9 Panda firmware selection")
+  return False
 
 
 def ev9_long_preinit_active(status) -> bool:
