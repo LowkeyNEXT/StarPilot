@@ -78,7 +78,7 @@ static const char *ev9_preinit_state_name(uint8_t state) {
 static const char *ev9_preinit_trigger_name(uint8_t trigger) {
   switch (trigger) {
     case EV9_PREINIT_TRIGGER_NONE: return "none";
-    case EV9_PREINIT_TRIGGER_STARTUP_PHASE: return "startup_phase";
+    case EV9_PREINIT_TRIGGER_PRE_READY: return "pre_ready";
     default: return "unknown";
   }
 }
@@ -436,8 +436,8 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
                  status->trigger, status->fingerprint, status->attempts, status->last_service, status->last_response,
                  status->last_nrc, status->first_ecan_addr, status->first_ecan_len, status->first_can_us,
                  status->state_started_us);
-            LOGW("EV9 Panda preinit timing trigger_us=%u first_ecan_us=%u brake_us=%u startup_phase_us=%u ignition_us=%u session_response_us=%u comm_control_us=%u",
-                 status->trigger_us, status->first_ecan_us, status->driver_braking_us, status->startup_phase_us,
+            LOGW("EV9 Panda preinit timing trigger_us=%u first_ecan_us=%u brake_us=%u pre_ready_us=%u ignition_us=%u session_response_us=%u comm_control_us=%u",
+                 status->trigger_us, status->first_ecan_us, status->driver_braking_us, status->pre_ready_us,
                  status->ignition_us, status->session_response_us, status->comm_control_us);
           }
         }

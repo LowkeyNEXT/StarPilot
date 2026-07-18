@@ -625,7 +625,7 @@ class Panda:
       "trigger_us": a[13],
       "first_ecan_us": a[14],
       "driver_braking_us": a[15],
-      "startup_phase_us": a[16],
+      "pre_ready_us": a[16],
       "ignition_us": a[17],
       "session_response_us": a[18],
       "comm_control_us": a[19],

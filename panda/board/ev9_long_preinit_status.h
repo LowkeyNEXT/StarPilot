@@ -14,7 +14,7 @@ typedef enum {
 
 typedef enum {
   EV9_PREINIT_TRIGGER_NONE = 0,
-  EV9_PREINIT_TRIGGER_STARTUP_PHASE,
+  EV9_PREINIT_TRIGGER_PRE_READY,
 } ev9_preinit_trigger_t;
 
 typedef struct __attribute__((packed)) {
@@ -34,7 +34,7 @@ typedef struct __attribute__((packed)) {
   uint32_t trigger_us;
   uint32_t first_ecan_us;
   uint32_t driver_braking_us;
-  uint32_t startup_phase_us;
+  uint32_t pre_ready_us;
   uint32_t ignition_us;
   uint32_t session_response_us;
   uint32_t comm_control_us;
