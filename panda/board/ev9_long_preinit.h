@@ -543,7 +543,7 @@ static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
   }
 }
 
-static void ev9_long_preinit_tick(uint32_t now_us) {
+static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
   const bool preinit_owns_tx = (ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) ||
                                (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) ||
                                (ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) ||
@@ -567,8 +567,17 @@ static void ev9_long_preinit_tick(uint32_t now_us) {
     return;
   }
   if (ev9_preinit_state == EV9_PREINIT_COLLECTING) {
-    if ((ev9_preinit_first_can_us != 0U) && (get_ts_elapsed(now_us, ev9_preinit_first_can_us) > EV9_PREINIT_FINGERPRINT_TIMEOUT_US)) {
+    // Hardware ignition rises before the direct OFF-to-READY powertrain state.
+    // Enter diagnostics immediately and capture ADAS baselines while it wakes.
+    if (ignition) {
+      ev9_preinit_attempts = 0U;
+      ev9_preinit_state = EV9_PREINIT_WAIT_SESSION;
+      ev9_preinit_state_started_us = now_us;
+      ev9_preinit_advance_diag(now_us);
+    } else if ((ev9_preinit_first_can_us != 0U) &&
+               (get_ts_elapsed(now_us, ev9_preinit_first_can_us) > EV9_PREINIT_FINGERPRINT_TIMEOUT_US)) {
       ev9_preinit_abort(now_us);
+    } else {
     }
     return;
   }

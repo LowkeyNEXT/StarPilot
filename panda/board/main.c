@@ -373,7 +373,7 @@ int main(void) {
   // LED should keep on blinking all the time
   while (true) {
     #ifdef PANDA_EV9_LONG_PREINIT
-    ev9_long_preinit_tick(microsecond_timer_get());
+    ev9_long_preinit_tick(microsecond_timer_get(), panda_ignition_line());
     #endif
     if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
       #ifdef DEBUG_FAULTS
