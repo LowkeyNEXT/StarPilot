@@ -17,6 +17,8 @@
 #define EV9_PREINIT_RADAR_STATUS_INTERVAL_US 200000U
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
 #define EV9_PREINIT_SUPPRESSION_TIMEOUT_US 300000U
+#define EV9_PREINIT_ADAS_REAPPEAR_GAP_US 50000U
+#define EV9_PREINIT_ADAS_REAPPEAR_CONFIRM_US 100000U
 #define EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US 2000000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
@@ -90,6 +92,7 @@ static uint32_t ev9_preinit_last_adrv_heartbeat_tx_us = 0U;
 static uint32_t ev9_preinit_last_radar_status_tx_us = 0U;
 static uint32_t ev9_preinit_last_vehicle_frame_us = 0U;
 static uint32_t ev9_preinit_last_adas_frame_us = 0U;
+static uint32_t ev9_preinit_adas_reappear_started_us = 0U;
 static uint32_t ev9_preinit_last_stock_heartbeat_us = 0U;
 static uint8_t ev9_preinit_attempts = 0U;
 static uint8_t ev9_preinit_fingerprint = 0U;
@@ -257,6 +260,7 @@ static void ev9_long_preinit_init(void) {
   ev9_preinit_last_radar_status_tx_us = 0U;
   ev9_preinit_last_vehicle_frame_us = 0U;
   ev9_preinit_last_adas_frame_us = 0U;
+  ev9_preinit_adas_reappear_started_us = 0U;
   ev9_preinit_last_stock_heartbeat_us = 0U;
   ev9_preinit_attempts = 0U;
   ev9_preinit_fingerprint = 0U;
@@ -509,9 +513,16 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
     ev9_preinit_last_adas_frame_us = now_us;
   }
   if ((ev9_preinit_state == EV9_PREINIT_ACTIVE) && adas_frame) {
-    ev9_preinit_restore();
-    ev9_preinit_abort(now_us);
-    return;
+    if ((ev9_preinit_adas_reappear_started_us == 0U) ||
+        (get_ts_elapsed(now_us, ev9_preinit_last_adas_frame_us) > EV9_PREINIT_ADAS_REAPPEAR_GAP_US)) {
+      ev9_preinit_adas_reappear_started_us = now_us;
+    }
+    ev9_preinit_last_adas_frame_us = now_us;
+    if (get_ts_elapsed(now_us, ev9_preinit_adas_reappear_started_us) >= EV9_PREINIT_ADAS_REAPPEAR_CONFIRM_US) {
+      ev9_preinit_restore();
+      ev9_preinit_abort(now_us);
+      return;
+    }
   }
 
   const bool capture_baselines = (ev9_preinit_state == EV9_PREINIT_COLLECTING) ||
@@ -600,6 +611,7 @@ static ev9_long_preinit_status_t ev9_long_preinit_get_status(void) {
 
 static void ev9_preinit_start_bridge(uint32_t now_us) {
   ev9_preinit_state = EV9_PREINIT_ACTIVE;
+  ev9_preinit_adas_reappear_started_us = 0U;
   ev9_preinit_last_tester_present_us = now_us - EV9_PREINIT_TESTER_PRESENT_INTERVAL_US;
   ev9_preinit_last_heartbeat_tx_us = now_us - EV9_PREINIT_HEARTBEAT_INTERVAL_US;
   ev9_preinit_last_adrv_heartbeat_tx_us = now_us - EV9_PREINIT_ADRV_HEARTBEAT_INTERVAL_US;
