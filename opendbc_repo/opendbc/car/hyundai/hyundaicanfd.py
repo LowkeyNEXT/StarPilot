@@ -793,8 +793,7 @@ def create_adrv_messages(packer, CAN, frame):
 def create_ev9_adrv_messages(packer, CAN, frame, enabled, main_cruise_enabled, hud, out, is_metric,
                              lat_active, steering_active, left_blindspot, right_blindspot,
                              left_blinker, right_blinker, hba_icon=0):
-  ret = [packer.make_can_msg("ADRV_0x51", CAN.ACAN, {})]
-  ret += [
+  ret = [
     create_ev9_adrv_message(address, CAN.ECAN, frame // period)
     for address, period in _KIA_EV9_ADRV_PERIODS.items() if frame % period == 0
   ]

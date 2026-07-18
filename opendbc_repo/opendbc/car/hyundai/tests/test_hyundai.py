@@ -2185,7 +2185,7 @@ class TestHyundaiFingerprint:
     assert msg.src == 0
     assert msg.dat.hex() == "9cfc0100000000000000000000000000"
 
-  def test_ev9_adrv_messages_include_acan_heartbeat(self):
+  def test_ev9_adrv_messages_do_not_add_acan_heartbeat(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
@@ -2196,9 +2196,7 @@ class TestHyundaiFingerprint:
       packer, can_bus, 1, False, False, None, None, True, False, False, False, False, False, False,
     )
 
-    assert len(msgs) == 1
-    assert msgs[0][0] == 0x51
-    assert msgs[0][2] == can_bus.ACAN
+    assert msgs == []
 
   def test_ev9_panda_preinit_handoff_accepts_complete_bridge(self):
     batches = iter((
