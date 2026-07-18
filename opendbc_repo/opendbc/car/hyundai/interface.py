@@ -125,12 +125,14 @@ def attempt_ev9_pre_fingerprint_suppression(cached_params, params, can_recv, can
       observed_can_messages.extend(packet)
     return packets
 
-  if params.get_bool("EV9LongPreinitPanda") and can_recv is not None:
-    panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv, observed_can_messages)
+  if params.get_bool("EV9LongPreinitPanda"):
+    panda_preinit_active = params.get_bool("EV9PandaPreinitActive")
+    if not panda_preinit_active and can_recv is not None:
+      panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv, observed_can_messages)
     if panda_preinit_active:
       EV9_EARLY_SUPPRESSION_ACTIVE = True
       hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
-      ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted returned neutral streams ===")
+      ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted active firmware status ===")
       return True
 
   ecu_log("=== EV9 PRE-FINGERPRINT SUPPRESSION ATTEMPT ===")
@@ -370,12 +372,15 @@ class CarInterface(CarInterfaceBase):
       if CP.flags & HyundaiFlags.CANFD_LKA_STEERING.value:
         addr, bus = 0x730, CanBus(CP).ECAN
 
-      if ev9_long and not EV9_EARLY_SUPPRESSION_ACTIVE and params.get_bool("EV9LongPreinitPanda") and can_recv is not None:
-        panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv)
+      if ev9_long and not EV9_EARLY_SUPPRESSION_ACTIVE and params.get_bool("EV9LongPreinitPanda"):
+        panda_preinit_active = params.get_bool("EV9PandaPreinitActive")
+        observed_can_messages = []
+        if not panda_preinit_active and can_recv is not None:
+          panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv)
         if panda_preinit_active:
           EV9_EARLY_SUPPRESSION_ACTIVE = True
           hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
-          ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted during interface init ===")
+          ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted active firmware status during interface init ===")
 
       ecu_disabled = ev9_long and EV9_EARLY_SUPPRESSION_ACTIVE
       if ev9_long:

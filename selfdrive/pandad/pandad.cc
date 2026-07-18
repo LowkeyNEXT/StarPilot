@@ -83,6 +83,10 @@ static const char *ev9_preinit_trigger_name(uint8_t trigger) {
   }
 }
 
+static bool ev9_preinit_active_state(uint8_t state) {
+  return (state == EV9_PREINIT_ACTIVE) || (state == EV9_PREINIT_HANDOFF);
+}
+
 bool check_all_connected(const std::vector<Panda *> &pandas) {
   for (const auto& panda : pandas) {
     if (!panda->connected()) {
@@ -385,6 +389,7 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
 void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engaged, bool is_onroad,
                          bool spoofing_started, bool ignore_ignition_line) {
   static std::unordered_map<std::string, uint64_t> ev9_preinit_statuses;
+  static Params params;
   std::vector<std::string> connected_serials;
   for (Panda *p : pandas) {
     connected_serials.push_back(p->hw_serial());
@@ -431,6 +436,7 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
           const auto previous_status = ev9_preinit_statuses.find(serial);
           if (previous_status == ev9_preinit_statuses.end() || previous_status->second != summary) {
             ev9_preinit_statuses[serial] = summary;
+            params.putBool("EV9PandaPreinitActive", ev9_preinit_active_state(status->state));
             LOGW("EV9 Panda preinit state=%s(%u) trigger=%s(%u) fingerprint=0x%02x attempts=%u service=0x%02x response=0x%02x nrc=0x%02x first_ecan=0x%03x/%u first_can_us=%u state_started_us=%u",
                  ev9_preinit_state_name(status->state), status->state, ev9_preinit_trigger_name(status->trigger),
                  status->trigger, status->fingerprint, status->attempts, status->last_service, status->last_response,

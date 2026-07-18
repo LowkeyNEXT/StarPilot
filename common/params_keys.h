@@ -38,6 +38,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DoUninstall", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DriverTooDistracted", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"EcuDisableFailed", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"EV9PandaPreinitActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"AlphaLongitudinalEnabled", {PERSISTENT, BOOL}},
     {"ExperimentalLongitudinalEnabled", {PERSISTENT, BOOL}},
     {"ExperimentalMode", {PERSISTENT, BOOL}},

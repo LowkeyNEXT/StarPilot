@@ -9,8 +9,16 @@ from panda import Panda, PandaDFU
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.tici.pins import GPIO
+from openpilot.selfdrive.pandad.pandad import ev9_long_preinit_active
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def test_ev9_long_preinit_active():
+  assert ev9_long_preinit_active({"state": 4})
+  assert ev9_long_preinit_active({"state": 5})
+  assert not ev9_long_preinit_active({"state": 3})
+  assert not ev9_long_preinit_active(None)
 
 
 @pytest.mark.tici

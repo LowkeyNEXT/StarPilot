@@ -100,6 +100,10 @@ def get_ev9_long_preinit_panda(params: Params) -> bool:
     return False
 
 
+def ev9_long_preinit_active(status) -> bool:
+  return status is not None and status.get("state") in (4, 5)
+
+
 def flash_panda(panda_serial: str, remote_start: bool, hkg_remote_start: bool,
                 ignore_ignition_line: bool, ev9_long_preinit: bool = False) -> Panda:
   try:
@@ -218,6 +222,7 @@ def main() -> None:
       # log panda fw versions
       params.put("PandaSignatures", b','.join(p.get_signature() for p in pandas))
 
+      ev9_preinit_active = False
       for panda in pandas:
         # check health for lost heartbeat
         health = panda.health()
@@ -228,14 +233,17 @@ def main() -> None:
           params.put_bool("PandaSomResetTriggered", True)
           cloudlog.event("panda.som_reset_triggered", health=health, serial=panda.get_usb_serial())
 
-        if first_run:
-          if ev9_long_preinit:
-            cloudlog.warning(f"Preserving EV9 Panda preinit state on {panda.get_usb_serial()}: "
-                             f"{panda.get_ev9_long_preinit_status()}")
-          else:
-            # reset panda to ensure we're in a good state
-            cloudlog.info(f"Resetting panda {panda.get_usb_serial()}")
-            panda.reset(reconnect=True)
+        if ev9_long_preinit:
+          preinit_status = panda.get_ev9_long_preinit_status()
+          ev9_preinit_active = ev9_preinit_active or ev9_long_preinit_active(preinit_status)
+          if first_run:
+            cloudlog.warning(f"Preserving EV9 Panda preinit state on {panda.get_usb_serial()}: {preinit_status}")
+        elif first_run:
+          # reset panda to ensure we're in a good state
+          cloudlog.info(f"Resetting panda {panda.get_usb_serial()}")
+          panda.reset(reconnect=True)
+
+      params.put_bool("EV9PandaPreinitActive", ev9_preinit_active)
 
       for p in pandas:
         p.close()
