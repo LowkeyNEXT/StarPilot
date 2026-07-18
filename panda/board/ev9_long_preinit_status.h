@@ -14,7 +14,7 @@ typedef enum {
 
 typedef enum {
   EV9_PREINIT_TRIGGER_NONE = 0,
-  EV9_PREINIT_TRIGGER_ADAS_HEARTBEAT,
+  EV9_PREINIT_TRIGGER_IGNITION_ADAS_HEARTBEAT,
 } ev9_preinit_trigger_t;
 
 typedef struct __attribute__((packed)) {
