@@ -804,9 +804,11 @@ class CarController(CarControllerBase):
     if self.long_active_ecu:
       if lka_steering:
         if self.CP.carFingerprint == CAR.KIA_EV9:
+          steering_icon_available = CC.latActive or CC.enabled
+          steering_icon_active = direct_steering_actuating and not CS.out.steeringPressed
           adrv_messages = hyundaicanfd.create_ev9_adrv_messages(
             self.packer, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
-            CS.out, CS.is_metric, CC.latActive, direct_steering_actuating,
+            CS.out, CS.is_metric, steering_icon_available, steering_icon_active,
             CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker,
             hba_icon=CS.hba_icon,
           )
