@@ -51,6 +51,15 @@ def ev9_panda_preinit_baselines(messages: list[CanData]) -> list[CanData]:
   return [CanData(msg.address, msg.dat, msg.src - 0x80 if 0x80 <= msg.src < 0xC0 else msg.src) for msg in messages]
 
 
+def wait_for_ev9_panda_preinit(can_recv, initial_can_messages: list | None = None) -> tuple[bool, list[CanData]]:
+  observed_can_messages = list(initial_can_messages or [])
+  handoff_deadline = time.monotonic() + EV9_PANDA_PREINIT_HANDOFF_WAIT
+  while not ev9_panda_preinit_active(observed_can_messages) and time.monotonic() < handoff_deadline:
+    for packet in can_recv(wait_for_one=True):
+      observed_can_messages.extend(packet)
+  return ev9_panda_preinit_active(observed_can_messages), observed_can_messages
+
+
 def apply_platform_longitudinal_params(ret: structs.CarParams) -> None:
   if not (ret.flags & HyundaiFlags.CANFD):
     return
@@ -117,10 +126,8 @@ def attempt_ev9_pre_fingerprint_suppression(cached_params, params, can_recv, can
     return packets
 
   if params.get_bool("EV9LongPreinitPanda") and can_recv is not None:
-    handoff_deadline = time.monotonic() + EV9_PANDA_PREINIT_HANDOFF_WAIT
-    while not ev9_panda_preinit_active(observed_can_messages) and time.monotonic() < handoff_deadline:
-      observing_can_recv(wait_for_one=True)
-    if ev9_panda_preinit_active(observed_can_messages):
+    panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv, observed_can_messages)
+    if panda_preinit_active:
       EV9_EARLY_SUPPRESSION_ACTIVE = True
       hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
       ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted returned neutral streams ===")
@@ -362,6 +369,13 @@ class CarInterface(CarInterfaceBase):
       addr, bus = 0x7d0, CanBus(CP).ECAN if CP.flags & (HyundaiFlags.CANFD | HyundaiFlags.CAN_CANFD_BLENDED) else 0
       if CP.flags & HyundaiFlags.CANFD_LKA_STEERING.value:
         addr, bus = 0x730, CanBus(CP).ECAN
+
+      if ev9_long and not EV9_EARLY_SUPPRESSION_ACTIVE and params.get_bool("EV9LongPreinitPanda") and can_recv is not None:
+        panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv)
+        if panda_preinit_active:
+          EV9_EARLY_SUPPRESSION_ACTIVE = True
+          hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
+          ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted during interface init ===")
 
       ecu_disabled = ev9_long and EV9_EARLY_SUPPRESSION_ACTIVE
       if ev9_long:

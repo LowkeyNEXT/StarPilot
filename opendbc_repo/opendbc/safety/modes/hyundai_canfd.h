@@ -377,6 +377,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
     {0x162, 1, 32, .check_relay = false},  // CCNC faults
     {0x38C, 1, 32, .check_relay = false},  // ADAS status
     {0x57A, 1, 32, .check_relay = false},  // ADAS status
+    {0x500, 0, 16, .check_relay = false},  // radar status
   };
 
   static const CanMsg HYUNDAI_CANFD_LFA_STEERING_TX_MSGS[] = {

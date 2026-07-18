@@ -685,7 +685,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
 class TestHyundaiCanfdCCNCLKALong(TestHyundaiCanfdLKASteeringAltAngleLongEV):
 
   TX_MSGS = TestHyundaiCanfdLKASteeringAltAngleLongEV.TX_MSGS + [
-    [0xCB, 1], [0x161, 1], [0x162, 1], [0x38C, 1], [0x57A, 1],
+    [0xCB, 1], [0x161, 1], [0x162, 1], [0x38C, 1], [0x57A, 1], [0x500, 0],
   ]
   SAFETY_PARAM = TestHyundaiCanfdLKASteeringAltAngleLongEV.SAFETY_PARAM | HyundaiSafetyFlags.CCNC
 
