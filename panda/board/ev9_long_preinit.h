@@ -59,6 +59,14 @@ static const uint8_t ev9_preinit_fallback_162[32] =
   "\x00\x00\x00\x27\x00\x00\x00\x00\xc0\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 static const uint8_t ev9_preinit_fallback_160[16] =
   "\x00\x00\x00\x01\x00\x00\x00\x00\xff\xfc\x01\x00\xa8\x00\x10\x00";
+static const uint8_t ev9_preinit_fallback_12a[16] =
+  "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x09\x00\x04\x00\x00\x00\x00";
+static const uint8_t ev9_preinit_fallback_cb[24] =
+  "\x00\x00\x00\x10\xfb\x3f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+static const uint8_t ev9_preinit_fallback_1a0[32] =
+  "\x00\x00\x00\xfe\xf7\xff\xff\x00\x00\x00\x00\x00\x00\x08\x00\x00\xff\xf3\x3f\x0f\x07\x00\x00\x00\xff\x07\x00\x00\x00\x00\x00\x00";
+static const uint8_t ev9_preinit_fallback_1ba[24] =
+  "\x00\x00\x00\x00\x00\x00\x00\x88\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0f";
 static const uint8_t ev9_preinit_fallback_1da[32] =
   "\x00\x00\x00\x22\x00\x11\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 static const uint8_t ev9_preinit_fallback_1e0[16] =
@@ -223,8 +231,13 @@ static void ev9_long_preinit_init(void) {
     ev9_preinit_replay[i].last_tx_us = 0U;
     const uint8_t *fallback = NULL;
     switch (ev9_preinit_replay[i].addr) {
+      case 0x12AU: fallback = ev9_preinit_fallback_12a; break;
+      case 0xCBU: fallback = ev9_preinit_fallback_cb; break;
+      case 0x160U: fallback = ev9_preinit_fallback_160; break;
       case 0x161U: fallback = ev9_preinit_fallback_161; break;
       case 0x162U: fallback = ev9_preinit_fallback_162; break;
+      case 0x1A0U: fallback = ev9_preinit_fallback_1a0; break;
+      case 0x1BAU: fallback = ev9_preinit_fallback_1ba; break;
       case 0x1DAU: fallback = ev9_preinit_fallback_1da; break;
       case 0x1E0U: fallback = ev9_preinit_fallback_1e0; break;
       case 0x1E5U: fallback = ev9_preinit_fallback_1e5; break;
@@ -298,9 +311,19 @@ static void ev9_preinit_capture_frame(const CANPacket_t *packet, bool stock_hear
   if (valid_canfd_crc && (packet->bus == EV9_PREINIT_BUS_ECAN)) {
     for (uint8_t i = 0U; i < (sizeof(ev9_preinit_replay) / sizeof(ev9_preinit_replay[0])); i++) {
       if ((packet->addr == ev9_preinit_replay[i].addr) && (GET_LEN(packet) == ev9_preinit_replay[i].len)) {
+        const uint8_t *neutral_fallback = NULL;
         if (packet->addr == 0x160U) {
-          ev9_preinit_replay[i].packet = ev9_preinit_make_packet(0x160U, EV9_PREINIT_BUS_ECAN, 16U);
-          (void)memcpy(ev9_preinit_replay[i].packet.data, ev9_preinit_fallback_160, sizeof(ev9_preinit_fallback_160));
+          neutral_fallback = ev9_preinit_fallback_160;
+        } else if (packet->addr == 0x1A0U) {
+          neutral_fallback = ev9_preinit_fallback_1a0;
+        } else if (packet->addr == 0x1BAU) {
+          neutral_fallback = ev9_preinit_fallback_1ba;
+        } else {
+        }
+        if (neutral_fallback != NULL) {
+          ev9_preinit_replay[i].packet = ev9_preinit_make_packet(packet->addr, EV9_PREINIT_BUS_ECAN,
+                                                                 ev9_preinit_replay[i].len);
+          (void)memcpy(ev9_preinit_replay[i].packet.data, neutral_fallback, ev9_preinit_replay[i].len);
           ev9_preinit_replay[i].packet.data[2] = packet->data[2];
         } else {
           ev9_preinit_replay[i].packet = *packet;
