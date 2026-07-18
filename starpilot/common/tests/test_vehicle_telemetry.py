@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 from openpilot.starpilot.system import vehicle_telemetry
+from openpilot.starpilot.system import vehicle_telemetryd
 
 
 def test_build_vehicle_telemetry_snapshot_uses_generic_car_state_fields():
@@ -34,6 +35,48 @@ def test_default_zero_car_state_is_not_valid_telemetry():
     fuelGauge=0.0,
     distanceToEmpty=0.0,
   )) is None
+
+
+def test_daemon_does_not_timestamp_telemetry_until_system_time_is_valid(monkeypatch):
+  car_state = SimpleNamespace(
+    fuelGauge=0.775,
+    distanceToEmpty=408000.0,
+    charging=False,
+    chargingPortConnected=False,
+    vEgo=0.0,
+    standstill=True,
+  )
+  monkeypatch.setattr(vehicle_telemetryd, "system_time_valid", lambda: False)
+
+  assert vehicle_telemetryd.build_clock_valid_vehicle_telemetry_snapshot(
+    car_state,
+    vehicle_fingerprint="KIA EV9",
+    timestamp=1_000.0,
+  ) is None
+
+  monkeypatch.setattr(vehicle_telemetryd, "system_time_valid", lambda: True)
+  snapshot = vehicle_telemetryd.build_clock_valid_vehicle_telemetry_snapshot(
+    car_state,
+    vehicle_fingerprint="KIA EV9",
+    timestamp=2_000.0,
+  )
+  assert snapshot["updatedAt"] == 2_000.0
+
+
+def test_daemon_only_republishes_plausibly_recent_cached_timestamps():
+  now = 10_000_000.0
+  assert vehicle_telemetryd.cached_snapshot_timestamp_is_plausible(
+    {"updatedAt": now - 60.0},
+    now=now,
+  )
+  assert not vehicle_telemetryd.cached_snapshot_timestamp_is_plausible(
+    {"updatedAt": now - vehicle_telemetryd.MAXIMUM_CACHED_PUBLISH_AGE_SECONDS - 1.0},
+    now=now,
+  )
+  assert not vehicle_telemetryd.cached_snapshot_timestamp_is_plausible(
+    {"updatedAt": now + 1.0},
+    now=now,
+  )
 
 
 def test_activity_uses_onroad_state_instead_of_instantaneous_speed():
