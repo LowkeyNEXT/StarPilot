@@ -16,7 +16,6 @@
 #define EV9_PREINIT_SUPPRESSION_QUIET_US 60000U
 #define EV9_PREINIT_SUPPRESSION_TIMEOUT_US 300000U
 #define EV9_PREINIT_REARM_HEARTBEAT_TIMEOUT_US 2000000U
-#define EV9_PREINIT_COMM_CONTROL_DELAY_US 50000U
 #define EV9_PREINIT_MAX_ATTEMPTS 3U
 #define EV9_PREINIT_COMMUNICATION_TYPE 0x01U
 
@@ -161,10 +160,7 @@ static CANPacket_t ev9_preinit_make_packet(uint16_t addr, uint8_t bus, uint8_t l
   return packet;
 }
 
-static void ev9_preinit_send_diag(uint8_t service, uint8_t subfunction, uint8_t control_type) {
-  ev9_preinit_last_service = service;
-  ev9_preinit_last_response = 0U;
-  ev9_preinit_last_nrc = 0U;
+static void ev9_preinit_send_diag_request(uint8_t service, uint8_t subfunction, uint8_t control_type) {
   CANPacket_t packet = ev9_preinit_make_packet(EV9_PREINIT_DIAG_ADDR, EV9_PREINIT_BUS_ECAN, 8U);
   if (service == 0x28U) {
     packet.data[0] = 3U;
@@ -180,8 +176,20 @@ static void ev9_preinit_send_diag(uint8_t service, uint8_t subfunction, uint8_t 
   can_send(&packet, EV9_PREINIT_BUS_ECAN, true);
 }
 
+static void ev9_preinit_send_diag(uint8_t service, uint8_t subfunction, uint8_t control_type) {
+  ev9_preinit_last_service = service;
+  ev9_preinit_last_response = 0U;
+  ev9_preinit_last_nrc = 0U;
+  ev9_preinit_send_diag_request(service, subfunction, control_type);
+}
+
+static void ev9_preinit_return_to_default_session(void) {
+  ev9_preinit_send_diag_request(0x10U, 0x01U, 0U);
+}
+
 static void ev9_preinit_restore(void) {
-  ev9_preinit_send_diag(0x28U, 0x00U, EV9_PREINIT_COMMUNICATION_TYPE);
+  ev9_preinit_send_diag_request(0x28U, 0x00U, EV9_PREINIT_COMMUNICATION_TYPE);
+  ev9_preinit_return_to_default_session();
 }
 
 static void ev9_preinit_abort(uint32_t now_us) {
@@ -378,11 +386,12 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
   }
   if ((ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) && (ev9_preinit_attempts == 0U)) {
     const uint32_t elapsed = get_ts_elapsed(now_us, ev9_preinit_state_started_us);
-    if ((elapsed >= EV9_PREINIT_COMM_CONTROL_DELAY_US) && ev9_preinit_required_baselines_ready()) {
+    if (ev9_preinit_required_baselines_ready()) {
       ev9_preinit_attempts = 1U;
       ev9_preinit_state_started_us = now_us;
       ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
     } else if (elapsed > EV9_PREINIT_FINGERPRINT_TIMEOUT_US) {
+      ev9_preinit_return_to_default_session();
       ev9_preinit_abort(now_us);
     } else {
     }
@@ -400,6 +409,9 @@ static void ev9_preinit_advance_diag(uint32_t now_us) {
         ev9_preinit_send_diag(0x28U, 0x01U, EV9_PREINIT_COMMUNICATION_TYPE);
       }
     } else {
+      if (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) {
+        ev9_preinit_return_to_default_session();
+      }
       ev9_preinit_abort(now_us);
     }
   }
@@ -463,6 +475,9 @@ static void ev9_long_preinit_rx_hook(const CANPacket_t *packet, uint32_t now_us)
       if (retryable) {
         ev9_preinit_state_started_us = now_us;
       } else {
+        if (ev9_preinit_state == EV9_PREINIT_WAIT_COMM_CONTROL) {
+          ev9_preinit_return_to_default_session();
+        }
         ev9_preinit_abort(now_us);
       }
     } else if ((ev9_preinit_state == EV9_PREINIT_WAIT_SESSION) && (packet->data[1] == 0x50U) && (packet->data[2] == 0x03U)) {
