@@ -240,6 +240,11 @@ class Car:
       self._initialize_car_interface()
       self.ev9_early_interface_initialized = True
       self.ev9_early_control_active = self.CP.openpilotLongitudinalControl and not self.params.get_bool("EcuDisableFailed")
+      if self.ev9_early_control_active:
+        # The normal loop is driven by incoming CAN. Prime the replacement set
+        # immediately so a startup receive gap cannot expose the suppressed ECU.
+        self._send_ev9_early_inactive_reconstruction(valid=False)
+        cloudlog.warning("EV9 early inactive reconstruction primed")
       cloudlog.warning(f"EV9 early inactive reconstruction active={self.ev9_early_control_active}")
 
     update_starpilot_toggles()
@@ -267,16 +272,19 @@ class Car:
 
     self.params.put_bool_nonblocking("ControlsReady", True)
 
-  def _send_ev9_early_inactive_reconstruction(self, CS: car.CarState) -> None:
+  def _send_ev9_early_inactive_reconstruction(self, valid: bool) -> None:
     """Maintain the complete non-actuating EV9 replacement set during startup."""
-    now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
+    now_nanos = getattr(self, "can_log_mono_time", 0) if REPLAY else int(time.monotonic() * 1e9)
     self.last_actuators_output, can_sends = self.CI.apply(self.ev9_early_car_control, now_nanos, self.starpilot_toggles)
-    self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
+    self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=valid))
 
   def state_update(self) -> tuple[car.CarState, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
 
-    can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
+    # Keep the EV9 replacement set clocked while CAN readers reconnect during
+    # startup. The ratekeeper below preserves the normal 100 Hz loop timing.
+    wait_for_can = not (self.ev9_early_control_active and not self.initialized_prev)
+    can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=wait_for_can)
     can_list = can_capnp_to_list(can_strs)
 
     # Update carState from CAN
@@ -479,7 +487,7 @@ class Car:
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
     elif self.ev9_early_control_active:
-      self._send_ev9_early_inactive_reconstruction(CS)
+      self._send_ev9_early_inactive_reconstruction(CS.canValid)
 
     self.initialized_prev = initialized
     self.CS_prev = CS
