@@ -434,6 +434,7 @@ class CarState(CarStateBase):
     self.is_metric = cp.vl["CRUISE_BUTTONS_ALT"]["DISTANCE_UNIT"] != 1
     speed_factor = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
+    vehicle_telemetry_available = False
     if self.CP.flags & (HyundaiFlags.EV | HyundaiFlags.HYBRID):
       ret.gasPressed = cp.vl[self.accelerator_msg_canfd]["ACCELERATOR_PEDAL"] > 1e-5
     else:
@@ -453,10 +454,12 @@ class CarState(CarStateBase):
                         if seen and 0.0 <= soc <= 100.0]
       if soc_candidates and max(soc_candidates) - min(soc_candidates) <= 1.0:
         ret.fuelGauge = sum(soc_candidates) / len(soc_candidates) / 100.0
+        vehicle_telemetry_available = True
 
       dte_km = cp.vl["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"]
       if cp.ts_nanos["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"] > 0 and 0.0 < dte_km < 900.0:
         ret.distanceToEmpty = dte_km * 1000.0
+        vehicle_telemetry_available = True
 
       plug_connected = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] == 1
       plug_connected_redundant = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] == 1
@@ -604,6 +607,15 @@ class CarState(CarStateBase):
 
     fp_ret = custom.StarPilotCarState.new_message()
     fp_ret.dashboardSpeedLimit = calculate_canfd_speed_limit(self.CP, self.FPCP, cp, cp_cam, speed_factor)
+
+    if self.CP.carFingerprint in CANFD_EV_TELEMETRY_CAR:
+      fp_ret.vehicleTelemetryAvailable = vehicle_telemetry_available
+      fp_ret.fuelGauge = ret.fuelGauge
+      fp_ret.distanceToEmpty = ret.distanceToEmpty
+      fp_ret.charging = ret.charging
+      fp_ret.chargingPortConnected = ret.chargingPortConnected
+      fp_ret.vEgo = ret.vEgo
+      fp_ret.standstill = ret.standstill
 
     if self.CP.flags & HyundaiFlags.EV:
       drive_mode = cp.vl["DRIVE_MODE_EV"]["DRIVE_MODE"]

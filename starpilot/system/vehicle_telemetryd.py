@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Always-running bridge from generic CarState energy fields to cache/export."""
+"""Always-running bridge from StarPilot vehicle state to cache/export."""
 
 import time
 
@@ -14,6 +14,7 @@ from openpilot.starpilot.system.vehicle_telemetry import (
 )
 
 MAXIMUM_CACHED_PUBLISH_AGE_SECONDS = 30 * 24 * 60 * 60
+VEHICLE_TELEMETRY_SERVICES = ["starpilotCarState", "carParams", "deviceState"]
 
 
 def build_clock_valid_vehicle_telemetry_snapshot(car_state, vehicle_fingerprint="", timestamp=None):
@@ -37,7 +38,7 @@ def cached_snapshot_timestamp_is_plausible(snapshot, now=None):
 
 
 def vehicle_telemetry_thread():
-  sm = messaging.SubMaster(["carState", "carParams", "deviceState"])
+  sm = messaging.SubMaster(VEHICLE_TELEMETRY_SERVICES)
   cache = VehicleTelemetryCache()
   publisher = VehicleTelemetryPublisher()
   publisher.start()
@@ -59,8 +60,10 @@ def vehicle_telemetry_thread():
     if sm.updated["carParams"] and sm.valid["carParams"]:
       fingerprint = str(sm["carParams"].carFingerprint)
 
-    if clock_valid and sm.updated["carState"] and sm.alive["carState"] and sm.valid["carState"]:
-      snapshot = build_clock_valid_vehicle_telemetry_snapshot(sm["carState"], fingerprint)
+    vehicle_state = sm["starpilotCarState"]
+    if (clock_valid and sm.updated["starpilotCarState"] and sm.alive["starpilotCarState"] and
+        sm.valid["starpilotCarState"] and vehicle_state.vehicleTelemetryAvailable):
+      snapshot = build_clock_valid_vehicle_telemetry_snapshot(vehicle_state, fingerprint)
       if snapshot is not None:
         cache.store(snapshot)
         publisher.submit(snapshot)

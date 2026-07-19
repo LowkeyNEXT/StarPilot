@@ -2,6 +2,7 @@ import json
 
 from types import SimpleNamespace
 
+from cereal import custom
 from openpilot.starpilot.system import vehicle_telemetry
 from openpilot.starpilot.system import vehicle_telemetryd
 
@@ -35,6 +36,33 @@ def test_default_zero_car_state_is_not_valid_telemetry():
     fuelGauge=0.0,
     distanceToEmpty=0.0,
   )) is None
+
+
+def test_daemon_uses_starpilot_vehicle_state_without_another_car_state_reader():
+  assert "starpilotCarState" in vehicle_telemetryd.VEHICLE_TELEMETRY_SERVICES
+  assert "carState" not in vehicle_telemetryd.VEHICLE_TELEMETRY_SERVICES
+
+
+def test_starpilot_vehicle_state_carries_normalized_telemetry_fields():
+  vehicle_state = custom.StarPilotCarState.new_message()
+  vehicle_state.vehicleTelemetryAvailable = True
+  vehicle_state.fuelGauge = 0.775
+  vehicle_state.distanceToEmpty = 408000.0
+  vehicle_state.charging = True
+  vehicle_state.chargingPortConnected = True
+  vehicle_state.vEgo = 12.3456
+  vehicle_state.standstill = False
+
+  snapshot = vehicle_telemetry.build_vehicle_telemetry_snapshot(
+    vehicle_state,
+    timestamp=1234.5,
+    vehicle_fingerprint="KIA_EV9",
+  )
+
+  assert snapshot["stateOfChargePercent"] == 77.5
+  assert snapshot["distanceToEmptyKilometers"] == 408.0
+  assert snapshot["isCharging"]
+  assert snapshot["isPluggedIn"]
 
 
 def test_daemon_does_not_timestamp_telemetry_until_system_time_is_valid(monkeypatch):
