@@ -740,6 +740,18 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
           self.assertEqual(controls_allowed, self._tx(self._angle_cmd_msg(angle_cmd, True)))
           self.assertEqual(controls_allowed and angle_cmd == angle_meas, self._tx(self._angle_cmd_msg(angle_cmd, False)))
 
+  def test_ccnc_angle_long_tx_messages(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, self.SAFETY_PARAM | HyundaiSafetyFlags.CCNC)
+    self.safety.init_tests()
+
+    for address, length in ((0x161, 32), (0x162, 32), (0x1BA, 24), (0x1E5, 16), (0x38C, 32)):
+      with self.subTest(address=address):
+        self.assertTrue(self._tx(common.make_msg(1, address, length)))
+
+    for address, length in ((0x51, 32), (0x31A, 32), (0x3B5, 32), (0x3C1, 8)):
+      with self.subTest(address=address):
+        self.assertFalse(self._tx(common.make_msg(1 if address != 0x51 else 0, address, length)))
+
   def _accel_msg(self, accel, aeb_req=False, aeb_decel=0):
     values = {
       "aReqRaw": accel,
