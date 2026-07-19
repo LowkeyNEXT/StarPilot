@@ -8,6 +8,9 @@ from opendbc.car import Bus, ButtonType, gen_empty_fingerprint, structs
 from opendbc.car.structs import CarControl, CarParams
 from opendbc.car.fw_versions import build_fw_dict, match_fw_to_car
 from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalTuningState, GenesisG90LongitudinalTuningState, \
+                                             EV9LongitudinalTuningState, update_ev9_longitudinal_tuning, \
+                                             BlindspotWarningState, update_blindspot_warning, \
+                                             reset_egmp_longitudinal_tuning, \
                                              update_ioniq_6_longitudinal_tuning, \
                                              update_genesis_g90_longitudinal_tuning, egmp_dynamic_longitudinal_tuning, \
                                              should_reset_ev6_gt_line_longitudinal_tuning, reset_ev6_gt_line_longitudinal_tuning, \
@@ -239,16 +242,21 @@ class TestHyundaiFingerprint:
     fingerprint[ev9_radar_config.bus][ev9_radar_config.start_addr] = ev9_radar_config.expected_length
     ev9_car_fw = [CarParams.CarFw(ecu=Ecu.adas, fwVersion=b"", address=0x730, brand="hyundai")]
     CP = CarInterface.get_params(CAR.KIA_EV9, fingerprint, ev9_car_fw, True, False, False, None)
-    assert not CP.alphaLongitudinalAvailable
-    assert not CP.openpilotLongitudinalControl
+    assert CP.alphaLongitudinalAvailable
+    assert CP.openpilotLongitudinalControl
     assert not CP.radarUnavailable
     assert CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
-    assert not (CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.LONG)
+    assert CP.flags & HyundaiFlags.CCNC
+    assert egmp_dynamic_longitudinal_tuning(CP)
+    assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.LONG
     assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANFD_ANGLE_STEERING
-
+    assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CCNC
     CP = CarInterface.get_params(CAR.KIA_EV9, fingerprint, [], True, False, False, None)
-    assert not CP.openpilotLongitudinalControl
+    assert CP.openpilotLongitudinalControl
 
+    CP = CarInterface.get_params(CAR.KIA_EV9, fingerprint, ev9_car_fw, False, False, False, None)
+    assert not CP.openpilotLongitudinalControl
+    assert not (CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CCNC)
     for candidate in HYUNDAI_NON_SCC_CARS:
       CP = CarInterface.get_params(candidate, gen_empty_fingerprint(), [], True, False, False, None)
       assert bool(CP.flags & HyundaiFlags.NON_SCC)
@@ -258,6 +266,7 @@ class TestHyundaiFingerprint:
     CP = CarInterface.get_params(CAR.KIA_SPORTAGE_HEV_2026, gen_empty_fingerprint(), [], False, False, False, None)
     assert CP.steerControlType == CarParams.SteerControlType.angle
     assert CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANFD_ANGLE_STEERING
+    assert not (CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CCNC)
 
     fingerprint = gen_empty_fingerprint()
     cam_can = CanBus(None, fingerprint).CAM
@@ -556,6 +565,20 @@ class TestHyundaiFingerprint:
     car_state.out.cruiseState.enabled = True
     events = car_state.create_cruise_button_events(Buttons.CANCEL, Buttons.NONE)
     assert [(be.type, be.pressed) for be in events] == [(ButtonType.cancel, True)]
+
+  def test_ccnc_angle_long_main_cruise_toggle(self):
+    car_state = SimpleNamespace(main_cruise_on=False)
+    ret = SimpleNamespace(
+      cruiseState=SimpleNamespace(available=True),
+      buttonEvents=[structs.CarState.ButtonEvent(pressed=True, type=ButtonType.mainCruise)],
+    )
+    assert CarState.update_main_cruise(car_state, ret)
+
+    ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=False, type=ButtonType.mainCruise)]
+    assert CarState.update_main_cruise(car_state, ret)
+
+    ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.mainCruise)]
+    assert not CarState.update_main_cruise(car_state, ret)
 
   def test_palisade_2023_cancel_release_enables_from_standby(self):
     toggles = get_test_toggles()
@@ -1219,6 +1242,52 @@ class TestHyundaiFingerprint:
     assert not should_use_ev6_gt_line_stop_direct_tracking(True, False, 1.8, -2.05, -1.29)
     assert not should_use_ev6_gt_line_stop_direct_tracking(False, True, 1.8, -2.05, -1.29)
     assert not should_use_ev6_gt_line_stop_direct_tracking(True, True, 1.8, -1.0, -1.29)
+
+  def test_ev9_longitudinal_tuning_matches_stock_stop_hold_release_timing(self):
+    state = update_ev9_longitudinal_tuning(EV9LongitudinalTuningState(), True, True, 1.0)
+    assert not state.stop_request
+
+    state = update_ev9_longitudinal_tuning(state, True, True, 0.4)
+    assert state.stop_request
+    assert not state.cruise_standstill
+
+    for _ in range(178):
+      state = update_ev9_longitudinal_tuning(state, True, True, 0.0)
+    assert state.cruise_standstill
+
+    for _ in range(6):
+      state = update_ev9_longitudinal_tuning(state, True, False, 0.0)
+      assert state.stop_request
+      assert not state.cruise_standstill
+    assert update_ev9_longitudinal_tuning(state, True, False, 0.0) == EV9LongitudinalTuningState()
+
+  def test_ev9_blindspot_warning_matches_stock_envelope(self):
+    state = BlindspotWarningState()
+    outputs = [update_blindspot_warning(state, True, True) for _ in range(40)]
+
+    assert [output.sound_active for output in outputs[:36]] == [True] * 36
+    assert not any(output.sound_active for output in outputs[36:])
+    assert [output.mirror_lamp_active for output in outputs[:20]] == [True] * 16 + [False] * 4
+    assert [output.mirror_lamp_active for output in outputs[20:]] == [True] * 16 + [False] * 4
+
+    assert not update_blindspot_warning(state, False, True).sound_active
+    assert update_blindspot_warning(state, True, True).sound_active is False
+    update_blindspot_warning(state, False, False)
+    assert update_blindspot_warning(state, True, True).sound_active
+
+  def test_ev9_longitudinal_tuning_resets_accel_before_stop_release(self):
+    accel_state = Ioniq6LongitudinalTuningState()
+    for _ in range(4):
+      accel_state = update_ioniq_6_longitudinal_tuning(
+        accel_state, accel_cmd=0.2, v_ego=0.0, a_ego=0.0,
+        long_control_state=LongCtrlState.starting, long_active=True,
+        low_speed_stop_brake_cap=True,
+      )
+    assert accel_state.actual_accel == pytest.approx(0.75)
+
+    accel_state = reset_egmp_longitudinal_tuning(accel_state)
+    assert accel_state.actual_accel == 0.0
+    assert not accel_state.launch_active
 
   def test_genesis_g90_longitudinal_tuning_softens_final_stop_hold(self):
     state = GenesisG90LongitudinalTuningState()
@@ -2242,6 +2311,151 @@ class TestHyundaiFingerprint:
 
     assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"] == 2
     assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["OSMrrLamp_LtIndSta"] == 2
+
+  def test_ev9_blindspot_status_uses_stock_warning_fields(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt],
+                       [("BLINDSPOTS_REAR_CORNERS", 0), ("BLINDSPOTS_FRONT_CORNER_1", 0)], can_bus.ECAN)
+
+    msgs = hyundaicanfd.create_ccnc_blindspot_status_messages(
+      packer, CP, can_bus, 7, left_blindspot=True, left_escalated=True,
+      drive_gear=True, left_warning_lamp=True, left_sound_active=True,
+    )
+    parser.update([(1, msgs)])
+
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"] == 2
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["OSMrrLamp_LtIndSta"] == 2
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtSndWrngSta"] == 1
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_Sta"] == 0
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["FL_INDICATOR"] == 0
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_IndSta"] == 1
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCA_OnOffEquip2Sta"] == 2
+    assert parser.vl["BLINDSPOTS_REAR_CORNERS"]["BCA_Sta"] == 1
+    assert parser.vl["BLINDSPOTS_FRONT_CORNER_1"]["NEW_SIGNAL_7"] == 0
+
+  def test_ev9_ccnc_status_clears_faults_and_tracks_control_state(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0), ("CCNC_0x162", 0)], can_bus.ECAN)
+
+    parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(packer, CP, can_bus, 12, hba_icon=2))])
+
+    assert parser.vl["CCNC_0x161"]["FCA_ICON"] == 1
+    assert parser.vl["CCNC_0x161"]["FCA_ALT_ICON"] == 0
+    assert parser.vl["CCNC_0x161"]["FCA_IMAGE"] == 0
+    assert parser.vl["CCNC_0x161"]["HBA_ICON"] == 2
+    assert all(parser.vl["CCNC_0x161"][sound] == 0 for sound in ("SOUNDS_1", "SOUNDS_2", "SOUNDS_3", "SOUNDS_4"))
+    assert parser.vl["CCNC_0x162"]["VIBRATE"] == 0
+    assert all(parser.vl["CCNC_0x162"][fault] == 0 for fault in (
+      "FAULT_FSS", "FAULT_FCA", "FAULT_LSS", "FAULT_SLA", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW",
+      "FAULT_HBA", "FAULT_ESS",
+    ))
+
+    parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+      packer, CP, can_bus, 13, main_cruise_enabled=True, steering_available=True, steering_active=False,
+    ))])
+    assert parser.vl["CCNC_0x161"]["HDA_ICON"] == 1
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+
+    parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+      packer, CP, can_bus, 14, enabled=True, main_cruise_enabled=True,
+      steering_available=True, steering_active=True,
+    ))])
+    assert parser.vl["CCNC_0x161"]["HDA_ICON"] == 2
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 2
+
+    parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+      packer, CP, can_bus, 15, enabled=True, main_cruise_enabled=True,
+      steering_available=True, steering_active=False,
+    ))])
+    assert parser.vl["CCNC_0x161"]["HDA_ICON"] == 2
+    assert parser.vl["CCNC_0x161"]["LFA_ICON"] == 1
+
+  def test_ev9_ccnc_acc_control_uses_packer_counter(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CCNC | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("SCC_CONTROL", 0)], can_bus.ECAN)
+
+    messages = [
+      hyundaicanfd.create_ccnc_acc_control(
+        packer, can_bus, True, 0.2, False, False, False, 50.0,
+        1, 27.5, -1.2, True, 10.0,
+      )
+      for _ in range(2)
+    ]
+    parser.update([(1, [messages[0]])])
+    parser.update([(2, [messages[1]])])
+
+    assert parser.can_valid
+    assert messages[0][1][2] == 0
+    assert messages[1][1][2] == 1
+    assert parser.vl["SCC_CONTROL"]["ACC_ObjDist"] == pytest.approx(27.5)
+    assert parser.vl["SCC_CONTROL"]["ACC_ObjRelSpd"] == pytest.approx(-1.2)
+
+  @pytest.mark.parametrize(("steering_pressed", "steering_active"), ((False, True), (True, False)))
+  def test_ev9_ccnc_steering_icon_tracks_controller_authority(self, monkeypatch, steering_pressed, steering_active):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CCNC |
+                   HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_LKA_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING_ALT)
+    CP.openpilotLongitudinalControl = True
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    captured = {}
+
+    def capture_ccnc_adrv_messages(*args, **kwargs):
+      captured["steering_available"] = args[9]
+      captured["steering_active"] = args[10]
+      return []
+
+    monkeypatch.setattr(hyundaicanfd, "create_ccnc_adrv_messages", capture_ccnc_adrv_messages)
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cc = SimpleNamespace(
+      enabled=True,
+      latActive=True,
+      actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
+      leftBlinker=False,
+      rightBlinker=False,
+      hudControl=SimpleNamespace(),
+    )
+    cs = SimpleNamespace(
+      angle_steering_fault=False,
+      angle_steering_angle=0.0,
+      hba_icon=0,
+      is_metric=True,
+      left_blindspot_from_radar=False,
+      right_blindspot_from_radar=False,
+      lfa_block_msg=lfa_block_msg,
+      out=SimpleNamespace(
+        brakePressed=False,
+        cruiseState=SimpleNamespace(available=True),
+        gasPressed=False,
+        gearShifter=structs.CarState.GearShifter.drive,
+        steeringPressed=steering_pressed,
+      ),
+    )
+
+    controller.create_canfd_msgs(0, True, 0.44, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                 get_test_toggles(), lka_icon=2, lfa_icon=2)
+
+    assert captured == {"steering_available": True, "steering_active": steering_active}
 
   def test_ioniq_6_blindspot_radar_state_decode(self):
     assert decode_ioniq_6_blindspot_radar_state(0x02) == (False, False)

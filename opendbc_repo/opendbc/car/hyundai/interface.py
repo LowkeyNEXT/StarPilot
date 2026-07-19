@@ -48,6 +48,11 @@ def apply_kia_ev6_gt_line_longitudinal_params(ret: structs.CarParams) -> None:
   ret.vEgoStarting = 0.5
 
 
+def apply_kia_ev9_longitudinal_params(ret: structs.CarParams) -> None:
+  ret.startAccel = 0.2
+  ret.vEgoStarting = 0.5
+
+
 def apply_ecu_disable_failure_fallback(CP: structs.CarParams, params) -> None:
   params.put_bool("EcuDisableFailed", True)
   CP.safetyConfigs[-1].safetyParam &= ~HyundaiSafetyFlags.LONG.value
@@ -104,7 +109,7 @@ class CarInterface(CarInterfaceBase):
         # Most angle-steering LKA platforms still need stock longitudinal validation.
         ret.alphaLongitudinalAvailable = False
 
-      ret.enableBsm = 0x1ba in fingerprint[CAN.ECAN]
+      ret.enableBsm = 0x1ba in fingerprint[CAN.ECAN] or candidate == CAR.KIA_EV9
 
       # Carnival HEV can fingerprint with too little E-CAN traffic to see 0xFA.
       if 0xFA in fingerprint[CAN.ECAN] or candidate == CAR.KIA_CARNIVAL_HEV_4TH_GEN:
@@ -233,6 +238,8 @@ class CarInterface(CarInterfaceBase):
 
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.LONG.value
+      if candidate in CANFD_ANGLE_LONGITUDINAL_CAR and ret.flags & HyundaiFlags.CCNC:
+        ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CCNC.value
     if ret.flags & HyundaiFlags.HYBRID:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.HYBRID_GAS.value
     elif ret.flags & HyundaiFlags.EV:
@@ -255,6 +262,9 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.HYUNDAI_IONIQ_6:
       ret.longitudinalActuatorDelay = 0.6
+
+    if candidate == CAR.KIA_EV9 and ret.openpilotLongitudinalControl:
+      apply_kia_ev9_longitudinal_params(ret)
 
     if candidate == CAR.KIA_NIRO_PHEV_2022:
       ret.stopAccel = -1.4
