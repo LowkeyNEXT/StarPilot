@@ -591,8 +591,8 @@ class CarState(CarStateBase):
     if cp.ts_nanos["LFAHDA_CLUSTER"]["CHECKSUM"] > 0:
       self.stock_lfahda_cluster_msg = copy.copy(cp.vl["LFAHDA_CLUSTER"])
     if self.CP.carFingerprint == CAR.KIA_EV9 and cp.ts_nanos["FR_CMR_01_10ms"]["FR_CMR_Crc1Val"] > 0:
-      hba_state = int(cp.vl["FR_CMR_01_10ms"]["HBA_SysSta"])
-      self.hba_icon = hba_state if hba_state in (1, 2) else 0
+      hba_icon = int(cp.vl["FR_CMR_01_10ms"]["HBA_IndLmpReq"])
+      self.hba_icon = hba_icon if hba_icon in (1, 2) else 0
     if cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"] > 0:
       self.stock_blinker_stalks_msg = copy.copy(cp.vl["BLINKER_STALKS"])
       self.stock_blinker_stalks_ts = cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"]
