@@ -1648,6 +1648,48 @@ class TestHyundaiFingerprint:
     suppress_msgs = [msg for msg in msgs if msg[0] == 0x362]
     assert not suppress_msgs
 
+  def test_ev9_inactive_long_steering_uses_mdps_angle(self):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+    CP.openpilotLongitudinalControl = True
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 1
+    can_bus = CanBus(CP)
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("ADAS_CMD_35_10ms", 0)], can_bus.ECAN)
+    cc = SimpleNamespace(enabled=False, latActive=False, actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+                         leftBlinker=False, rightBlinker=False, hudControl=SimpleNamespace())
+    cs = SimpleNamespace(
+      stock_lfa_msg=None,
+      stock_lkas_msg={},
+      angle_steering_angle=-0.4,
+      angle_steering_fault=False,
+      is_metric=True,
+      left_blindspot_from_radar=False,
+      right_blindspot_from_radar=False,
+      hba_icon=0,
+      out=SimpleNamespace(
+        steeringAngleDeg=-0.5,
+        steeringPressed=False,
+        gearShifter=structs.CarState.GearShifter.park,
+        cruiseState=SimpleNamespace(available=False),
+        brakePressed=False,
+        gasPressed=False,
+      ),
+    )
+
+    msgs = controller.create_canfd_msgs(0, False, 0.0, -0.5, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=1, lfa_icon=1)
+    steering_msgs = [msg for msg in msgs if msg[0] == 0xCB]
+    assert len(steering_msgs) == 1
+
+    parser.update([(1, steering_msgs)])
+
+    assert parser.can_valid
+    assert parser.vl["ADAS_CMD_35_10ms"]["ADAS_StrAnglReqVal"] == pytest.approx(-0.4)
+
   def test_ev9_active_angle_steering_still_suppresses_stock_lfa(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9

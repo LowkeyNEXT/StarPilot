@@ -756,7 +756,7 @@ class CarController(CarControllerBase):
       ))
     if lka_alt_long and not drive_gear:
       can_sends.extend(hyundaicanfd.create_lka_alt_inactive_steering_messages(self.packer, self.CAN,
-                                                                               CS.out.steeringAngleDeg))
+                                                                               CS.angle_steering_angle))
 
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     suppress_lfa = bool(lka_steering)
