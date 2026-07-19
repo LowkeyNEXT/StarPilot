@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from opendbc.can import CANPacker, CANParser
-from opendbc.car import Bus, ButtonType, CanData, gen_empty_fingerprint, structs
+from opendbc.car import Bus, ButtonType, gen_empty_fingerprint, structs
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.structs import CarControl, CarParams
 from opendbc.car.fw_versions import build_fw_dict, match_fw_to_car
@@ -17,7 +17,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              update_angle_command, update_ev9_high_angle_inhibit, \
                                              should_use_ev6_gt_line_stop_direct_tracking
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state
-from opendbc.car.hyundai.interface import CarInterface, wait_for_ev9_panda_preinit
+from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai import hyundaican, hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import MRREVO14F_RADAR_START_ADDR, MRR30_RADAR_START_ADDR, MRR35_RADAR_START_ADDR, \
@@ -2190,18 +2190,6 @@ class TestHyundaiFingerprint:
     )
 
     assert msgs == []
-
-  def test_ev9_panda_preinit_handoff_accepts_complete_bridge(self):
-    batches = iter((
-      [[CanData(0x730, b"\x02\x3e\x80\x00\x00\x00\x00\x00", 0x81)]],
-      [[CanData(0x100, bytes(24), 0x80)]],
-      [[CanData(0x1A0, bytes(32), 0x81)]],
-    ))
-
-    active, messages = wait_for_ev9_panda_preinit(lambda wait_for_one=False: next(batches))
-
-    assert active
-    assert len(messages) == 3
 
   def test_ioniq_6_lfahda_cluster_allows_lfa_icon_override(self):
     CP = CarParams.new_message()

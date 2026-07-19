@@ -1,6 +1,5 @@
 import time
-from opendbc.car import CanData, get_safety_config, structs, uds
-from opendbc.car.hyundai import hyundaicanfd
+from opendbc.car import get_safety_config, structs, uds
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, CarControllerParams, \
                                                    CANFD_UNSUPPORTED_LONGITUDINAL_CAR, \
@@ -28,36 +27,12 @@ ENABLE_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.can
 
 # Track when ECU disable happened - used to permanently suppress CAN errors from disabled ECU
 ECU_DISABLE_TIMESTAMP = 0.0
-EV9_EARLY_SUPPRESSION_ACTIVE = False
 KONA_NON_SCC_FCA_RADAR_ADDR = 0x602
-EV9_PANDA_PREINIT_HANDOFF_WAIT = 0.5
 # Keep ADAS receive enabled while disabling normal transmission.
 EV9_COMMUNICATION_CONTROL_REQUEST = b"\x28\x01\x01"
 EV9_COMMUNICATION_CONTROL_RESTORE = b"\x28\x00\x01"
 EV9_START_ACCEL = 0.20
 EV9_STARTING_SPEED = 0.5
-
-
-def ev9_panda_preinit_active(messages: list[CanData]) -> bool:
-  """Recognize the EV9 pre-init firmware by its returned neutral streams."""
-  marker = any(msg.src == 0x81 and msg.address == 0x730 and bytes(msg.dat[:3]) == b"\x02\x3e\x80" for msg in messages)
-  heartbeat = any(msg.src == 0x80 and msg.address == 0x100 and len(msg.dat) == 24 for msg in messages)
-  scc_control = any(msg.src == 0x81 and msg.address == 0x1A0 and len(msg.dat) == 32 for msg in messages)
-  return marker and heartbeat and scc_control
-
-
-def ev9_panda_preinit_baselines(messages: list[CanData]) -> list[CanData]:
-  """Treat Panda's returned neutral bridge frames as the captured bus set."""
-  return [CanData(msg.address, msg.dat, msg.src - 0x80 if 0x80 <= msg.src < 0xC0 else msg.src) for msg in messages]
-
-
-def wait_for_ev9_panda_preinit(can_recv, initial_can_messages: list | None = None) -> tuple[bool, list[CanData]]:
-  observed_can_messages = list(initial_can_messages or [])
-  handoff_deadline = time.monotonic() + EV9_PANDA_PREINIT_HANDOFF_WAIT
-  while not ev9_panda_preinit_active(observed_can_messages) and time.monotonic() < handoff_deadline:
-    for packet in can_recv(wait_for_one=True):
-      observed_can_messages.extend(packet)
-  return ev9_panda_preinit_active(observed_can_messages), observed_can_messages
 
 
 def apply_platform_longitudinal_params(ret: structs.CarParams) -> None:
@@ -100,52 +75,6 @@ def detect_kona_non_scc_radar_fca(candidate, fingerprint, car_fw) -> bool:
   # Some non-SCC Kona trims have FCA radar tracks without SCC. Use PT FCA11
   # status on those cars; camera-bus FCA11 is not continuously published.
   return KONA_NON_SCC_FCA_RADAR_ADDR in fingerprint[1]
-
-
-def attempt_ev9_pre_fingerprint_suppression(cached_params, params, can_recv, can_send,
-                                            initial_can_messages: list | None = None) -> bool:
-  """Suppress EV9 ADAS output early when the alpha-long cache is trustworthy."""
-  global EV9_EARLY_SUPPRESSION_ACTIVE
-  EV9_EARLY_SUPPRESSION_ACTIVE = False
-  hyundaicanfd.set_ev9_adrv_baselines([])
-  if cached_params is None or str(cached_params.carFingerprint) != str(CAR.KIA_EV9) or cached_params.brand != "hyundai":
-    return False
-  if not params.get_bool("OpenpilotEnabledToggle") or not params.get_bool("AlphaLongitudinalEnabled") or \
-      not cached_params.openpilotLongitudinalControl or cached_params.pcmCruise:
-    return False
-
-  if not any(fw.ecu == Ecu.adas and fw.address == 0x730 for fw in cached_params.carFw):
-    return False
-
-  observed_can_messages = list(initial_can_messages or [])
-
-  def observing_can_recv(wait_for_one=False):
-    packets = can_recv(wait_for_one=wait_for_one)
-    for packet in packets:
-      observed_can_messages.extend(packet)
-    return packets
-
-  if params.get_bool("EV9LongPreinitPanda"):
-    panda_preinit_active = params.get_bool("EV9PandaPreinitActive")
-    if not panda_preinit_active and can_recv is not None:
-      panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv, observed_can_messages)
-    if panda_preinit_active:
-      EV9_EARLY_SUPPRESSION_ACTIVE = True
-      hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
-      ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted active firmware status ===")
-      return True
-
-  ecu_log("=== EV9 PRE-FINGERPRINT SUPPRESSION ATTEMPT ===")
-  observed_recv = observing_can_recv if can_recv is not None else can_recv
-  EV9_EARLY_SUPPRESSION_ACTIVE = disable_ecu(
-    observed_recv, can_send, bus=CanBus(cached_params).ECAN, addr=0x730, com_cont_req=EV9_COMMUNICATION_CONTROL_REQUEST,
-  )
-  if EV9_EARLY_SUPPRESSION_ACTIVE:
-    hyundaicanfd.set_ev9_adrv_baselines(observed_can_messages)
-  else:
-    hyundaicanfd.set_ev9_adrv_baselines([])
-  ecu_log(f"=== EV9 PRE-FINGERPRINT SUPPRESSION result={EV9_EARLY_SUPPRESSION_ACTIVE} ===")
-  return EV9_EARLY_SUPPRESSION_ACTIVE
 
 
 class CarInterface(CarInterfaceBase):
@@ -348,7 +277,7 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send, communication_control=None):
-    global ECU_DISABLE_TIMESTAMP, EV9_EARLY_SUPPRESSION_ACTIVE
+    global ECU_DISABLE_TIMESTAMP
     from openpilot.common.params import Params
     params = Params()
     ev9_long = CP.carFingerprint == CAR.KIA_EV9 and CP.openpilotLongitudinalControl
@@ -372,29 +301,12 @@ class CarInterface(CarInterfaceBase):
       if CP.flags & HyundaiFlags.CANFD_LKA_STEERING.value:
         addr, bus = 0x730, CanBus(CP).ECAN
 
-      if ev9_long and not EV9_EARLY_SUPPRESSION_ACTIVE and params.get_bool("EV9LongPreinitPanda"):
-        panda_preinit_active = params.get_bool("EV9PandaPreinitActive")
-        observed_can_messages = []
-        if not panda_preinit_active and can_recv is not None:
-          panda_preinit_active, observed_can_messages = wait_for_ev9_panda_preinit(can_recv)
-        if panda_preinit_active:
-          EV9_EARLY_SUPPRESSION_ACTIVE = True
-          hyundaicanfd.set_ev9_adrv_baselines(ev9_panda_preinit_baselines(observed_can_messages))
-          ecu_log("=== EV9 PANDA PREINIT HANDOFF accepted active firmware status during interface init ===")
-
-      ecu_disabled = ev9_long and EV9_EARLY_SUPPRESSION_ACTIVE
-      if ev9_long:
-        EV9_EARLY_SUPPRESSION_ACTIVE = False
-      if ecu_disabled:
-        ecu_log("=== EV9 PRE-FINGERPRINT SUPPRESSION HANDOFF accepted positive response ===")
-
       # Try ECU disable. If it succeeds (IGN-ON mode), enable longitudinal.
       # If it fails (READY mode returns NRC 0x22, or timeout), strip LONG safety flag
       # so panda forwards stock SCC messages normally (lateral-only mode).
-      if not ecu_disabled:
-        ecu_log(f"=== ECU DISABLE attempt: addr=0x{addr:x}, bus={bus} ===")
-        ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
-                                   reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED))
+      ecu_log(f"=== ECU DISABLE attempt: addr=0x{addr:x}, bus={bus} ===")
+      ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
+                                 reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED))
 
       if CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
         # Ioniq 6: track success/failure to auto-switch between openpilot long and stock ACC
