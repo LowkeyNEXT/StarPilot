@@ -216,9 +216,11 @@ fork-specific configuration UI:
 python3 -m openpilot.system.vehicle_telemetry.setup launch
 ```
 
-The launcher selects a private Wi-Fi/Ethernet address, starts a nice-level-19
-standard-library HTTP process, and prints a local URL. It refuses cellular and
-public interface addresses and refuses to start while the vehicle is onroad.
+The launcher selects a private Wi-Fi/Ethernet address and starts a nice-level-19
+standard-library HTTP process. It refuses cellular and public interface
+addresses and refuses to start while the vehicle is onroad. The command reports
+only non-secret host/port/status metadata; native comma UI reads the complete QR
+target from the owner-only session record instead of exposing it to stdout.
 The page offers the four common choices—personal Tailscale relay, custom backend
 sending, local-only access, and cache-only/off—and can generate or rotate the owner fetch token.
 FRP and hosted fork modes remain advanced configuration options.
@@ -228,9 +230,17 @@ vehicle goes onroad. It has two worker slots, three-second socket timeouts,
 bounded headers and 16 KiB request bodies, fixed-memory rate limiting, and no
 external scripts, fonts, images, analytics, or CDN requests. A random 256-bit
 secret in the QR/URL authorizes the session; it is passed to the child over a
-pipe rather than process arguments. The page immediately removes the secret
-from browser history, uses a strict Content Security Policy, and writes its
-temporary launch record owner-only.
+pipe rather than process arguments. The first valid request moves that capability
+into a short-lived HttpOnly, SameSite cookie, and the page source contains no
+copy of it. The page immediately removes the query from browser history, uses a
+strict Content Security Policy, and writes its temporary launch record owner-only
+with mode `0600` inside a `0700` directory.
+
+Treat the initial local setup as a trusted-LAN ceremony: its temporary page uses
+plain HTTP so a phone can open it without certificate warnings. Do not perform
+setup on public or untrusted Wi-Fi. Once configured, Tailscale/FRP access and
+custom-backend delivery use HTTPS, and the reusable credentials remain in
+owner-only files and redacted API responses.
 
 Python-based comma UIs can display a QR immediately with:
 
@@ -302,7 +312,9 @@ DNS edit permission for that zone.
     "bindPort": 7000,
     "vhostHTTPPort": 80,
     "subdomainHost": "example.com",
-    "token": "replace-with-at-least-32-random-characters"
+    "token": "replace-with-at-least-32-random-characters",
+    "certFile": "/etc/vehicle-telemetry/frps.crt",
+    "keyFile": "/etc/vehicle-telemetry/frps.key"
   },
   "dns": {
     "zoneId": "cloudflare-zone-id",
@@ -314,10 +326,19 @@ DNS edit permission for that zone.
 }
 ```
 
-FRP transport TLS is enabled and required. For server identity verification,
-configure an FRP server certificate and place its issuing CA in
-`trustedCaFile`. FRP and Cloudflare credentials never appear in telemetry
-responses or status documents.
+FRP transport TLS and server identity verification are required. Configure an
+FRP server certificate, place its issuing CA in `trustedCaFile`, and set the
+matching `serverName`; the client refuses to start without all three. FRP and
+Cloudflare credentials never appear in telemetry
+responses or status documents. The Cloudflare token is attached only to requests
+whose destination is the fixed Cloudflare API; the separate public-address lookup
+uses an unauthenticated session.
+
+The helper's Cloudflare wildcard mode terminates public TLS at Cloudflare and
+forwards HTTP to `vhostHTTPPort`. Use it only when that origin hop is protected
+by a firewall/private link, or put `vhostHTTPPort` on loopback behind an
+authenticated HTTPS origin proxy. Tailscale Funnel remains the recommended
+zero-maintenance public mode because it avoids this extra gateway boundary.
 
 ## DBC and vehicle-port requirements
 

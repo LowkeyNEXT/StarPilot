@@ -52,7 +52,10 @@ shuts down after ten minutes or when the vehicle goes onroad. This restriction
 applies only to configuration: the authenticated read-only telemetry API and
 low-priority daemon remain available onroad. The setup page is not an
 always-running Galaxy or Flask service. The full Galaxy panel remains available
-for custom backend sending and advanced FRP settings.
+for custom backend sending and advanced FRP settings after the same QR session
+authorizes it. From the lightweight page, choose **Open StarPilot Galaxy
+controls**; the short-lived capability is carried in an HttpOnly cookie and is
+never exposed to Galaxy JavaScript, page URLs, or logs.
 
 StarPilot supports six operating modes:
 
@@ -106,7 +109,10 @@ Fetch and push are independent. Remove either section or set its `enabled` field
 to `false` when it is not needed. Both tokens must be at least 32 characters;
 fetch/push are disabled when their required token is missing or short. Push URLs
 must be HTTPS, cannot include user info or fragments, and redirects are not
-followed.
+followed. Backend responses are streamed and discarded rather than buffered or
+logged. Stored fetch, push, FRP, Tailscale, and temporary setup credentials live
+only in owner-readable files; configuration and status responses expose
+token-presence flags instead of secret values.
 
 Legacy `/data/galaxy/telemetry_push.json` push configuration remains supported for
 migration. An older combined `/data/galaxy/vehicle_telemetry.json` is accepted only
