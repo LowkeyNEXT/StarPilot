@@ -7,8 +7,8 @@ forks that provide an adapter for a different cereal source.
 
 The daemon is always available—including while the vehicle is onroad—but defaults
 to `off`: it keeps the latest valid
-snapshot locally and exposes nothing on the network until configured. Push is
-independent and can be enabled in any mode.
+snapshot locally and exposes nothing on the network until configured. Custom
+backend sending is independent and can also be enabled alongside any fetch mode.
 
 This portable commit deliberately does not edit `system/manager/process_config.py`,
 which keeps it easy to apply across openpilot revisions. On stock openpilot, run
@@ -29,7 +29,8 @@ PythonProcess("vehicle_telemetryd", "system.vehicle_telemetry.daemon", always_ru
 
 | Mode | HTTP owner | Intended use |
 | --- | --- | --- |
-| `off` | none | Cache only, with optional HTTPS push |
+| `off` | none | Cache only |
+| `send` | none | Outbound-only HTTPS delivery to a custom backend |
 | `local` | telemetry daemon | Bearer-authenticated LAN fetch |
 | `tailscale` | telemetry daemon + personal Tailscale Funnel | Stable public HTTPS URL owned by the device owner |
 | `frp` | telemetry daemon + `frpc` | Stable authenticated remote URL through an FRP gateway |
@@ -68,6 +69,71 @@ Fetch endpoints are `GET /api/vehicle/telemetry` and
 `Authorization: Bearer <token>`. `GET /health` discloses no vehicle data and is
 available for local process checks. The authenticated, read-only API remains
 available onroad; only the temporary setup page is parked/offroad-only.
+
+## Custom backend sending
+
+Choose **Custom backend** in the temporary setup page for outbound-only sending,
+or configure the `push` object alongside any API mode. The explicit send-only
+shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "send",
+  "fetch": {"enabled": false},
+  "push": {
+    "enabled": true,
+    "url": "https://telemetry.example/v1/ingest",
+    "token": "replace-with-at-least-32-random-characters",
+    "vehicleId": "my-vehicle",
+    "vehicleName": "My EV",
+    "maximumBatteryCapacityKilowattHours": 99.8,
+    "drivingIntervalSeconds": 60,
+    "chargingIntervalSeconds": 120,
+    "parkedIntervalSeconds": 900
+  }
+}
+```
+
+The backend contract is intentionally small:
+
+- accept `POST` over HTTPS at the configured URL;
+- require `Authorization: Bearer <token>` and `Content-Type: application/json`;
+- accept the versioned JSON envelope below and ignore fields it does not need;
+- return any `2xx` status after accepting the event; redirects are not followed;
+- tolerate a duplicate event after an ambiguous network failure, preferably by
+  deduplicating on `vehicleId` plus `sentAt`.
+
+```json
+{
+  "schemaVersion": 1,
+  "vehicleId": "my-vehicle",
+  "sentAt": 1784235068410,
+  "telemetry": {
+    "schemaVersion": 1,
+    "source": "openpilot carState",
+    "updatedAt": 1784235068.41,
+    "vehicleFingerprint": "KIA EV9 2024",
+    "stateOfChargePercent": 77.5,
+    "distanceToEmptyKilometers": 408.0,
+    "isCharging": false,
+    "isPluggedIn": false,
+    "speedMetersPerSecond": 0.0,
+    "standstill": true,
+    "vehicleName": "My EV",
+    "maximumBatteryCapacityKilowattHours": 99.8
+  }
+}
+```
+
+Optional or unavailable telemetry fields may be absent. `sentAt` is Unix time in
+milliseconds; `updatedAt` is Unix time in seconds for the underlying sample. The
+sender posts immediately on startup and activity transitions, then uses the
+configured driving, charging, or parked interval. Failed deliveries use bounded
+exponential backoff up to five minutes. Each request uses three-second connect
+and five-second response timeouts, closes the response, follows no redirects,
+and never places the token in the JSON body or status file. No inbound port,
+listener, DNS record, or relay is needed in `send` mode.
 
 ## Use with RangeBridge
 
@@ -153,8 +219,8 @@ python3 -m openpilot.system.vehicle_telemetry.setup launch
 The launcher selects a private Wi-Fi/Ethernet address, starts a nice-level-19
 standard-library HTTP process, and prints a local URL. It refuses cellular and
 public interface addresses and refuses to start while the vehicle is onroad.
-The page offers the three common choices—personal Tailscale relay, local-only
-access, and cache-only/off—and can generate or rotate the owner fetch token.
+The page offers the four common choices—personal Tailscale relay, custom backend
+sending, local-only access, and cache-only/off—and can generate or rotate the owner fetch token.
 FRP and hosted fork modes remain advanced configuration options.
 
 The session closes after ten minutes, when **Finish** is pressed, or when the

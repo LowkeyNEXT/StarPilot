@@ -31,7 +31,7 @@ installation guides, and software configuration.
 
 Developer/operator documentation for **EV Vehicle Telemetry**, including the
 required DBC signals, normalized SOC/DTE cache, RangeBridge pairing, and optional
-Galaxy fetch/HTTPS push service, is available in
+custom HTTPS backend sending, is available in
 [`docs/vehicle-telemetry.md`](docs/vehicle-telemetry.md).
 
 ## Features
@@ -42,7 +42,7 @@ Galaxy fetch/HTTPS push service, is available in
 * Custom-tuned torque controllers for an expanding list of cars.
 * Galaxy: StarPilot's portal to configure your comma device using your phone from anywhere.
 Download models, change settings, update software, visualize live model outputs for tuning.
-* EV Vehicle Telemetry: authenticated, read-only SOC/range data for LAN,
+* EV Vehicle Telemetry: authenticated SOC/range data for a custom HTTPS backend, LAN,
   [RangeBridge](https://github.com/LowkeyNEXT/RangeBridge), personal Tailscale,
   self-hosted FRP, or the Galaxy proxy.
 * Always On Lateral (full time steering assist)*

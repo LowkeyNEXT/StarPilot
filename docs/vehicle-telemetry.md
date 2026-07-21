@@ -52,11 +52,13 @@ shuts down after ten minutes or when the vehicle goes onroad. This restriction
 applies only to configuration: the authenticated read-only telemetry API and
 low-priority daemon remain available onroad. The setup page is not an
 always-running Galaxy or Flask service. The full Galaxy panel remains available
-for push and advanced FRP settings.
+for custom backend sending and advanced FRP settings.
 
-StarPilot supports five pull-transport modes:
+StarPilot supports six operating modes:
 
-- `off`: cache only; HTTPS push can still run.
+- `off`: cache only.
+- `send`: make outbound-only HTTPS deliveries to a custom backend without
+  exposing an inbound telemetry API.
 - `local`: serve the authenticated API on the configured LAN port.
 - `tailscale`: bind the API to loopback and publish it with a persistent public
   Funnel through the device owner's own free Tailscale account. This is the
@@ -89,7 +91,9 @@ Create `/data/galaxy/vehicle_telemetry_config.json` as an owner-only file:
 }
 ```
 
-The Galaxy panel can install and enable the personal relay, guide the owner
+The lightweight setup page exposes the send-only custom backend mode. The Galaxy
+panel can additionally enable custom backend sending alongside any access mode,
+install and enable the personal relay, guide the owner
 through Tailscale login and Funnel approval, rotate the fetch token, preserve
 existing push/FRP secrets when their inputs are left blank, display tunnel
 status, and copy the generated public URL. Tailscale binaries and state remain
@@ -174,7 +178,7 @@ Galaxy cookie and the app-specific telemetry bearer. Galaxy exposes that exact
 slug-prefixed route and rejects a slug that does not match the device's current
 registration. LAN clients continue to use `/api/vehicle/telemetry` directly.
 
-## Push API
+## Custom backend sending
 
 StarPilot sends an authenticated JSON envelope to the configured URL. A live EV9
 validation sample with vehicle name and battery capacity configured produced a
@@ -210,6 +214,15 @@ takes priority over on-road state. It sends immediately on startup/activity
 transitions, periodically at the configured activity interval, and when parked data
 materially changes. Failed requests use bounded exponential backoff. Tokens remain
 in headers and are never written into the payload or diagnostic status file.
+
+The backend must accept an HTTPS `POST` with `Content-Type: application/json` and
+`Authorization: Bearer <token>`, then return a `2xx` response after accepting the
+event. It should ignore unknown fields and tolerate an occasional duplicate after
+an ambiguous network failure; `vehicleId` plus `sentAt` is the recommended
+deduplication key. Redirects are not followed. Optional vehicle fields may be
+absent, so backends should use `schemaVersion` and field presence rather than
+requiring every example field. The complete envelope, cadence, retry, and timeout
+contract is in the [fork-neutral custom backend guide](vehicle-telemetry-core.md#custom-backend-sending).
 
 ## DBC information required for vehicle support
 
