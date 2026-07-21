@@ -17,6 +17,7 @@ from openpilot.system.vehicle_telemetry.core import (  # noqa: F401
   load_vehicle_telemetry_config,
   load_vehicle_telemetry_status,
   public_vehicle_telemetry_config,
+  reset_vehicle_telemetry_runtime,
   save_vehicle_telemetry_config,
   telemetry_response,
   vehicle_telemetry_activity,

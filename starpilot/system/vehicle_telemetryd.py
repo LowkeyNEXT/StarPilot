@@ -1,73 +1,25 @@
 #!/usr/bin/env python3
-"""Always-running bridge from StarPilot vehicle state to cache/export."""
+"""StarPilot adapter from its single-consumer vehicle state to telemetry."""
 
-import time
-
-from cereal import messaging
-
-from openpilot.common.realtime import Ratekeeper
-from openpilot.common.time_helpers import system_time_valid
-from openpilot.starpilot.system.vehicle_telemetry import (
-  VehicleTelemetryCache,
-  VehicleTelemetryPublisher,
-  build_vehicle_telemetry_snapshot,
+from openpilot.starpilot.system.vehicle_telemetry import configure_starpilot_vehicle_telemetry
+from openpilot.system.vehicle_telemetry.daemon import (  # noqa: F401
+  MAXIMUM_CACHED_PUBLISH_AGE_SECONDS,
+  build_clock_valid_vehicle_telemetry_snapshot,
+  cached_snapshot_timestamp_is_plausible,
+  vehicle_telemetry_thread as core_vehicle_telemetry_thread,
 )
 
-MAXIMUM_CACHED_PUBLISH_AGE_SECONDS = 30 * 24 * 60 * 60
+
 VEHICLE_TELEMETRY_SERVICES = ["starpilotCarState", "carParams", "deviceState"]
 
 
-def build_clock_valid_vehicle_telemetry_snapshot(car_state, vehicle_fingerprint="", timestamp=None):
-  """Build telemetry only after the comma has a trustworthy wall clock."""
-  if not system_time_valid():
-    return None
-  wall_time = time.time() if timestamp is None else float(timestamp)  # noqa: TID251 - interoperable wall-clock timestamp
-  return build_vehicle_telemetry_snapshot(car_state, wall_time, vehicle_fingerprint)
-
-
-def cached_snapshot_timestamp_is_plausible(snapshot, now=None):
-  if not isinstance(snapshot, dict):
-    return False
-  try:
-    updated_at = float(snapshot.get("updatedAt", 0.0))
-  except (TypeError, ValueError):
-    return False
-  wall_time = time.time() if now is None else float(now)  # noqa: TID251 - compare interoperable wall-clock timestamps
-  age = wall_time - updated_at
-  return 0.0 <= age <= MAXIMUM_CACHED_PUBLISH_AGE_SECONDS
-
-
 def vehicle_telemetry_thread():
-  sm = messaging.SubMaster(VEHICLE_TELEMETRY_SERVICES)
-  cache = VehicleTelemetryCache()
-  publisher = VehicleTelemetryPublisher()
-  publisher.start()
-  cached_snapshot_pending = cache.latest
-
-  fingerprint = ""
-  ratekeeper = Ratekeeper(1.0, None)
-  while True:
-    sm.update(0)
-    clock_valid = system_time_valid()
-    if clock_valid and cached_snapshot_pending is not None:
-      if cached_snapshot_timestamp_is_plausible(cached_snapshot_pending):
-        publisher.submit(cached_snapshot_pending)
-      cached_snapshot_pending = None
-
-    if sm.updated["deviceState"] and sm.valid["deviceState"]:
-      publisher.set_onroad(sm["deviceState"].started)
-
-    if sm.updated["carParams"] and sm.valid["carParams"]:
-      fingerprint = str(sm["carParams"].carFingerprint)
-
-    vehicle_state = sm["starpilotCarState"]
-    if (clock_valid and sm.updated["starpilotCarState"] and sm.alive["starpilotCarState"] and
-        sm.valid["starpilotCarState"] and vehicle_state.vehicleTelemetryAvailable):
-      snapshot = build_clock_valid_vehicle_telemetry_snapshot(vehicle_state, fingerprint)
-      if snapshot is not None:
-        cache.store(snapshot)
-        publisher.submit(snapshot)
-    ratekeeper.keep_time()
+  configure_starpilot_vehicle_telemetry()
+  core_vehicle_telemetry_thread(
+    car_state_service="starpilotCarState",
+    telemetry_available_field="vehicleTelemetryAvailable",
+    source_name="StarPilot carState",
+  )
 
 
 def main():

@@ -1,9 +1,10 @@
-# Vehicle energy telemetry
+# StarPilot EV Vehicle Telemetry
 
-StarPilot can expose and/or publish a small normalized vehicle-energy snapshot.
-This service is independent of controls: it consumes generic `CarState` fields,
-runs as the always-on low-priority `vehicle_telemetryd` process, and never writes
-CAN traffic.
+StarPilot uses the fork-neutral [`system.vehicle_telemetry`](vehicle-telemetry-core.md)
+service to expose and/or publish a small normalized vehicle-energy snapshot. A
+thin StarPilot adapter consumes `starpilotCarState`, avoiding a second reader on
+the primary `carState` socket, while the transport remains independent of
+controls and never writes CAN traffic.
 
 Vehicle-specific CAN decoding belongs in opendbc and the vehicle port. This layer
 only validates, caches, and transports normalized values.
@@ -37,11 +38,39 @@ as `cached`, including after the vehicle turns off or the daemon restarts.
 
 ## Configuration
 
+Galaxy's **App Keys → EV Vehicle Telemetry** panel manages this configuration. The
+same settings can be edited as an owner-only JSON file. StarPilot keeps its
+existing location at `/data/galaxy/vehicle_telemetry_config.json`; the portable
+core uses `/data/vehicle_telemetry` on stock openpilot.
+
+For the quickest setup, connect the comma and phone to the same Wi-Fi network
+while parked, then open **EV Vehicle Telemetry → Set Up** in Device settings on a
+comma 3, or the **EV vehicle telemetry** QR action in comma 4 settings. Scan the QR
+and choose **Personal public relay**. The temporary local page guides Tailscale
+installation, owner login, Funnel approval, and fetch-token creation, then
+shuts down after ten minutes or when the vehicle goes onroad. This restriction
+applies only to configuration: the authenticated read-only telemetry API and
+low-priority daemon remain available onroad. The setup page is not an
+always-running Galaxy or Flask service. The full Galaxy panel remains available
+for push and advanced FRP settings.
+
+StarPilot supports five pull-transport modes:
+
+- `off`: cache only; HTTPS push can still run.
+- `local`: serve the authenticated API on the configured LAN port.
+- `tailscale`: bind the API to loopback and publish it with a persistent public
+  Funnel through the device owner's own free Tailscale account. This is the
+  recommended public mode.
+- `frp`: bind the API to loopback and supervise an FRP client that publishes a
+  stable random subdomain through a self-hosted gateway.
+- `galaxy`: let Galaxy serve the LAN and hosted-portal routes.
+
 Create `/data/galaxy/vehicle_telemetry_config.json` as an owner-only file:
 
 ```json
 {
   "schemaVersion": 1,
+  "mode": "galaxy",
   "fetch": {
     "enabled": true,
     "token": "replace-with-at-least-32-random-characters"
@@ -60,6 +89,15 @@ Create `/data/galaxy/vehicle_telemetry_config.json` as an owner-only file:
 }
 ```
 
+The Galaxy panel can install and enable the personal relay, guide the owner
+through Tailscale login and Funnel approval, rotate the fetch token, preserve
+existing push/FRP secrets when their inputs are left blank, display tunnel
+status, and copy the generated public URL. Tailscale binaries and state remain
+under `/data`; setup never remounts the system partition or installs a systemd
+unit. Disabling the relay removes only the telemetry-managed Funnel and retains
+the owner's identity for easy re-enable. Gateway setup, wildcard DNS automation,
+and FRP TLS guidance are documented in [the fork-neutral core guide](vehicle-telemetry-core.md#frp-mode).
+
 Fetch and push are independent. Remove either section or set its `enabled` field
 to `false` when it is not needed. Both tokens must be at least 32 characters;
 fetch/push are disabled when their required token is missing or short. Push URLs
@@ -73,6 +111,10 @@ that path are never interpreted as configuration. New installations should use t
 explicit `_config.json` filename.
 
 ## Fetch API
+
+In `galaxy` mode, requests use Galaxy's port and routes below. In `local`,
+`tailscale`, and `frp` modes the standalone core serves the same `/api/vehicle/telemetry` and
+`/api/vehicle/telemetry/status` paths on the configured local or proxy URL.
 
 Requests require the configured fetch bearer token:
 
@@ -116,12 +158,14 @@ Content-Type: application/json
 }
 ```
 
-The response supplies the local telemetry URL, path, and a client-specific bearer
-token. Each paired app gets its own token, so pairing a second app does not break
-the first. RangeBridge requests `vehicleTelemetry` and `galaxySession` for LAN and
-remote fallback. Galaxy Nav can use the same capability contract; only an explicit
-`galaxySession` request returns the portal URL, cookie name, and Galaxy session
-token after the one-time LAN exchange.
+The response supplies URLs for the active operating mode, the telemetry path,
+and a client-specific bearer token. Local mode returns the standalone LAN port,
+Tailscale and FRP modes return the ready HTTPS proxy URL, and Galaxy mode returns port 8082.
+Each paired app gets its own token, so pairing a second app does not break the
+first. RangeBridge requests `vehicleTelemetry` and `galaxySession` for LAN and
+remote fallback. Galaxy Nav can use the same capability contract; only an
+explicit `galaxySession` request returns the portal URL, cookie name, and Galaxy
+session token after the one-time LAN exchange.
 
 The hosted Galaxy tunnel preserves the device routing slug when forwarding API
 requests. Remote telemetry therefore uses
@@ -166,6 +210,28 @@ takes priority over on-road state. It sends immediately on startup/activity
 transitions, periodically at the configured activity interval, and when parked data
 materially changes. Failed requests use bounded exponential backoff. Tokens remain
 in headers and are never written into the payload or diagnostic status file.
+
+## DBC information required for vehicle support
+
+EV Vehicle Telemetry expects the vehicle DBC and `CarState` parser to provide:
+
+- battery SOC mapped to `fuelGauge` as a `0.0...1.0` fraction;
+- displayed distance to empty mapped to `distanceToEmpty` in meters;
+- separate `charging` and `chargingPortConnected` booleans when available;
+- the normal `vEgo` in meters per second and `standstill` boolean for cadence.
+
+Stock openpilot v0.11.1 already contains `fuelGauge`, `charging`, `vEgo`, and
+`standstill`. `distanceToEmpty` and `chargingPortConnected` are optional schema
+extensions in StarPilot; the portable core safely omits them when running on an
+unmodified stock schema.
+
+For every new energy signal, document and test its CAN message/bus, start bit,
+length, byte order, signedness, factor, offset, unit, expected frequency,
+counter/checksum rules, and any validity bit. Reject stale/invalid frames, keep
+plugged-in distinct from actively charging, and validate redundant cluster/BMS
+sources when possible. A minimal port needs useful SOC or DTE; full RangeBridge
+behavior benefits from all four energy/charging fields. The portable guide has
+the complete [DBC and unit contract](vehicle-telemetry-core.md#dbc-and-vehicle-port-requirements).
 
 ## Adding vehicle support
 

@@ -52,6 +52,13 @@ _legacy_fetch_mode = "local"
 _source_name = "openpilot carState"
 
 
+def reset_vehicle_telemetry_runtime():
+  global _data_dir_provider, _legacy_fetch_mode, _source_name
+  _data_dir_provider = None
+  _legacy_fetch_mode = "local"
+  _source_name = "openpilot carState"
+
+
 def configure_vehicle_telemetry_runtime(*, data_dir_provider=None, legacy_fetch_mode=None, source_name=None):
   """Configure process-local integration hooks without importing a fork.
 

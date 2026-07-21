@@ -164,6 +164,64 @@
   font-size: var(--font-size-sm);
 }
 
+.navkeys-checkbox-row {
+  align-items: center;
+  display: flex;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  gap: var(--gap-sm);
+}
+
+.navkeys-generated-token {
+  background: var(--secondary-bg);
+  border-radius: var(--border-radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--margin-base);
+  overflow-wrap: anywhere;
+  padding: var(--padding-xs);
+}
+
+.navkeys-inline-copy {
+  all: unset;
+  color: var(--thumb-color);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  margin-left: var(--gap-xs);
+  overflow-wrap: anywhere;
+}
+
+.navkeys-select {
+  width: 100%;
+}
+
+.navkeys-telemetry-actions {
+  justify-content: center;
+  margin-top: var(--margin-base);
+}
+
+.navkeys-telemetry-grid {
+  display: grid;
+  gap: var(--gap-sm);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.navkeys-telemetry-section {
+  border-top: var(--border-width-thin) solid var(--sidebar-border-color);
+  margin-top: var(--margin-base);
+  padding-top: var(--margin-base);
+}
+
+.navkeys-telemetry-status {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  margin-top: var(--margin-base);
+}
+
+.navkeys-token-card {
+  margin-top: var(--margin-base);
+}
+
 .navkeys-label {
   display: block;
   font-size: var(--font-size-sm);

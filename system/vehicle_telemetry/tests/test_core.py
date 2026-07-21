@@ -5,11 +5,19 @@ import time
 from types import SimpleNamespace
 
 import requests
+import pytest
 
 from openpilot.common.params import Params
 from openpilot.system.vehicle_telemetry import core
 from openpilot.system.vehicle_telemetry import daemon
 from openpilot.system.vehicle_telemetry.http_server import TimedLoader, TokenBucket, VehicleTelemetryHTTPService
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime_adapter_state():
+  core.reset_vehicle_telemetry_runtime()
+  yield
+  core.reset_vehicle_telemetry_runtime()
 
 
 def test_snapshot_uses_generic_fields_and_feature_detects_optional_values():

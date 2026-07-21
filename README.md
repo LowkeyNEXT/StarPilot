@@ -29,8 +29,9 @@ Stop by to chat or ask questions!
 Please see [https://wiki.firestar.link](https://wiki.firestar.link) for hardware lists,
 installation guides, and software configuration.
 
-Developer/operator documentation for the normalized SOC/DTE cache and optional
-Galaxy fetch/HTTPS push service is available in
+Developer/operator documentation for **EV Vehicle Telemetry**, including the
+required DBC signals, normalized SOC/DTE cache, RangeBridge pairing, and optional
+Galaxy fetch/HTTPS push service, is available in
 [`docs/vehicle-telemetry.md`](docs/vehicle-telemetry.md).
 
 ## Features
@@ -41,6 +42,9 @@ Galaxy fetch/HTTPS push service is available in
 * Custom-tuned torque controllers for an expanding list of cars.
 * Galaxy: StarPilot's portal to configure your comma device using your phone from anywhere.
 Download models, change settings, update software, visualize live model outputs for tuning.
+* EV Vehicle Telemetry: authenticated, read-only SOC/range data for LAN,
+  [RangeBridge](https://github.com/LowkeyNEXT/RangeBridge), personal Tailscale,
+  self-hosted FRP, or the Galaxy proxy.
 * Always On Lateral (full time steering assist)*
 * Speed Limit Controller*
 * Learning Curve Speed Controller*

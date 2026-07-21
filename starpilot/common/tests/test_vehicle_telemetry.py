@@ -2,9 +2,17 @@ import json
 
 from types import SimpleNamespace
 
+import pytest
+
 from cereal import custom
 from openpilot.starpilot.system import vehicle_telemetry
 from openpilot.starpilot.system import vehicle_telemetryd
+from openpilot.system.vehicle_telemetry import daemon as core_vehicle_telemetryd
+
+
+@pytest.fixture(autouse=True)
+def configure_starpilot_telemetry_adapter():
+  vehicle_telemetry.configure_starpilot_vehicle_telemetry()
 
 
 def test_build_vehicle_telemetry_snapshot_uses_generic_car_state_fields():
@@ -74,7 +82,7 @@ def test_daemon_does_not_timestamp_telemetry_until_system_time_is_valid(monkeypa
     vEgo=0.0,
     standstill=True,
   )
-  monkeypatch.setattr(vehicle_telemetryd, "system_time_valid", lambda: False)
+  monkeypatch.setattr(core_vehicle_telemetryd, "system_time_valid", lambda: False)
 
   assert vehicle_telemetryd.build_clock_valid_vehicle_telemetry_snapshot(
     car_state,
@@ -82,7 +90,7 @@ def test_daemon_does_not_timestamp_telemetry_until_system_time_is_valid(monkeypa
     timestamp=1_000.0,
   ) is None
 
-  monkeypatch.setattr(vehicle_telemetryd, "system_time_valid", lambda: True)
+  monkeypatch.setattr(core_vehicle_telemetryd, "system_time_valid", lambda: True)
   snapshot = vehicle_telemetryd.build_clock_valid_vehicle_telemetry_snapshot(
     car_state,
     vehicle_fingerprint="KIA EV9",

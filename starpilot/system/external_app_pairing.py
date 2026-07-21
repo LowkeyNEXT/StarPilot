@@ -102,6 +102,8 @@ def complete_pairing(
   client_name: str,
   requested_capabilities: list[str] | None = None,
   legacy_connection: dict | None = None,
+  telemetry_base_urls: list[str] | None = None,
+  telemetry_path: str = "/api/vehicle/telemetry",
   now: float | None = None,
 ) -> tuple[dict | None, str | None]:
   path = pairing_path(galaxy_dir)
@@ -123,6 +125,15 @@ def complete_pairing(
       _atomic_owner_write(path, record)
     return None, "The external-app pairing code is invalid"
 
+  candidate_base_urls = telemetry_base_urls or [str(record.get("localBaseURL") or "")]
+  base_urls = []
+  for candidate in candidate_base_urls:
+    normalized = _normalized_local_base_url(candidate)
+    if normalized and normalized not in base_urls:
+      base_urls.append(normalized)
+  if not base_urls:
+    return None, "No valid EV Vehicle Telemetry endpoint is configured"
+
   # Consume before issuing credentials so a second request cannot replay it.
   path.unlink(missing_ok=True)
   name = str(client_name or "External app").strip()[:80] or "External app"
@@ -134,15 +145,14 @@ def complete_pairing(
   config["fetch"]["clients"] = clients[-8:]
   save_vehicle_telemetry_config(config)
 
-  local_base_url = str(record.get("localBaseURL") or "")
   response = {
     "schemaVersion": PAIRING_SCHEMA_VERSION,
     "type": "starpilot-galaxy-connection",
     "displayName": "StarPilot Galaxy",
     "capabilities": {
       "vehicleTelemetry": {
-        "baseURLs": [local_base_url],
-        "path": "/api/vehicle/telemetry",
+        "baseURLs": base_urls,
+        "path": telemetry_path if str(telemetry_path).startswith("/") else "/api/vehicle/telemetry",
         "authorization": "bearer",
         "bearerToken": bearer_token,
       },

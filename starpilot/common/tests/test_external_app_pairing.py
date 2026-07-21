@@ -1,7 +1,14 @@
 import base64
 import json
 
+import pytest
+
 from openpilot.starpilot.system import external_app_pairing, vehicle_telemetry
+
+
+@pytest.fixture(autouse=True)
+def configure_starpilot_telemetry_adapter():
+  vehicle_telemetry.configure_starpilot_vehicle_telemetry()
 
 
 def test_one_time_pairing_issues_scoped_telemetry_connection(tmp_path, monkeypatch):
