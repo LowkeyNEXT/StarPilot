@@ -123,14 +123,22 @@ class FRPTunnelController:
     )
 
   def _valid(self, tunnel, fetch):
-    return bool(fetch["enabled"] and tunnel["serverAddress"] and tunnel["subdomainHost"] and tunnel["token"] and tunnel["binaryPath"])
+    return bool(
+      fetch["enabled"]
+      and tunnel["serverAddress"]
+      and tunnel["subdomainHost"]
+      and tunnel["token"]
+      and tunnel["binaryPath"]
+      and tunnel["trustedCaFile"]
+      and tunnel["serverName"]
+    )
 
   def reconcile(self, enabled, tunnel, fetch):
     if not enabled:
       self.stop(state="disabled")
       return
     if not self._valid(tunnel, fetch):
-      self.stop(state="invalid-config", error="FRP mode requires fetch auth, gateway, domain, binary, and token.")
+      self.stop(state="invalid-config", error="FRP mode requires fetch auth, gateway, domain, binary, token, trusted CA, and TLS server name.")
       return
 
     subdomain = ensure_frp_subdomain(self.data_dir, tunnel["subdomain"])
@@ -169,6 +177,10 @@ class FRPTunnelController:
         stderr=subprocess.STDOUT,
         close_fds=True,
       )
+      try:
+        os.setpriority(os.PRIO_PROCESS, self.process.pid, 19)
+      except (AttributeError, OSError):
+        pass
       self.backoff_seconds = 1.0
       self._write_status("running")
     except Exception as error:

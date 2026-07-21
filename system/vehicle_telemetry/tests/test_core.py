@@ -366,6 +366,7 @@ def test_publisher_disables_redirects_and_keeps_token_in_header_only(tmp_path):
   assert success and status == 202
   assert session.trust_env is False
   assert session.request[1]["allow_redirects"] is False
+  assert session.request[1]["stream"] is True
   assert session.request[1]["headers"]["Authorization"] == f"Bearer {'t' * 32}"
   assert "token" not in session.request[1]["json"]
   assert session.response.closed

@@ -1,6 +1,7 @@
 import io
 import json
 import subprocess
+import time
 
 import requests
 
@@ -9,8 +10,10 @@ from openpilot.system.vehicle_telemetry.setup import (
   TELEMETRY_SETUP_STATUS_FILENAME,
   SetupSessionState,
   TelemetrySetupService,
+  active_telemetry_setup_token,
   choose_lan_ipv4,
   launch_vehicle_telemetry_setup,
+  main,
   render_setup_page,
 )
 
@@ -27,7 +30,7 @@ def test_setup_selects_only_private_wifi_or_ethernet_addresses():
 
 
 def test_setup_page_is_self_contained_and_does_not_load_third_party_assets():
-  page = render_setup_page("setup-secret", 600)
+  page = render_setup_page(600)
   assert "EV Vehicle Telemetry" in page
   assert "How should this comma connect?" in page
   assert "Best choice" in page
@@ -36,7 +39,9 @@ def test_setup_page_is_self_contained_and_does_not_load_third_party_assets():
   assert "RangeBridge on GitHub" in page
   assert "Telemetry runs while driving · no CAN writes · low CPU" in page
   assert "offroad only" not in page.lower()
-  assert "setup-secret" in page
+  assert "setup-secret" not in page
+  assert "X-Telemetry-Setup" not in page
+  assert "Open StarPilot Galaxy controls" in page
   assert "<script src=" not in page
   assert "<link" not in page
   assert "<img" not in page
@@ -171,6 +176,46 @@ def test_launcher_keeps_setup_token_out_of_process_arguments(tmp_path):
   assert (tmp_path / TELEMETRY_SETUP_STATUS_FILENAME).stat().st_mode & 0o077 == 0
 
 
+def test_live_setup_token_requires_owner_only_unexpired_running_session(tmp_path):
+  token = "s" * 43
+  path = tmp_path / TELEMETRY_SETUP_STATUS_FILENAME
+  path.write_text(json.dumps({
+    "state": "running",
+    "pid": 123,
+    "url": f"http://192.168.1.50:7767/?setup={token}",
+    "expiresAt": 1600.0,
+  }))
+  path.chmod(0o600)
+
+  from openpilot.system.vehicle_telemetry import setup
+  original = setup._pid_is_running
+  setup._pid_is_running = lambda pid: pid == 123
+  try:
+    assert active_telemetry_setup_token(tmp_path, wall_time=1000.0) == token
+    assert active_telemetry_setup_token(tmp_path, wall_time=1601.0) == ""
+    path.chmod(0o644)
+    assert active_telemetry_setup_token(tmp_path, wall_time=1000.0) == ""
+  finally:
+    setup._pid_is_running = original
+
+
+def test_launch_cli_never_prints_setup_capability(monkeypatch, capsys):
+  secret = "s" * 43
+  monkeypatch.setattr(
+    "openpilot.system.vehicle_telemetry.setup.launch_vehicle_telemetry_setup",
+    lambda *args, **kwargs: {
+      "url": f"http://192.168.1.50:7767/?setup={secret}",
+      "expiresAt": time.time() + 600,
+      "pid": 4321,
+    },
+  )
+  assert main(["launch"]) == 0
+  output = capsys.readouterr().out
+  assert secret not in output
+  assert "?setup=" not in output
+  assert json.loads(output)["host"] == "192.168.1.50"
+
+
 def test_setup_http_requires_session_token_and_bounds_request_body(tmp_path):
   token = "s" * 43
   state = SetupSessionState(tmp_path, token, 1600.0, wall_time=lambda: 1000.0)
@@ -185,6 +230,9 @@ def test_setup_http_requires_session_token_and_bounds_request_body(tmp_path):
     assert page.status_code == 200
     assert page.headers["Cache-Control"] == "no-store"
     assert "default-src 'none'" in page.headers["Content-Security-Policy"]
+    assert "HttpOnly" in page.headers["Set-Cookie"]
+    assert "SameSite=Strict" in page.headers["Set-Cookie"]
+    assert token not in page.text
 
     headers = {"X-Telemetry-Setup": token, "Content-Type": "application/json"}
     started = requests.post(base + "/api/mode", headers=headers, json={"mode": "local"}, timeout=2.0)

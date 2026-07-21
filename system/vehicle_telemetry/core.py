@@ -582,6 +582,7 @@ class VehicleTelemetryPublisher:
         },
         timeout=(3.0, 5.0),
         allow_redirects=False,
+        stream=True,
       )
       return 200 <= response.status_code < 300, response.status_code
     except Exception:

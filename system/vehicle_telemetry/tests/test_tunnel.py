@@ -68,8 +68,8 @@ def test_controller_generates_config_and_starts_without_shell(tmp_path):
     "token": "t" * 32,
     "subdomainHost": "example.com",
     "subdomain": "vt-test",
-    "trustedCaFile": "",
-    "serverName": "",
+    "trustedCaFile": "/data/ca.crt",
+    "serverName": "gateway.example",
   }
   controller.reconcile(True, tunnel, {"enabled": True, "port": 7766})
   assert calls[0][0] == [str(binary), "-c", str(tmp_path / "frpc.generated.toml")]
@@ -79,3 +79,19 @@ def test_controller_generates_config_and_starts_without_shell(tmp_path):
   assert controller.public_url == "https://vt-test.example.com/api/vehicle/telemetry"
   controller.stop()
   assert calls[0][0][0] == str(binary)
+
+
+def test_controller_refuses_frp_without_server_identity_verification(tmp_path):
+  controller = FRPTunnelController(tmp_path, popen=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not start")))
+  controller.reconcile(True, {
+    "binaryPath": "/data/frpc",
+    "serverAddress": "gateway.example",
+    "serverPort": 7000,
+    "token": "t" * 32,
+    "subdomainHost": "example.com",
+    "subdomain": "vt-test",
+    "trustedCaFile": "",
+    "serverName": "",
+  }, {"enabled": True, "port": 7766})
+  assert controller.process is None
+  assert "trusted CA" in (tmp_path / "frpc_status.json").read_text()

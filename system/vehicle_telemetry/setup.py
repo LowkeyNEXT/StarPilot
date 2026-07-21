@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 
+from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -49,6 +50,7 @@ TELEMETRY_SETUP_MAX_BODY_BYTES = 16 * 1024
 TELEMETRY_SETUP_STATUS_FILENAME = "telemetry_setup_session.json"
 TELEMETRY_SETUP_LOCK_FILENAME = "telemetry_setup.lock"
 TELEMETRY_SETUP_TOKEN_HEADER = "X-Telemetry-Setup"
+TELEMETRY_SETUP_COOKIE_NAME = "openpilot_ev_telemetry_setup"
 
 _PRIVATE_V4_NETWORKS = tuple(ipaddress.ip_network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"))
 _INTERFACE_PRIORITY = ("wlan", "wifi", "eth", "en", "usb", "bridge", "ap")
@@ -69,6 +71,23 @@ def _pid_is_running(pid):
     return True
   except (OSError, TypeError, ValueError):
     return False
+
+
+def active_telemetry_setup_token(data_dir=None, *, wall_time=None):
+  """Return the live owner setup capability from its owner-only session file."""
+  status = _owner_status(telemetry_setup_status_path(data_dir))
+  now = time.time() if wall_time is None else float(wall_time)  # noqa: TID251
+  if status.get("state") not in ("starting", "running") or float(status.get("expiresAt") or 0.0) <= now:
+    return ""
+  if not _pid_is_running(status.get("pid")):
+    return ""
+  token = parse_qs(urlsplit(str(status.get("url") or "")).query).get("setup", [""])[0]
+  return token if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) else ""
+
+
+def telemetry_setup_token_is_authorized(supplied, data_dir=None, *, wall_time=None):
+  active = active_telemetry_setup_token(data_dir, wall_time=wall_time)
+  return bool(active) and hmac.compare_digest(str(supplied or ""), active)
 
 
 def _interface_ipv4_addresses():
@@ -348,8 +367,7 @@ class SetupSessionState:
     return payload
 
 
-def render_setup_page(token, duration_seconds, nonce="telemetry-setup"):
-  token_json = json.dumps(str(token))
+def render_setup_page(duration_seconds, nonce="telemetry-setup"):
   duration_json = json.dumps(int(duration_seconds))
   template = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -452,15 +470,14 @@ button.text-button { min-height:44px; margin-top:8px; background:transparent; co
 <details class="details"><summary>Advanced access</summary><section class="panel">
 <p>Rotate the owner fetch token if it may have been shared. Existing clients using the old token will stop working.</p>
 <button id="rotate" class="secondary" type="button">Generate new owner fetch token</button>
-<button id="refresh" class="text-button" type="button">Refresh status</button></section></details>
+<button id="refresh" class="text-button" type="button">Refresh status</button>
+<button id="galaxy" class="text-button" type="button">Open StarPilot Galaxy controls</button></section></details>
 </main><script nonce="__NONCE__">
-const setupToken = __TOKEN__;
 const lifetime = __DURATION__;
 let latest = {};
 let selectionInitialized = false;
 let backendInitialized = false;
 history.replaceState(null, "", location.pathname);
-const headers = {"X-Telemetry-Setup": setupToken};
 const statusEl = document.getElementById("status");
 const setupStatusEl = document.getElementById("setup-status");
 const modeCopy = {
@@ -487,7 +504,7 @@ const modeCopy = {
 };
 
 async function api(path, options = {}) {
-  options.headers = Object.assign({}, headers, options.headers || {});
+  options.credentials = "same-origin";
   const response = await fetch(path, options);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Request failed");
@@ -630,6 +647,10 @@ document.getElementById("copy").addEventListener("click", () => {
   copyText(document.getElementById("fetch-token").textContent);
 });
 document.getElementById("refresh").addEventListener("click", refresh);
+document.getElementById("galaxy").addEventListener("click", () => {
+  const host = location.hostname.includes(":") ? `[${location.hostname}]` : location.hostname;
+  location.href = `http://${host}:8082/manage_navigation_keys`;
+});
 document.getElementById("rotate").addEventListener("click", async () => {
   try {
     await api("/api/token/rotate", {method: "POST"});
@@ -650,7 +671,7 @@ refresh();
 setInterval(refresh, 2000);
 setTimeout(refresh, Math.min(lifetime, 5) * 1000);
 </script></body></html>"""
-  return template.replace("__TOKEN__", token_json).replace("__DURATION__", duration_json).replace("__NONCE__", nonce)
+  return template.replace("__DURATION__", duration_json).replace("__NONCE__", nonce)
 
 
 class _SetupHTTPServer(_TelemetryHTTPServer):
@@ -692,6 +713,13 @@ class TelemetrySetupRequestHandler(VehicleTelemetryRequestHandler):
 
   def _authorized(self, *, allow_query=False):
     supplied = self.headers.get(TELEMETRY_SETUP_TOKEN_HEADER, "")
+    if not supplied:
+      try:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        morsel = cookie.get(TELEMETRY_SETUP_COOKIE_NAME)
+        supplied = morsel.value if morsel is not None else ""
+      except Exception:
+        supplied = ""
     if allow_query and not supplied:
       supplied = parse_qs(urlsplit(self.path).query).get("setup", [""])[0]
     if hmac.compare_digest(str(supplied), self.server.state.token):
@@ -739,7 +767,8 @@ class TelemetrySetupRequestHandler(VehicleTelemetryRequestHandler):
       if not self._authorized(allow_query=True) or not self._available():
         return
       nonce = secrets.token_urlsafe(12)
-      encoded = render_setup_page(self.server.state.token, self.server.state.expires_at - self.server.state.wall_time(), nonce).encode("utf-8")
+      remaining_seconds = max(0, int(self.server.state.expires_at - self.server.state.wall_time()))
+      encoded = render_setup_page(remaining_seconds, nonce).encode("utf-8")
       self.send_response(200)
       self.send_header("Content-Type", "text/html; charset=utf-8")
       self.send_header("Content-Length", str(len(encoded)))
@@ -754,6 +783,10 @@ class TelemetrySetupRequestHandler(VehicleTelemetryRequestHandler):
       self.send_header("Referrer-Policy", "no-referrer")
       self.send_header("X-Content-Type-Options", "nosniff")
       self.send_header("X-Frame-Options", "DENY")
+      self.send_header(
+        "Set-Cookie",
+        f"{TELEMETRY_SETUP_COOKIE_NAME}={self.server.state.token}; Path=/; Max-Age={remaining_seconds}; HttpOnly; SameSite=Strict",
+      )
       self.end_headers()
       self.wfile.write(encoded)
       self.close_connection = True
@@ -993,7 +1026,14 @@ def main(argv=None):
       serve_vehicle_telemetry_setup(arguments.data_dir, arguments.host, arguments.port, arguments.expires_at, token)
       return 0
     session = launch_vehicle_telemetry_setup(arguments.data_dir, port=arguments.port, duration_seconds=arguments.duration)
-    print(json.dumps({key: session[key] for key in ("url", "expiresAt", "pid")}, separators=(",", ":"), sort_keys=True))
+    parsed_url = urlsplit(str(session.get("url") or ""))
+    print(json.dumps({
+      "expiresAt": session["expiresAt"],
+      "host": parsed_url.hostname or "",
+      "pid": session["pid"],
+      "port": parsed_url.port,
+      "state": "running",
+    }, separators=(",", ":"), sort_keys=True))
     return 0
   except Exception as error:
     if action == "serve":

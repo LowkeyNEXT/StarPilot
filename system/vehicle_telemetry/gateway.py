@@ -47,6 +47,10 @@ def normalize_gateway_config(raw):
   zone_id = str(dns.get("zoneId") or "").strip()
   if len(token) < 32 or len(api_token) < 20 or not zone_id:
     raise ValueError("Gateway FRP token, Cloudflare API token, and zone ID are required.")
+  cert_file = _valid_absolute_path(frp.get("certFile"))
+  key_file = _valid_absolute_path(frp.get("keyFile"))
+  if not cert_file or not key_file:
+    raise ValueError("Gateway FRP TLS certificate and key paths are required.")
 
   return {
     "frp": {
@@ -55,8 +59,8 @@ def normalize_gateway_config(raw):
       "vhostHTTPPort": max(1, min(65535, int(frp.get("vhostHTTPPort") or 80))),
       "subdomainHost": subdomain_host,
       "token": token,
-      "certFile": _valid_absolute_path(frp.get("certFile")),
-      "keyFile": _valid_absolute_path(frp.get("keyFile")),
+      "certFile": cert_file,
+      "keyFile": key_file,
     },
     "dns": {
       "zoneId": zone_id,
@@ -83,14 +87,12 @@ def discover_public_ipv4(session, url=DEFAULT_ADDRESS_SOURCE_URL):
 class CloudflareDNSUpdater:
   def __init__(self, zone_id, api_token, session=None):
     self.zone_id = zone_id
+    self.authorization_headers = {
+      "Authorization": f"Bearer {api_token}",
+      "Content-Type": "application/json",
+    }
     self.session = session or requests.Session()
     self.session.trust_env = False
-    self.session.headers.update(
-      {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json",
-      }
-    )
 
   def _result(self, response):
     try:
@@ -106,6 +108,7 @@ class CloudflareDNSUpdater:
     base_url = f"{CLOUDFLARE_API_BASE}/zones/{self.zone_id}/dns_records"
     response = self.session.get(
       base_url,
+      headers=self.authorization_headers,
       params={"type": "A", "name": name},
       timeout=(3.0, 8.0),
       allow_redirects=False,
@@ -125,12 +128,19 @@ class CloudflareDNSUpdater:
         raise RuntimeError(f"Cloudflare returned an invalid DNS record for {name}.")
       response = self.session.put(
         f"{base_url}/{record_id}",
+        headers=self.authorization_headers,
         json=body,
         timeout=(3.0, 8.0),
         allow_redirects=False,
       )
     else:
-      response = self.session.post(base_url, json=body, timeout=(3.0, 8.0), allow_redirects=False)
+      response = self.session.post(
+        base_url,
+        headers=self.authorization_headers,
+        json=body,
+        timeout=(3.0, 8.0),
+        allow_redirects=False,
+      )
     return self._result(response)
 
   def update_gateway_records(self, zone_name, address):
@@ -175,7 +185,12 @@ def provision_gateway(config, output_dir, session=None):
   updater = CloudflareDNSUpdater(dns["zoneId"], dns["apiToken"], session=session)
   address = dns["address"]
   if address == "auto":
-    address = discover_public_ipv4(updater.session, dns["addressSourceURL"])
+    address_session = requests.Session()
+    address_session.trust_env = False
+    try:
+      address = discover_public_ipv4(address_session, dns["addressSourceURL"])
+    finally:
+      address_session.close()
   else:
     address = str(ipaddress.IPv4Address(address))
   updater.update_gateway_records(dns["zoneName"], address)

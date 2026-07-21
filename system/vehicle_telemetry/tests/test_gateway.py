@@ -18,6 +18,19 @@ def test_gateway_requires_zone_apex_for_free_wildcard_tls():
     raise AssertionError("nested subdomain host should not be accepted for free wildcard TLS mode")
 
 
+def test_gateway_requires_frp_server_certificate_paths():
+  raw = {
+    "frp": {"subdomainHost": "example.com", "token": "t" * 32},
+    "dns": {"zoneName": "example.com", "zoneId": "zone", "apiToken": "a" * 24},
+  }
+  try:
+    normalize_gateway_config(raw)
+  except ValueError as error:
+    assert "certificate" in str(error)
+  else:
+    raise AssertionError("an unauthenticated FRP server certificate must not be accepted")
+
+
 def test_frps_config_forces_tls_and_loads_token_from_owner_file():
   config = build_frps_config(
     {
@@ -85,3 +98,5 @@ def test_cloudflare_updater_keeps_control_dns_only_and_proxies_wildcard():
   assert posts[1][2]["json"]["name"] == "*.example.com"
   assert posts[1][2]["json"]["proxied"] is True
   assert session.trust_env is False
+  assert "Authorization" not in session.headers
+  assert all(call[2]["headers"]["Authorization"] == f"Bearer {'a' * 24}" for call in session.calls)
