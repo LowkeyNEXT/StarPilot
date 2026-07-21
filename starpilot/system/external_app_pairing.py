@@ -139,6 +139,8 @@ def complete_pairing(
   name = str(client_name or "External app").strip()[:80] or "External app"
   bearer_token = secrets.token_urlsafe(32)
   config = load_vehicle_telemetry_config()
+  if config["mode"] == "off":
+    config["mode"] = "galaxy"
   clients = [client for client in config["fetch"].get("clients", []) if client.get("name") != name]
   clients.append({"name": name, "token": bearer_token, "createdAt": current_time})
   config["fetch"]["enabled"] = True
