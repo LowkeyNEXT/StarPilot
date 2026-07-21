@@ -180,6 +180,7 @@ class SetupSessionState:
       else:
         config["mode"] = "off"
         config["fetch"]["enabled"] = False
+        config["push"]["enabled"] = False
         message = "Network telemetry is off. Local caching remains available."
       save_vehicle_telemetry_config(config, self.config_path)
 
@@ -197,6 +198,53 @@ class SetupSessionState:
       with self._lock:
         self.job_state = "failed"
         self.job_message = "Setup did not complete."
+        self.job_error = str(error)[:240]
+
+  def _configure_backend(self, update):
+    config = load_vehicle_telemetry_config(self.config_path)
+    self._disable_managed_funnel(config)
+    push = config["push"]
+    endpoint = str(update.get("url") or push.get("url") or "").strip()
+    parsed = urlsplit(endpoint)
+    if (
+      len(endpoint) > 2048
+      or parsed.scheme != "https"
+      or not parsed.hostname
+      or parsed.username is not None
+      or parsed.password is not None
+      or parsed.fragment
+    ):
+      raise ValueError("Enter a valid HTTPS backend URL without credentials or a fragment.")
+
+    supplied_token = str(update.get("token") or "").strip()
+    backend_token = supplied_token or str(push.get("token") or "").strip()
+    if len(backend_token) < 32:
+      raise ValueError("Enter a backend bearer token with at least 32 characters.")
+
+    config["mode"] = "send"
+    config["fetch"]["enabled"] = False
+    push.update({
+      "enabled": True,
+      "url": endpoint,
+      "token": backend_token,
+      "vehicleId": str(update.get("vehicleId") or "").strip(),
+      "vehicleName": str(update.get("vehicleName") or "").strip(),
+    })
+    saved = save_vehicle_telemetry_config(config, self.config_path)
+    if not saved["push"]["enabled"]:
+      raise ValueError("The custom backend configuration was not accepted.")
+    with self._lock:
+      self.job_state = "succeeded"
+      self.job_message = "Custom backend sending is enabled."
+      self.job_error = ""
+
+  def _run_backend(self, update):
+    try:
+      self._configure_backend(update)
+    except Exception as error:
+      with self._lock:
+        self.job_state = "failed"
+        self.job_message = "Custom backend setup did not complete."
         self.job_error = str(error)[:240]
 
   def _rotate_fetch_token(self):
@@ -242,6 +290,25 @@ class SetupSessionState:
       self.job_message = "Generating a new owner fetch token..."
       self.job_error = ""
       self._job = threading.Thread(target=self._rotate_fetch_token, name="telemetry-setup-token", daemon=True)
+      self._job.start()
+    return True
+
+  def start_backend(self, update):
+    if self.expired() or not isinstance(update, dict):
+      return False
+    bounded = {
+      "url": str(update.get("url") or "")[:2048],
+      "token": str(update.get("token") or "")[:512],
+      "vehicleId": str(update.get("vehicleId") or "")[:128],
+      "vehicleName": str(update.get("vehicleName") or "")[:120],
+    }
+    with self._lock:
+      if self._job is not None and self._job.is_alive():
+        return False
+      self.job_state = "running"
+      self.job_message = "Saving custom backend settings..."
+      self.job_error = ""
+      self._job = threading.Thread(target=self._run_backend, args=(bounded,), name="telemetry-setup-backend", daemon=True)
       self._job.start()
     return True
 
@@ -323,6 +390,11 @@ button:disabled { opacity:.5; cursor:wait; filter:none; }
 .primary { margin-top:22px; }
 button.secondary { background:#eef0f2; color:var(--text); }
 button.text-button { min-height:44px; margin-top:8px; background:transparent; color:var(--accent); font-size:15px; }
+.backend-fields { margin-top:18px; }
+.backend-fields label { display:block; margin-top:13px; color:var(--text); font-size:14px; font-weight:700; }
+.backend-fields input { width:100%; min-height:48px; margin-top:6px; padding:11px 12px; border:1px solid var(--line);
+  border-radius:10px; background:var(--bg); color:var(--text); font:15px/1.2 inherit; }
+.backend-fields small { display:block; margin-top:8px; }
 .panel { margin-top:18px; padding:17px; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
 .status { white-space:pre-wrap; color:var(--muted); overflow-wrap:anywhere; }
 .status.good { color:var(--good); }
@@ -350,6 +422,8 @@ button.text-button { min-height:44px; margin-top:8px; background:transparent; co
 <label class="option selected" data-option="tailscale"><input type="radio" name="mode" value="tailscale" checked>
 <span><span class="option-title">Tailscale</span><span class="option-copy">Reach it securely from anywhere</span></span>
 <span class="best">Best choice</span></label>
+<label class="option" data-option="send"><input type="radio" name="mode" value="send">
+<span><span class="option-title">Custom backend</span><span class="option-copy">Send small HTTPS updates to your server</span></span></label>
 <label class="option" data-option="local"><input type="radio" name="mode" value="local">
 <span><span class="option-title">This Wi-Fi only</span><span class="option-copy">Keep access on this network</span></span></label>
 <label class="option" data-option="off"><input type="radio" name="mode" value="off">
@@ -357,6 +431,14 @@ button.text-button { min-height:44px; margin-top:8px; background:transparent; co
 </fieldset>
 <section class="connection-path" aria-live="polite"><p id="path" class="path">comma · private relay · RangeBridge</p>
 <p id="mode-detail">Uses your own free Tailscale account. No shared server.</p></section>
+<section id="backend-fields" class="panel backend-fields hidden">
+<h2>Custom backend</h2>
+<label>HTTPS endpoint<input id="backend-url" type="url" inputmode="url" autocomplete="url" placeholder="https://telemetry.example/v1/ingest"></label>
+<label>Bearer token<input id="backend-token" type="password" autocomplete="new-password" placeholder="At least 32 characters"></label>
+<small>The token is sent only in the Authorization header. Leave it blank to keep an existing token.</small>
+<label>Vehicle ID <small>(optional)</small><input id="backend-vehicle-id" type="text" autocomplete="off" maxlength="128" placeholder="my-ev"></label>
+<label>Vehicle name <small>(optional)</small><input id="backend-vehicle-name" type="text" autocomplete="off" maxlength="120" placeholder="My EV"></label>
+</section>
 <button id="apply-mode" class="primary" type="submit">Set up Tailscale</button>
 <button id="finish" class="text-button" type="button">I’ll configure this later</button>
 </form>
@@ -366,7 +448,7 @@ button.text-button { min-height:44px; margin-top:8px; background:transparent; co
 <div id="token-wrap" class="hidden"><p>Fetch token — copy this now:</p><p id="fetch-token" class="secret"></p>
 <button id="copy" class="secondary" type="button">Copy token</button></div></section>
 <footer class="rangebridge"><a href="https://github.com/LowkeyNEXT/RangeBridge" target="_blank" rel="noreferrer">RangeBridge on GitHub</a>
-<p class="footnote">API runs while driving · read-only · low CPU</p></footer>
+<p class="footnote">Telemetry runs while driving · no CAN writes · low CPU</p></footer>
 <details class="details"><summary>Advanced access</summary><section class="panel">
 <p>Rotate the owner fetch token if it may have been shared. Existing clients using the old token will stop working.</p>
 <button id="rotate" class="secondary" type="button">Generate new owner fetch token</button>
@@ -376,6 +458,7 @@ const setupToken = __TOKEN__;
 const lifetime = __DURATION__;
 let latest = {};
 let selectionInitialized = false;
+let backendInitialized = false;
 history.replaceState(null, "", location.pathname);
 const headers = {"X-Telemetry-Setup": setupToken};
 const statusEl = document.getElementById("status");
@@ -390,6 +473,11 @@ const modeCopy = {
     action: "Enable Wi-Fi access",
     path: "comma · this Wi-Fi · your apps",
     detail: "The authenticated API is reachable only from this local network.",
+  },
+  send: {
+    action: "Enable custom backend",
+    path: "comma · outbound HTTPS · your backend",
+    detail: "Sends compact authenticated snapshots without exposing an inbound API.",
   },
   off: {
     action: "Turn network access off",
@@ -432,6 +520,7 @@ function selectMode(mode) {
   document.getElementById("apply-mode").textContent = modeCopy[mode].action;
   document.getElementById("path").textContent = modeCopy[mode].path;
   document.getElementById("mode-detail").textContent = modeCopy[mode].detail;
+  document.getElementById("backend-fields").classList.toggle("hidden", mode !== "send");
 }
 
 async function copyText(text) {
@@ -461,7 +550,15 @@ function render(data) {
     selectMode(currentMode && currentMode !== "off" && modeCopy[currentMode] ? currentMode : "tailscale");
     selectionInitialized = true;
   }
-  const lines = [data.message || "Ready.", `Mode: ${data.config?.mode || "off"}`, `Relay: ${tunnel.state || "disabled"}`];
+  if (!backendInitialized) {
+    document.getElementById("backend-url").value = data.config?.push?.url || "";
+    document.getElementById("backend-vehicle-id").value = data.config?.push?.vehicleId || "";
+    document.getElementById("backend-vehicle-name").value = data.config?.push?.vehicleName || "";
+    if (data.config?.push?.hasToken) document.getElementById("backend-token").placeholder = "Leave blank to keep stored token";
+    backendInitialized = true;
+  }
+  const lines = [data.message || "Ready.", `Mode: ${data.config?.mode || "off"}`, `Relay: ${tunnel.state || "disabled"}`,
+    `Custom sender: ${data.config?.push?.enabled ? "enabled" : "disabled"}`];
   if (data.error) lines.push(`Error: ${data.error}`);
   if (tunnel.error) lines.push(`Relay detail: ${tunnel.error}`);
   statusEl.textContent = lines.join("\\n");
@@ -480,6 +577,7 @@ function render(data) {
   document.getElementById("connection-status").textContent = `comma found · Wi-Fi · setup closes in ${formatTime(data.remainingSeconds)}`;
   document.getElementById("apply-mode").disabled = data.jobState === "running";
   document.querySelectorAll('input[name="mode"]').forEach(input => input.disabled = data.jobState === "running");
+  document.querySelectorAll("#backend-fields input").forEach(input => input.disabled = data.jobState === "running");
 }
 
 async function refresh() {
@@ -495,10 +593,17 @@ document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventL
 document.getElementById("mode-form").addEventListener("submit", async event => {
   event.preventDefault();
   try {
-    await api("/api/mode", {
+    const mode = selectedMode();
+    const backend = mode === "send";
+    await api(backend ? "/api/backend" : "/api/mode", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: selectedMode()}),
+      body: JSON.stringify(backend ? {
+        url: document.getElementById("backend-url").value.trim(),
+        token: document.getElementById("backend-token").value,
+        vehicleId: document.getElementById("backend-vehicle-id").value.trim(),
+        vehicleName: document.getElementById("backend-vehicle-name").value.trim(),
+      } : {mode}),
     });
     setupStatusEl.classList.remove("hidden");
     await refresh();
@@ -538,7 +643,7 @@ document.getElementById("finish").addEventListener("click", async () => {
   try { await api("/api/finish", {method: "POST"}); } catch (error) {}
   document.body.innerHTML = [
     "<main class='completion'><p class='eyebrow'>Setup closed</p><h1>EV Vehicle Telemetry is ready.</h1>",
-    "<p>You can close this page. The read-only API can continue running while you drive.</p></main>",
+    "<p>You can close this page. The API or custom sender can continue running while you drive.</p></main>",
   ].join("");
 });
 refresh();
@@ -674,6 +779,15 @@ class TelemetrySetupRequestHandler(VehicleTelemetryRequestHandler):
         self._write_setup_json(400, {"error": "Unsupported setup mode."})
       elif self.server.state.start_mode(mode):
         self._write_setup_json(202, {"message": "Setup started."})
+      else:
+        self._write_setup_json(409, {"error": "Another setup action is already running."})
+      return
+    if path == "/api/backend":
+      payload = self._read_json()
+      if payload is None:
+        return
+      if self.server.state.start_backend(payload):
+        self._write_setup_json(202, {"message": "Custom backend setup started."})
       else:
         self._write_setup_json(409, {"error": "Another setup action is already running."})
       return

@@ -119,6 +119,24 @@ def test_fetch_requires_long_bearer_token_and_constant_time_comparison(tmp_path)
   assert not core.is_fetch_authorized({"fetch": {"enabled": True, "token": "short"}}, "Bearer short")
 
 
+def test_send_mode_disables_inbound_fetch_but_keeps_custom_publisher(tmp_path):
+  config = core.save_vehicle_telemetry_config(
+    {
+      "mode": "send",
+      "fetch": {"enabled": True, "token": "f" * 32},
+      "push": {
+        "enabled": True,
+        "url": "https://telemetry.example/v1/ingest",
+        "token": "p" * 32,
+      },
+    },
+    tmp_path / "config.json",
+  )
+  assert config["mode"] == "send"
+  assert not config["fetch"]["enabled"]
+  assert config["push"]["enabled"]
+
+
 def test_standalone_http_api_enforces_bearer_and_reports_cached_data(tmp_path):
   token = "a" * 32
   config_path = tmp_path / "config.json"

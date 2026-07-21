@@ -32,7 +32,7 @@ VEHICLE_TELEMETRY_LIVE_SECONDS = 15.0
 VEHICLE_TELEMETRY_HEARTBEAT_SECONDS = 60.0
 VEHICLE_TELEMETRY_DEFAULT_PORT = 7766
 VEHICLE_TELEMETRY_CONFIG_RELOAD_SECONDS = 5.0
-TELEMETRY_MODES = ("off", "local", "tailscale", "frp", "galaxy")
+TELEMETRY_MODES = ("off", "send", "local", "tailscale", "frp", "galaxy")
 
 _TELEMETRY_FIELDS = (
   "source",
@@ -289,6 +289,8 @@ def _normalize_vehicle_telemetry_config(raw):
     "bindAddress": _valid_bind_address(fetch_raw.get("bindAddress") or "127.0.0.1"),
     "port": _bounded_int(fetch_raw.get("port"), VEHICLE_TELEMETRY_DEFAULT_PORT, 1024, 65535),
   }
+  if config["mode"] in ("off", "send"):
+    config["fetch"]["enabled"] = False
 
   push_token = str(push_raw.get("token") or "").strip()
   push_url = _valid_https_url(push_raw.get("url"))

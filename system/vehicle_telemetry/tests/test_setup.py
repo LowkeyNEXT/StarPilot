@@ -31,8 +31,10 @@ def test_setup_page_is_self_contained_and_does_not_load_third_party_assets():
   assert "EV Vehicle Telemetry" in page
   assert "How should this comma connect?" in page
   assert "Best choice" in page
+  assert "Custom backend" in page
+  assert "/api/backend" in page
   assert "RangeBridge on GitHub" in page
-  assert "API runs while driving · read-only · low CPU" in page
+  assert "Telemetry runs while driving · no CAN writes · low CPU" in page
   assert "offroad only" not in page.lower()
   assert "setup-secret" in page
   assert "<script src=" not in page
@@ -89,6 +91,46 @@ def test_setup_state_runs_tailscale_install_once_in_background(tmp_path):
   assert state.status_payload()["jobState"] == "succeeded"
   assert core.load_vehicle_telemetry_config(tmp_path / core.VEHICLE_TELEMETRY_CONFIG_FILENAME)["mode"] == "tailscale"
   assert calls == [base]
+
+
+def test_setup_state_configures_send_only_custom_backend_and_preserves_token(tmp_path):
+  state = SetupSessionState(tmp_path, "s" * 43, 1600.0, wall_time=lambda: 1000.0)
+  assert state.start_backend({
+    "url": "https://telemetry.example/v1/ingest",
+    "token": "b" * 32,
+    "vehicleId": "my-ev",
+    "vehicleName": "My EV",
+  })
+  state.wait_for_job(timeout=2.0)
+
+  config = core.load_vehicle_telemetry_config(tmp_path / core.VEHICLE_TELEMETRY_CONFIG_FILENAME)
+  assert config["mode"] == "send"
+  assert not config["fetch"]["enabled"]
+  assert config["push"]["enabled"]
+  assert config["push"]["url"] == "https://telemetry.example/v1/ingest"
+  assert config["push"]["token"] == "b" * 32
+  assert state.status_payload()["config"]["push"]["hasToken"]
+  assert "token" not in state.status_payload()["config"]["push"]
+
+  assert state.start_backend({"url": "https://new.example/ingest", "token": "", "vehicleId": "my-ev"})
+  state.wait_for_job(timeout=2.0)
+  updated = core.load_vehicle_telemetry_config(tmp_path / core.VEHICLE_TELEMETRY_CONFIG_FILENAME)
+  assert updated["push"]["url"] == "https://new.example/ingest"
+  assert updated["push"]["token"] == "b" * 32
+
+  assert state.start_mode("off")
+  state.wait_for_job(timeout=2.0)
+  disabled = core.load_vehicle_telemetry_config(tmp_path / core.VEHICLE_TELEMETRY_CONFIG_FILENAME)
+  assert disabled["mode"] == "off"
+  assert not disabled["push"]["enabled"]
+
+
+def test_setup_state_rejects_insecure_custom_backend(tmp_path):
+  state = SetupSessionState(tmp_path, "s" * 43, 1600.0, wall_time=lambda: 1000.0)
+  assert state.start_backend({"url": "http://telemetry.example/ingest", "token": "b" * 32})
+  state.wait_for_job(timeout=2.0)
+  assert state.status_payload()["jobState"] == "failed"
+  assert core.load_vehicle_telemetry_config(tmp_path / core.VEHICLE_TELEMETRY_CONFIG_FILENAME)["mode"] == "off"
 
 
 def test_launcher_keeps_setup_token_out_of_process_arguments(tmp_path):
@@ -152,6 +194,17 @@ def test_setup_http_requires_session_token_and_bounds_request_body(tmp_path):
     assert status.status_code == 200
     assert status.json()["config"]["mode"] == "local"
     assert "token" not in status.json()["config"]["fetch"]
+
+    backend = requests.post(base + "/api/backend", headers=headers, json={
+      "url": "https://telemetry.example/v1/ingest",
+      "token": "b" * 32,
+      "vehicleId": "my-ev",
+    }, timeout=2.0)
+    assert backend.status_code == 202
+    state.wait_for_job(timeout=2.0)
+    status = requests.get(base + "/api/status", headers={"X-Telemetry-Setup": token}, timeout=2.0)
+    assert status.json()["config"]["mode"] == "send"
+    assert status.json()["config"]["push"]["enabled"]
 
     oversized = requests.post(
       base + "/api/mode",
