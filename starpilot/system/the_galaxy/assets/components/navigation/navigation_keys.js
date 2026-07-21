@@ -249,13 +249,13 @@ export function NavKeys() {
         rotateFetchToken,
         fetchToken: "",
         fetch: {
-          enabled: state.telemetryMode !== "off",
+          enabled: ["local", "tailscale", "frp", "galaxy"].includes(state.telemetryMode),
           port: Number(state.telemetryFetchPort || 7766),
           bindAddress: state.telemetryMode === "local" ? "0.0.0.0" : "127.0.0.1",
         },
         pushToken: state.telemetryPushToken,
         push: {
-          enabled: state.telemetryPushEnabled,
+          enabled: state.telemetryMode === "send" || state.telemetryPushEnabled,
           url: state.telemetryPushUrl,
           vehicleId: state.telemetryVehicleId,
           vehicleName: state.telemetryVehicleName,
@@ -612,7 +612,7 @@ export function NavKeys() {
     return html`
       <div class="navkeys-title">EV Vehicle Telemetry</div>
       <div class="navkeys-subtitle">
-        Cache only, serve on your LAN, use a personal Tailscale Funnel, publish through your own FRP gateway, or use the hosted Galaxy route. HTTPS push can run with any mode.
+        Cache only, send to your custom backend, serve on your LAN, use a personal Tailscale Funnel, publish through your own FRP gateway, or use the hosted Galaxy route. Custom HTTPS sending can also run with any access mode.
       </div>
 
       <div class="navkeys-telemetry-grid">
@@ -621,8 +621,12 @@ export function NavKeys() {
           <select
             class="navkeys-input navkeys-select"
             value="${() => state.telemetryMode}"
-            @change="${(event) => state.telemetryMode = event.target.value}">
+            @change="${(event) => {
+              state.telemetryMode = event.target.value
+              if (state.telemetryMode === "send") state.telemetryPushEnabled = true
+            }}">
             <option value="off">Off / cache only</option>
+            <option value="send">Custom backend (send only)</option>
             <option value="local">Local network</option>
             <option value="tailscale">Personal public relay (Tailscale)</option>
             <option value="frp">Self-hosted FRP</option>
@@ -690,14 +694,15 @@ export function NavKeys() {
         <label class="navkeys-checkbox-row">
           <input
             type="checkbox"
-            :checked="${() => state.telemetryPushEnabled}"
-            @change="${(event) => state.telemetryPushEnabled = !!event.target.checked}" />
-          <span>Push snapshots to an HTTPS endpoint</span>
+            :checked="${() => state.telemetryMode === "send" || state.telemetryPushEnabled}"
+            @change="${(event) => state.telemetryPushEnabled = !!event.target.checked}"
+            disabled="${() => state.telemetryMode === "send"}" />
+          <span>Send snapshots to a custom HTTPS backend</span>
         </label>
-        ${() => state.telemetryPushEnabled ? html`
+        ${() => state.telemetryMode === "send" || state.telemetryPushEnabled ? html`
           <div class="navkeys-telemetry-grid">
-            <div>${telemetryInput("Push URL", "telemetryPushUrl", { placeholder: "https://telemetry.example/ingest" })}</div>
-            <div>${telemetryInput("Push token (leave blank to keep)", "telemetryPushToken", { secret: true, placeholder: "••••••••" })}</div>
+            <div>${telemetryInput("Backend URL", "telemetryPushUrl", { placeholder: "https://telemetry.example/ingest" })}</div>
+            <div>${telemetryInput("Backend bearer token (leave blank to keep)", "telemetryPushToken", { secret: true, placeholder: "••••••••" })}</div>
             <div>${telemetryInput("Vehicle ID or VIN", "telemetryVehicleId")}</div>
             <div>${telemetryInput("Vehicle name", "telemetryVehicleName")}</div>
             <div>${telemetryInput("Battery capacity (kWh)", "telemetryBatteryCapacity", { type: "number" })}</div>
@@ -712,7 +717,7 @@ export function NavKeys() {
         <button
           class="navkeys-btn navkeys-copy-btn"
           @click="${() => api.saveTelemetry({ rotateFetchToken: true })}"
-          disabled="${() => state.telemetrySaving || state.telemetryMode === "off"}">
+          disabled="${() => state.telemetrySaving || state.telemetryMode === "off" || state.telemetryMode === "send"}">
           <i class="bi bi-arrow-clockwise"></i>
           <span>Rotate Fetch Token</span>
         </button>

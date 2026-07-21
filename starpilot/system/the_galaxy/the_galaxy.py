@@ -615,12 +615,12 @@ def _merge_vehicle_telemetry_config(current, update):
   update = update if isinstance(update, dict) else {}
   merged = json.loads(json.dumps(current))
   requested_mode = str(update.get("mode") or current.get("mode") or "off").strip().lower()
-  merged["mode"] = requested_mode if requested_mode in ("off", "local", "tailscale", "frp", "galaxy") else "off"
+  merged["mode"] = requested_mode if requested_mode in ("off", "send", "local", "tailscale", "frp", "galaxy") else "off"
 
   fetch_update = update.get("fetch") if isinstance(update.get("fetch"), dict) else {}
   fetch = merged.setdefault("fetch", {})
   fetch["enabled"] = _json_bool(fetch_update.get("enabled"), fetch.get("enabled", False))
-  if merged["mode"] == "off":
+  if merged["mode"] in ("off", "send"):
     fetch["enabled"] = False
   fetch["bindAddress"] = str(fetch_update.get("bindAddress") or fetch.get("bindAddress") or "127.0.0.1")
   fetch["port"] = _bounded_json_int(fetch_update.get("port"), fetch.get("port", 7766), 1024, 65535)

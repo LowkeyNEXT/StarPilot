@@ -135,6 +135,16 @@ def test_galaxy_configures_shared_telemetry_modes_without_exposing_secrets(monke
   assert preserved["config"]["push"]["enabled"]
   assert preserved["config"]["tunnel"]["hasToken"]
 
+  send_only = client.post("/api/vehicle/telemetry/config", headers={"X-Galaxy-LAN-Setup": "1"}, json={
+    "mode": "send",
+    "fetch": {"enabled": True},
+    "push": {"enabled": True, "url": "https://telemetry.example/ingest"},
+  }).get_json()
+  assert send_only["config"]["mode"] == "send"
+  assert not send_only["config"]["fetch"]["enabled"]
+  assert send_only["config"]["push"]["enabled"]
+  assert send_only["config"]["push"]["hasToken"]
+
 
 def test_telemetry_pairing_urls_follow_active_mode():
   config = vehicle_telemetry.default_vehicle_telemetry_config()
