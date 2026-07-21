@@ -1,9 +1,12 @@
 import json
+import os
+import time
 
 import pytest
 
 from openpilot.common.params import ParamKeyType
 from openpilot.starpilot.system import vehicle_telemetry
+from openpilot.system.vehicle_telemetry.setup import TELEMETRY_SETUP_COOKIE_NAME, TELEMETRY_SETUP_STATUS_FILENAME
 
 from test_dashboard_stats import MODULE_DIR, _install_server_import_stubs
 
@@ -92,11 +95,26 @@ def _params_client(monkeypatch, values, device_type):
   return app.test_client(), fake_params
 
 
+def _active_setup_session(data_dir):
+  token = "s" * 43
+  path = data_dir / TELEMETRY_SETUP_STATUS_FILENAME
+  path.write_text(json.dumps({
+    "schemaVersion": 1,
+    "state": "running",
+    "pid": os.getpid(),
+    "url": f"http://192.168.0.75:7767/?setup={token}",
+    "expiresAt": time.time() + 600,
+  }))
+  path.chmod(0o600)
+  return token
+
+
 def test_galaxy_configures_shared_telemetry_modes_without_exposing_secrets(monkeypatch, tmp_path):
   monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
   client, _ = _params_client(monkeypatch, {}, "tici")
+  token = _active_setup_session(tmp_path)
 
-  saved = client.post("/api/vehicle/telemetry/config", headers={"X-Galaxy-LAN-Setup": "1"}, json={
+  saved = client.post("/api/vehicle/telemetry/config", headers={"X-Telemetry-Setup": token}, json={
     "mode": "local",
     "rotateFetchToken": True,
     "fetch": {"enabled": True, "port": 17766},
@@ -119,7 +137,7 @@ def test_galaxy_configures_shared_telemetry_modes_without_exposing_secrets(monke
   assert "token" not in payload["config"]["push"]
   assert vehicle_telemetry.vehicle_telemetry_config_path().stat().st_mode & 0o077 == 0
 
-  preserved = client.post("/api/vehicle/telemetry/config", headers={"X-Galaxy-LAN-Setup": "1"}, json={
+  preserved = client.post("/api/vehicle/telemetry/config", headers={"X-Telemetry-Setup": token}, json={
     "mode": "frp",
     "fetch": {"enabled": True, "port": 17766},
     "tunnelToken": "t" * 32,
@@ -135,7 +153,7 @@ def test_galaxy_configures_shared_telemetry_modes_without_exposing_secrets(monke
   assert preserved["config"]["push"]["enabled"]
   assert preserved["config"]["tunnel"]["hasToken"]
 
-  send_only = client.post("/api/vehicle/telemetry/config", headers={"X-Galaxy-LAN-Setup": "1"}, json={
+  send_only = client.post("/api/vehicle/telemetry/config", headers={"X-Telemetry-Setup": token}, json={
     "mode": "send",
     "fetch": {"enabled": True},
     "push": {"enabled": True, "url": "https://telemetry.example/ingest"},
@@ -177,6 +195,7 @@ def test_telemetry_pairing_urls_follow_active_mode():
 def test_tailscale_setup_and_owner_login_are_lan_only(monkeypatch, tmp_path):
   monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
   client, _ = _params_client(monkeypatch, {}, "tici")
+  token = _active_setup_session(tmp_path)
 
   remote = client.post(
     "/api/tailscale/setup",
@@ -198,7 +217,7 @@ def test_tailscale_setup_and_owner_login_are_lan_only(monkeypatch, tmp_path):
   monkeypatch.setattr(the_galaxy, "enable_personal_tailscale_relay", lambda **kwargs: (config, "new-fetch-token" * 3))
   enabled = client.post(
     "/api/tailscale/setup",
-    headers={"X-Galaxy-LAN-Setup": "1"},
+    headers={"X-Telemetry-Setup": token},
     base_url="http://192.168.0.75:8082",
     environ_base={"REMOTE_ADDR": "192.168.0.50"},
   )
@@ -210,7 +229,7 @@ def test_tailscale_setup_and_owner_login_are_lan_only(monkeypatch, tmp_path):
   monkeypatch.setattr(the_galaxy, "begin_tailscale_login", lambda tailscale, hostname: "https://login.tailscale.com/a/owner")
   login = client.post(
     "/api/tailscale/login",
-    headers={"X-Galaxy-LAN-Setup": "1"},
+    headers={"X-Telemetry-Setup": token},
     base_url="http://192.168.0.75:8082",
     environ_base={"REMOTE_ADDR": "192.168.0.50"},
   )
@@ -229,6 +248,27 @@ def test_telemetry_configuration_mutation_is_lan_only(monkeypatch, tmp_path):
   )
   assert remote.status_code == 403
 
+  unauthenticated_get = client.get(
+    "/api/vehicle/telemetry/config",
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.50"},
+  )
+  assert unauthenticated_get.status_code == 403
+
+
+def test_telemetry_configuration_accepts_live_httponly_setup_cookie(monkeypatch, tmp_path):
+  monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
+  client, _ = _params_client(monkeypatch, {}, "tici")
+  token = _active_setup_session(tmp_path)
+  client.set_cookie(TELEMETRY_SETUP_COOKIE_NAME, token, domain="192.168.0.75")
+
+  response = client.get(
+    "/api/vehicle/telemetry/config",
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.50"},
+  )
+  assert response.status_code == 200
+
 
 def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch, tmp_path):
   monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
@@ -237,6 +277,7 @@ def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch
   slug_path.write_text("testGalaxySlug01")
   session_path.write_text("s" * 64)
   client, _ = _params_client(monkeypatch, {}, "tici")
+  token = _active_setup_session(tmp_path)
 
   remote = client.post(
     "/api/external-app/pairing",
@@ -247,6 +288,7 @@ def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch
 
   created = client.post(
     "/api/external-app/pairing",
+    headers={"X-Telemetry-Setup": token},
     base_url="http://192.168.0.75:8082",
     environ_base={"REMOTE_ADDR": "192.168.0.50"},
   )
@@ -289,8 +331,10 @@ def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch
 def test_external_app_pairing_requires_cloud_session_when_requested(monkeypatch, tmp_path):
   monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
   client, _ = _params_client(monkeypatch, {}, "tici")
+  token = _active_setup_session(tmp_path)
   created = client.post(
     "/api/external-app/pairing",
+    headers={"X-Telemetry-Setup": token},
     base_url="http://192.168.0.75:8082",
     environ_base={"REMOTE_ADDR": "192.168.0.50"},
   )

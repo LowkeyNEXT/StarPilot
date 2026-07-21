@@ -67,6 +67,11 @@ from openpilot.system.vehicle_telemetry.tailscale import (
   ensure_tailscale_hostname,
   tailscale_is_installed,
 )
+from openpilot.system.vehicle_telemetry.setup import (
+  TELEMETRY_SETUP_COOKIE_NAME,
+  TELEMETRY_SETUP_TOKEN_HEADER,
+  telemetry_setup_token_is_authorized,
+)
 from openpilot.system.vehicle_telemetry.tunnel import FRPC_STATUS_FILENAME
 from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
@@ -540,7 +545,6 @@ KEYS = {
 
 GALAXY_COOKIE_NAME = "galaxy_session"
 GALAXY_PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.embaucha.galaxynav&hl=en-US&ah=9FldHJ99kxL8oNbSlO5F4sQqwC4"
-GALAXY_LAN_SETUP_HEADER = "X-Galaxy-LAN-Setup"
 
 NAVIGATION_MEMORY_LOCATION_STALE_SECONDS = 10.0
 NAVIGATION_PERSISTED_LOCATION_FUTURE_SKEW_SECONDS = 60.0
@@ -595,7 +599,10 @@ def _request_is_lan():
 
 
 def _request_is_lan_setup():
-  return _request_is_lan() and secrets.compare_digest(request.headers.get(GALAXY_LAN_SETUP_HEADER, ""), "1")
+  if not _request_is_lan():
+    return False
+  supplied = request.cookies.get(TELEMETRY_SETUP_COOKIE_NAME) or request.headers.get(TELEMETRY_SETUP_TOKEN_HEADER, "")
+  return telemetry_setup_token_is_authorized(supplied, _get_galaxy_dir())
 
 
 def _json_bool(value, default=False):
@@ -4040,10 +4047,10 @@ def setup(app):
 
   @app.route("/api/vehicle/telemetry/config", methods=["GET", "POST"])
   def vehicle_telemetry_config():
+    if not _request_is_lan_setup():
+      return jsonify({"error": "Start a temporary EV Vehicle Telemetry setup session from the comma before viewing or changing configuration."}), 403
     generated_fetch_token = ""
     if request.method == "POST":
-      if not _request_is_lan_setup():
-        return jsonify({"error": "EV Vehicle Telemetry setup is available only on the local network."}), 403
       current = load_vehicle_telemetry_config()
       merged, generated_fetch_token = _merge_vehicle_telemetry_config(current, request.get_json(silent=True) or {})
       config = save_vehicle_telemetry_config(merged)
@@ -4051,9 +4058,6 @@ def setup(app):
       config = load_vehicle_telemetry_config()
 
     tunnel_status = _vehicle_telemetry_tunnel_status(config)
-    if not _request_is_lan_setup():
-      tunnel_status.pop("ownerURL", None)
-      tunnel_status.pop("error", None)
     response_payload = {
       "config": public_vehicle_telemetry_config(config),
       "cache": telemetry_response(VehicleTelemetryCache().load(), vehicle_id=config["push"]["vehicleId"]),
@@ -4068,8 +4072,8 @@ def setup(app):
 
   @app.route("/api/external-app/pairing", methods=["POST"])
   def create_external_app_pairing():
-    if not _request_is_lan():
-      return jsonify({"error": "External-app pairing is available only on the local network."}), 403
+    if not _request_is_lan_setup():
+      return jsonify({"error": "Start a temporary EV Vehicle Telemetry setup session from the comma before pairing an app."}), 403
     config = load_vehicle_telemetry_config()
     if config["mode"] == "off" and not vehicle_telemetry_config_path().exists():
       # Preserve the pre-mode pairing behavior for existing StarPilot installs.

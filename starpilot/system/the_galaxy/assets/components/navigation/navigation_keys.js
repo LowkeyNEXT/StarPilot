@@ -235,7 +235,7 @@ export function NavKeys() {
     },
 
     loadTelemetry: async () => {
-      const { ok, data } = await util.req(api.path.telemetryConfig, { headers: { "X-Galaxy-LAN-Setup": "1" } })
+      const { ok, data } = await util.req(api.path.telemetryConfig)
       if (!ok) {
         return showMessage("error", data.error || "Failed to load EV Vehicle Telemetry...", "telemetry")
       }
@@ -277,7 +277,7 @@ export function NavKeys() {
       }
       const { ok, data } = await util.req(api.path.telemetryConfig, {
         body: JSON.stringify(payload),
-        headers: { "Content-Type": "application/json", "X-Galaxy-LAN-Setup": "1" },
+        headers: { "Content-Type": "application/json" },
         method: "POST",
       })
       state.telemetrySaving = false
@@ -292,7 +292,7 @@ export function NavKeys() {
 
     setupTailscale: async () => {
       state.telemetrySaving = true
-      const { ok, data } = await util.req("/api/tailscale/setup", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+      const { ok, data } = await util.req("/api/tailscale/setup", { method: "POST" })
       state.telemetrySaving = false
       if (!ok) {
         return showMessage("error", data.error || "Could not enable the personal relay...", "telemetry")
@@ -309,7 +309,7 @@ export function NavKeys() {
     openTailscaleOwner: async () => {
       let ownerURL = state.telemetryOwnerUrl
       if (!ownerURL) {
-        const { ok, data } = await util.req("/api/tailscale/login", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+        const { ok, data } = await util.req("/api/tailscale/login", { method: "POST" })
         if (!ok) {
           return showMessage("error", data.error || "Tailscale is not ready yet...", "telemetry")
         }
@@ -328,7 +328,7 @@ export function NavKeys() {
 
     disableTailscale: async () => {
       state.telemetrySaving = true
-      const { ok, data } = await util.req("/api/tailscale/uninstall", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+      const { ok, data } = await util.req("/api/tailscale/uninstall", { method: "POST" })
       state.telemetrySaving = false
       if (!ok) {
         return showMessage("error", data.error || "Could not disable the personal relay...", "telemetry")

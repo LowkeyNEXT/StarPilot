@@ -21,7 +21,7 @@ export function TailscaleControl() {
 
   async function refresh() {
     try {
-      const data = await requestJSON("/api/tailscale/installed", { headers: { "X-Galaxy-LAN-Setup": "1" } })
+      const data = await requestJSON("/api/tailscale/installed")
       state.installed = !!data.installed
       state.enabled = !!data.enabled
       state.relayState = data.state || "disabled"
@@ -48,7 +48,7 @@ export function TailscaleControl() {
     if (state.busy) return
     state.busy = true
     try {
-      const data = await requestJSON("/api/tailscale/setup", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+      const data = await requestJSON("/api/tailscale/setup", { method: "POST" })
       showSnackbar(data.message || "Personal relay enabled.")
       await refresh()
       setTimeout(refresh, 1500)
@@ -68,7 +68,7 @@ export function TailscaleControl() {
     }
     state.busy = true
     try {
-      const data = await requestJSON("/api/tailscale/login", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+      const data = await requestJSON("/api/tailscale/login", { method: "POST" })
       openOwnerURL(data.ownerURL || "")
     } catch (error) {
       showSnackbar(error.message)
@@ -81,7 +81,7 @@ export function TailscaleControl() {
     if (state.busy) return
     state.busy = true
     try {
-      const data = await requestJSON("/api/tailscale/uninstall", { headers: { "X-Galaxy-LAN-Setup": "1" }, method: "POST" })
+      const data = await requestJSON("/api/tailscale/uninstall", { method: "POST" })
       showSnackbar(data.message || "Personal relay disabled.")
       await refresh()
     } catch (error) {
