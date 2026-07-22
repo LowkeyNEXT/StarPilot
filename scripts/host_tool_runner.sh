@@ -280,7 +280,8 @@ ensure_host_python_extensions() {
     common/params_pyx.so \
     common/transformations/transformations.so \
     msgq_repo/msgq/ipc_pyx.so \
-    msgq_repo/msgq/visionipc/visionipc_pyx.so
+    msgq_repo/msgq/visionipc/visionipc_pyx.so \
+    selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
 }
 
 sync_host_generated_headers() {

@@ -23,11 +23,13 @@ export function NavKeys() {
     editPublic: false, editSecret: false,
     savedPublic: false, savedSecret: false,
 
-    galaxyCookieName: "galaxy_session",
-    galaxySessionToken: "",
     galaxyAppUrl: DEFAULT_PLAY_STORE_URL,
     galaxyPaired: false,
-    galaxySessionVisible: false,
+    externalPairingQrData: "",
+    externalPairingQrImage: "",
+    externalPairingCode: "",
+    externalPairingExpiresAt: 0,
+    externalPairingLoading: false,
 
     showDeleteModal: false,
     keyToDelete: null,
@@ -133,6 +135,7 @@ export function NavKeys() {
   const api = {
     path: {
       galaxy: "/api/galaxy/session",
+      externalPairing: "/api/external-app/pairing",
       key: "/api/navigation_key",
       nav: "/api/navigation"
     },
@@ -168,16 +171,27 @@ export function NavKeys() {
       }
 
       state.galaxyAppUrl = data.appUrl || DEFAULT_PLAY_STORE_URL
-      state.galaxyCookieName = data.cookieName || "galaxy_session"
       state.galaxyPaired = !!data.paired
-      state.galaxySessionToken = data.sessionToken || ""
-      state.galaxySessionVisible = false
     },
 
-    copyGalaxySession: async () => {
+    createExternalPairing: async () => {
+      state.externalPairingLoading = true
+      const { ok, data } = await util.req(api.path.externalPairing, { method: "POST" })
+      state.externalPairingLoading = false
+      if (!ok) {
+        return showMessage("error", data.error || "Could not create pairing...", "app")
+      }
+      state.externalPairingQrData = data.qrData || ""
+      state.externalPairingQrImage = data.qrImageDataURL || ""
+      state.externalPairingCode = data.pairingCode || ""
+      state.externalPairingExpiresAt = Number(data.expiresAt || 0)
+      showMessage("message", "One-time pairing is ready for 10 minutes.", "app")
+    },
+
+    copyExternalPairing: async () => {
       try {
-        await util.copyText(state.galaxySessionToken)
-        showMessage("message", "Session token copied!", "app")
+        await util.copyText(state.externalPairingQrData)
+        showMessage("message", "One-time pairing code copied!", "app")
       } catch (e) {
         showMessage("error", "Copy failed...", "app")
       }
@@ -372,42 +386,40 @@ export function NavKeys() {
         </a>
       </div>
 
-      <label class="navkeys-label" for="galaxy-cookie-name">Cookie Name</label>
-      <div class="navkeys-row">
-        <input
-          class="navkeys-input navkeys-token-input"
-          id="galaxy-cookie-name"
-          readonly
-          value="${() => state.galaxyCookieName}"
-        />
+      <div class="navkeys-subtitle">
+        Pair RangeBridge, Galaxy Nav, or another external app without copying URLs or reusable secrets.
       </div>
 
-      <label class="navkeys-label" for="galaxy-session-token">Session Token</label>
-      <div class="navkeys-row">
-        <input
-          class="navkeys-input navkeys-token-input"
-          id="galaxy-session-token"
-          placeholder="${() => state.galaxyPaired ? "Session token unavailable..." : "Pair Galaxy to create a session token..."}"
-          readonly
-          type="${() => state.galaxySessionVisible ? "text" : "password"}"
-          value="${() => state.galaxySessionToken}"
-        />
-        <button
-          aria-label="${() => state.galaxySessionVisible ? "Hide session token" : "Show session token"}"
-          class="navkeys-btn navkeys-icon-btn"
-          @click="${() => { state.galaxySessionVisible = !state.galaxySessionVisible }}"
-          disabled="${() => !state.galaxySessionToken}"
-          title="${() => state.galaxySessionVisible ? "Hide session token" : "Show session token"}">
-          <i class="${() => `bi ${state.galaxySessionVisible ? "bi-eye-slash" : "bi-eye"}`}"></i>
-        </button>
+      <div class="navkeys-app-actions navkeys-pair-actions">
         <button
           class="navkeys-btn navkeys-copy-btn"
-          @click="${api.copyGalaxySession}"
-          disabled="${() => !state.galaxySessionToken}">
-          <i class="bi bi-copy"></i>
-          <span>Copy</span>
+          @click="${api.createExternalPairing}"
+          disabled="${() => state.externalPairingLoading}">
+          <i class="bi bi-qr-code"></i>
+          <span>${() => state.externalPairingLoading ? "Creating..." : "Create Pairing QR"}</span>
         </button>
       </div>
+
+      ${() => state.externalPairingQrData ? html`
+        <div class="navkeys-pairing-card">
+          ${state.externalPairingQrImage ? html`
+            <img class="navkeys-pairing-qr" alt="One-time external app pairing QR code" src="${state.externalPairingQrImage}" />
+          ` : ""}
+          <div class="navkeys-pairing-details">
+            <div class="navkeys-label">One-time connection package</div>
+            <div class="navkeys-pairing-code" aria-label="Six digit pairing code">
+              ${state.externalPairingCode}
+            </div>
+            <div class="navkeys-subtitle navkeys-pairing-subtitle">
+              Scan the QR or enter this six-digit code in an app on the same LAN. It expires at ${new Date(state.externalPairingExpiresAt * 1000).toLocaleTimeString()} and can be used once.
+            </div>
+            <button class="navkeys-btn navkeys-copy-btn" @click="${api.copyExternalPairing}">
+              <i class="bi bi-copy"></i>
+              <span>Copy Pairing Code</span>
+            </button>
+          </div>
+        </div>
+      ` : ""}
     `
   }
 

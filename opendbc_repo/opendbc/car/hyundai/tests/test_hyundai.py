@@ -16,7 +16,8 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              should_reset_ev6_gt_line_longitudinal_tuning, reset_ev6_gt_line_longitudinal_tuning, \
                                              direct_angle_request_allowed, get_angle_smoothing_alpha, \
                                              should_use_ev6_gt_line_stop_direct_tracking
-from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state
+from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
+                                               get_can_ev_cluster_dte, get_canfd_ev_telemetry
 from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai import hyundaican, hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
@@ -26,7 +27,8 @@ from opendbc.car.hyundai.values import CAMERA_SCC_CAR, CANFD_CAR, CAN_GEARS, CAR
                                          HYBRID_CAR, EV_CAR, FW_QUERY_CONFIG, LEGACY_SAFETY_MODE_CAR, CANFD_FUZZY_WHITELIST, \
                                          UNSUPPORTED_LONGITUDINAL_CAR, PLATFORM_CODE_ECUS, HYUNDAI_VERSION_REQUEST_LONG, \
                                          LEGACY_LONGITUDINAL_CAR, DBC, HyundaiFlags, get_platform_codes, HyundaiSafetyFlags, \
-                                         HyundaiStarPilotSafetyFlags, Buttons, kia_ev6_gt_line_longitudinal_tuning
+                                         HyundaiStarPilotSafetyFlags, Buttons, CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_TELEMETRY_CAR, \
+                                         kia_ev6_gt_line_longitudinal_tuning
 
 LongCtrlState = CarControl.Actuators.LongControlState
 from opendbc.car.hyundai.fingerprints import FW_VERSIONS
@@ -116,6 +118,144 @@ ANGLE_STEERING_CARS = (
 
 def get_test_toggles() -> SimpleNamespace:
   return SimpleNamespace(always_on_lateral_lkas=False, force_torque_controller=False, nnff=False, nnff_lite=False)
+
+
+class TestCANEVEnergyTelemetry:
+  TELEMETRY_CARS = {
+    CAR.HYUNDAI_IONIQ_EV_2020,
+    CAR.HYUNDAI_KONA_EV,
+    CAR.HYUNDAI_KONA_EV_2022,
+  }
+
+  @staticmethod
+  def get_parser():
+    dbc = DBC[CAR.HYUNDAI_IONIQ_EV_2020][Bus.pt]
+    return CANPacker(dbc), CANParser(dbc, [("CLU13", 0)], 0)
+
+  def test_route_validated_platforms(self):
+    assert CAN_EV_CLUSTER_DTE_CAR == self.TELEMETRY_CARS
+
+  @pytest.mark.parametrize("dte_km, expected_m", [(408, 408_000.0), (0, 0.0), (900, 0.0)])
+  def test_cluster_dte_bounds(self, dte_km, expected_m):
+    packer, parser = self.get_parser()
+    parser.update([1_000_000_000, [packer.make_can_msg("CLU13", 0, {"CF_Clu_DTE": dte_km})]])
+    assert get_can_ev_cluster_dte(parser) == expected_m
+
+
+class TestCANFDEnergyTelemetry:
+  TELEMETRY_CARS = {
+    CAR.HYUNDAI_IONIQ_5,
+    CAR.HYUNDAI_IONIQ_5_PE,
+    CAR.HYUNDAI_IONIQ_6,
+    CAR.HYUNDAI_KONA_EV_2ND_GEN,
+    CAR.KIA_EV6,
+    CAR.KIA_EV9,
+    CAR.KIA_NIRO_EV_2ND_GEN,
+    CAR.GENESIS_GV60_EV_1ST_GEN,
+    CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN,
+  }
+
+  @staticmethod
+  def get_parser():
+    dbc = DBC[CAR.KIA_EV9][Bus.pt]
+    return CANPacker(dbc), CANParser(dbc, [
+      ("EV_RANGE_STATUS", 0),
+      ("EV_CHARGE_STATUS", 0),
+      ("EV_ENERGY_STATUS", 0),
+      ("EV_ENERGY_STATUS_AUX", 0),
+    ], 1)
+
+  def test_route_validated_platforms(self):
+    assert CANFD_EV_TELEMETRY_CAR == self.TELEMETRY_CARS
+
+  def test_dbc_signals(self):
+    packer, parser = self.get_parser()
+    messages = [
+      packer.make_can_msg("EV_RANGE_STATUS", 1, {"DISTANCE_TO_EMPTY": 511}),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {
+        "BATTERY_SOC": 97.5,
+        "CHARGING_TIME_REMAINING": 18_000,
+      }),
+      packer.make_can_msg("EV_CHARGE_STATUS", 1, {
+        "CHARGE_PORT_CONNECTED": 1,
+        "CHARGING_ACTIVE_REDUNDANT": 1,
+        "CHARGE_PORT_CONNECTED_REDUNDANT": 1,
+      }),
+      packer.make_can_msg("EV_ENERGY_STATUS_AUX", 1, {
+        "BATTERY_SOC_AUX": 97.5,
+        "CHARGING_ACTIVE": 1,
+      }),
+    ]
+
+    parser.update([1_000_000_000, messages])
+
+    assert parser.vl["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"] == 511
+    assert parser.vl["EV_ENERGY_STATUS"]["BATTERY_SOC"] == 97.5
+    assert parser.vl["EV_ENERGY_STATUS"]["CHARGING_TIME_REMAINING"] == 18_000
+    assert parser.vl["EV_ENERGY_STATUS_AUX"]["CHARGING_ACTIVE"] == 1
+    assert parser.vl["EV_ENERGY_STATUS_AUX"]["BATTERY_SOC_AUX"] == 97.5
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] == 1
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"] == 1
+    assert parser.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] == 1
+
+  def test_soc_and_dte(self):
+    packer, parser = self.get_parser()
+    parser.update([1_000_000_000, [
+      packer.make_can_msg("EV_RANGE_STATUS", 1, {"DISTANCE_TO_EMPTY": 321}),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {"BATTERY_SOC": 62.5}),
+    ]])
+
+    assert get_canfd_ev_telemetry(parser) == (True, 0.625, 321_000.0, False, False, 0.0)
+
+  def test_aux_soc_does_not_override_display_soc(self):
+    packer, parser = self.get_parser()
+    parser.update([1_000_000_000, [
+      packer.make_can_msg("EV_RANGE_STATUS", 1, {"DISTANCE_TO_EMPTY": 900}),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {"BATTERY_SOC": 75.0}),
+      packer.make_can_msg("EV_ENERGY_STATUS_AUX", 1, {"BATTERY_SOC_AUX": 70.0}),
+    ]])
+
+    assert get_canfd_ev_telemetry(parser) == (True, 0.75, 0.0, False, False, 0.0)
+
+  def test_charging_signals_remain_ev9_only(self):
+    packer, parser = self.get_parser()
+    parser.update([1_000_000_000, [
+      packer.make_can_msg("EV_CHARGE_STATUS", 1, {
+        "CHARGE_PORT_CONNECTED": 1,
+        "CHARGING_ACTIVE_REDUNDANT": 1,
+        "CHARGE_PORT_CONNECTED_REDUNDANT": 1,
+      }),
+      packer.make_can_msg("EV_ENERGY_STATUS_AUX", 1, {"CHARGING_ACTIVE": 1}),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {"CHARGING_TIME_REMAINING": 18_000}),
+    ]])
+
+    assert get_canfd_ev_telemetry(parser)[3:] == (False, False, 0.0)
+    assert get_canfd_ev_telemetry(parser, enable_charging=True)[3:] == (True, True, 18_000)
+
+  def test_unavailable_charging_time_is_not_published(self):
+    packer, parser = self.get_parser()
+    parser.update([1_000_000_000, [
+      packer.make_can_msg("EV_CHARGE_STATUS", 1, {
+        "CHARGE_PORT_CONNECTED": 1,
+        "CHARGING_ACTIVE_REDUNDANT": 1,
+        "CHARGE_PORT_CONNECTED_REDUNDANT": 1,
+      }),
+      packer.make_can_msg("EV_ENERGY_STATUS_AUX", 1, {"CHARGING_ACTIVE": 1}),
+      packer.make_can_msg("EV_ENERGY_STATUS", 1, {"CHARGING_TIME_REMAINING": 0xFFFF * 60}),
+    ]])
+
+    assert get_canfd_ev_telemetry(parser, enable_charging=True)[3:] == (True, True, 0.0)
+
+  def test_archived_ev9_charge_frame(self):
+    _, parser = self.get_parser()
+    parser.update([1_000_000_000, [
+      (0x2B5, bytes.fromhex("f589f400000000800602f6000004571916b2100060232c148a02000000645800"), 1),
+      (0x2FA, bytes.fromhex("f82efc04d820cdcd03001d1f000080c20000000000141414aa00720140280000"), 1),
+      (0x30A, bytes.fromhex("ed28a30854011015006578000f00a00f000000004b82000200003840210100fc"), 1),
+      (0x320, bytes.fromhex("aba3a344020001c2ac0d88190001000f0000000000000000000007004c040000"), 1),
+    ]])
+
+    assert get_canfd_ev_telemetry(parser, enable_charging=True) == (True, 0.97, 518_000.0, True, True, 10_200)
 
 
 class TestHyundaiFingerprint:

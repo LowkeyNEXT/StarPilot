@@ -1369,7 +1369,7 @@ BO_ 1292 CLU13: 8 CLU
  SG_ CF_Clu_DrivingModeSwi : 16|2@1+ (1.0,0.0) [0.0|3.0] ""  DATC,ECS,EMS,ESC,IAP,MDPS,TCU
  SG_ CF_Clu_FuelDispLvl : 18|5@1+ (1.0,0.0) [0.0|31.0] ""  CGW,IBOX
  SG_ CF_Clu_FlexSteerSW : 23|1@1+ (1.0,0.0) [0.0|1.0] ""  MDPS
- SG_ CF_Clu_DTE : 24|10@1+ (1.0,0.0) [0.0|1023.0] ""  DATC
+ SG_ CF_Clu_DTE : 24|10@1+ (1.0,0.0) [0.0|1023.0] "km"  DATC
  SG_ CF_Clu_TripUnit : 34|2@1+ (1.0,0.0) [0.0|3.0] ""  DATC
  SG_ CF_Clu_SWL_Stat : 36|3@1+ (1.0,0.0) [0.0|7.0] ""  ACU,EMS
  SG_ CF_Clu_ActiveEcoSW : 39|1@1+ (1.0,0.0) [0.0|1.0] ""  DATC,EMS,TCU
@@ -1662,6 +1662,7 @@ CM_ 512 "Contains signal with gear shifter. Used by fuel cell hydrogen-powered (
 CM_ SG_ 871 CF_Lvr_IsgState "Idle Stop and Go";
 CM_ SG_ 1056 SCCInfoDisplay "Goes to 1 for a second while transitioning from Cruise Control to No Message";
 CM_ SG_ 1348 SpeedLim_Nav_Clu "Speed limit displayed on Nav, Cluster and HUD";
+CM_ SG_ 1292 CF_Clu_DTE "Cluster distance to empty; validated on public Ioniq Electric 2020 and Kona Electric 2018-23 routes.";
 
 VAL_ 274 CUR_GR 1 "D" 2 "D" 3 "D" 4 "D" 5 "D" 6 "D" 7 "D" 8 "D" 14 "R" 0 "P";
 VAL_ 512 HYDROGEN_GEAR_SHIFTER 5 "D" 8 "S" 6 "N" 7 "R" 0 "P";

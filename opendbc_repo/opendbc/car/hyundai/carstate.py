@@ -7,8 +7,9 @@ from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, CAR, DBC, Buttons, CarControllerParams, \
-                                       CANFD_ANGLE_LONGITUDINAL_CAR, CANFD_CORNER_RADAR_BSM_CAR, \
+from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, CAR, DBC, Buttons, CarControllerParams, \
+                                       CANFD_ANGLE_LONGITUDINAL_CAR, CANFD_CORNER_RADAR_BSM_CAR, CANFD_EV_TELEMETRY_CAR, \
+                                       CAN_EV_CLUSTER_DTE_CAR, \
                                        hyundai_cancel_button_enables_cruise, ALT_BUS_LDA_BUTTON_CARS, ALT_BUS_LDA_BUTTON_SWL_STAT_CARS
 from opendbc.car.interfaces import CarStateBase
 
@@ -80,6 +81,65 @@ def decode_canfd_camera_lead(distance: float, rel_speed: float) -> tuple[bool, f
   if not lead_visible:
     return False, 0.0, 0.0
   return True, lead_distance, float(rel_speed)
+
+
+def get_canfd_ev_telemetry(cp: CANParser, enable_charging: bool = False) -> tuple[bool, float, float, bool, bool, float]:
+  soc = cp.vl["EV_ENERGY_STATUS"]["BATTERY_SOC"]
+  fuel_gauge = 0.0
+  available = False
+  if cp.ts_nanos["EV_ENERGY_STATUS"]["BATTERY_SOC"] > 0 and 0.0 <= soc <= 100.0:
+    fuel_gauge = soc / 100.0
+    available = True
+
+  dte_km = cp.vl["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"]
+  distance_to_empty = 0.0
+  if cp.ts_nanos["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"] > 0 and 0.0 < dte_km < 900.0:
+    distance_to_empty = dte_km * 1000.0
+    available = True
+
+  if not enable_charging:
+    return available, fuel_gauge, distance_to_empty, False, False, 0.0
+
+  plug_connected = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] == 1
+  plug_connected_redundant = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] == 1
+  plug_signals_seen = (
+    cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] > 0
+    and cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] > 0
+  )
+  charging_port_connected = plug_signals_seen and plug_connected and plug_connected_redundant
+
+  primary_charging = cp.vl["EV_ENERGY_STATUS_AUX"]["CHARGING_ACTIVE"] == 1
+  redundant_charging = cp.vl["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"] == 1
+  charging_signals_seen = (
+    cp.ts_nanos["EV_ENERGY_STATUS_AUX"]["CHARGING_ACTIVE"] > 0
+    and cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"] > 0
+  )
+  charging = charging_port_connected and charging_signals_seen and primary_charging and redundant_charging
+
+  charging_time_remaining = cp.vl["EV_ENERGY_STATUS"]["CHARGING_TIME_REMAINING"]
+  charging_time_remaining_seen = cp.ts_nanos["EV_ENERGY_STATUS"]["CHARGING_TIME_REMAINING"] > 0
+  if not charging or not charging_time_remaining_seen or not 0.0 < charging_time_remaining < 7 * 24 * 60 * 60:
+    charging_time_remaining = 0.0
+
+  return available, fuel_gauge, distance_to_empty, charging, charging_port_connected, charging_time_remaining
+
+
+def get_can_ev_cluster_dte(cp: CANParser) -> float:
+  dte_km = cp.vl["CLU13"]["CF_Clu_DTE"]
+  if cp.ts_nanos["CLU13"]["CF_Clu_DTE"] > 0 and 0.0 < dte_km < 900.0:
+    return dte_km * 1000.0
+  return 0.0
+
+
+def populate_starpilot_vehicle_telemetry(fp_ret, ret: structs.CarState, available: bool) -> None:
+  fp_ret.vehicleTelemetryAvailable = available
+  fp_ret.fuelGauge = ret.fuelGauge
+  fp_ret.distanceToEmpty = ret.distanceToEmpty
+  fp_ret.charging = ret.charging
+  fp_ret.chargingPortConnected = ret.chargingPortConnected
+  fp_ret.chargingTimeRemaining = ret.chargingTimeRemaining
+  fp_ret.vEgo = ret.vEgo
+  fp_ret.standstill = ret.standstill
 
 
 class CarState(CarStateBase):
@@ -303,6 +363,7 @@ class CarState(CarStateBase):
       return self.update_canfd(can_parsers)
 
     ret = structs.CarState()
+    vehicle_telemetry_available = False
     cp_cruise = cp_cam if self.CP.flags & HyundaiFlags.CAMERA_SCC else cp
     self.is_metric = cp.vl["CLU11"]["CF_Clu_SPEED_UNIT"] == 0
     speed_conv = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
@@ -351,7 +412,8 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = False
       ret.cruiseState.nonAdaptive = False
     elif no_scc:
-      cruise_available_msg, cruise_available_sig, cruise_enabled_msg, cruise_enabled_sig, cruise_speed_msg, cruise_speed_sig = get_non_scc_cruise_signals(self.CP)
+      cruise_available_msg, cruise_available_sig, cruise_enabled_msg, cruise_enabled_sig, cruise_speed_msg, cruise_speed_sig = \
+        get_non_scc_cruise_signals(self.CP)
       ret.cruiseState.available = cp.vl[cruise_available_msg][cruise_available_sig] != 0
       ret.cruiseState.enabled = cp.vl[cruise_enabled_msg][cruise_enabled_sig] != 0
       ret.cruiseState.standstill = False
@@ -453,6 +515,10 @@ class CarState(CarStateBase):
     ret.lowSpeedAlert = self.low_speed_alert
 
     fp_ret = custom.StarPilotCarState.new_message()
+    if self.CP.carFingerprint in CAN_EV_CLUSTER_DTE_CAR:
+      ret.distanceToEmpty = get_can_ev_cluster_dte(cp)
+      vehicle_telemetry_available = ret.distanceToEmpty > 0.0
+      populate_starpilot_vehicle_telemetry(fp_ret, ret, vehicle_telemetry_available)
 
     return ret, fp_ret
 
@@ -465,6 +531,7 @@ class CarState(CarStateBase):
     self.is_metric = cp.vl["CRUISE_BUTTONS_ALT"]["DISTANCE_UNIT"] != 1
     speed_factor = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
+    vehicle_telemetry_available = False
     if self.CP.flags & (HyundaiFlags.EV | HyundaiFlags.HYBRID):
       ret.gasPressed = cp.vl[self.accelerator_msg_canfd]["ACCELERATOR_PEDAL"] > 1e-5
     else:
@@ -474,6 +541,11 @@ class CarState(CarStateBase):
 
     ret.doorOpen = cp.vl["DOORS_SEATBELTS"]["DRIVER_DOOR"] == 1
     ret.seatbeltUnlatched = cp.vl["DOORS_SEATBELTS"]["DRIVER_SEATBELT"] == 0
+
+    if self.CP.carFingerprint in CANFD_EV_TELEMETRY_CAR:
+      (vehicle_telemetry_available, ret.fuelGauge, ret.distanceToEmpty, ret.charging,
+       ret.chargingPortConnected, ret.chargingTimeRemaining) = \
+        get_canfd_ev_telemetry(cp, enable_charging=self.CP.carFingerprint == CAR.KIA_EV9)
 
     gear = cp.vl[self.gear_msg_canfd]["GEAR"]
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
@@ -629,6 +701,9 @@ class CarState(CarStateBase):
     fp_ret.dashboardSpeedLimit = self.dashboard_speed_limit_raw * speed_factor \
       if self.dashboard_speed_limit_raw <= 252 else 0.0
 
+    if self.CP.carFingerprint in CANFD_EV_TELEMETRY_CAR:
+      populate_starpilot_vehicle_telemetry(fp_ret, ret, vehicle_telemetry_available)
+
     if self.CP.flags & HyundaiFlags.EV:
       drive_mode = cp.vl["DRIVE_MODE_EV"]["DRIVE_MODE"]
       fp_ret.ecoGear = (drive_mode == 4)
@@ -680,6 +755,14 @@ class CarState(CarStateBase):
     if CP.flags & HyundaiFlags.EV:
       msgs.append(("DRIVE_MODE_EV", 0))  # optional: not all CAN-FD EV variants publish drive mode
       msgs.append(("MANUAL_SPEED_LIMIT_ASSIST", 0))  # optional: used for non-adaptive cruise state and Ioniq 6 i-Pedal latch detection
+    if CP.carFingerprint in CANFD_EV_TELEMETRY_CAR:
+      msgs += [
+        ("EV_RANGE_STATUS", 0),
+        ("EV_ENERGY_STATUS", 0),
+        ("EV_ENERGY_STATUS_AUX", 0),
+      ]
+      if CP.carFingerprint == CAR.KIA_EV9:
+        msgs.append(("EV_CHARGE_STATUS", 0))
     msgs.append(("STEERING_WHEEL_MEDIA_BUTTONS", 0))  # optional: absent or slower on some CAN-FD variants
     cam_msgs.append(("ADAS_0x380", 0))  # optional: dashboard stop-sign signal, only on ADAS-equipped HKG CANFD
     return {

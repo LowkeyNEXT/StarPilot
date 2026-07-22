@@ -96,6 +96,84 @@ def _params_client(monkeypatch, values, device_type):
   return app.test_client(), fake_params
 
 
+def test_external_app_pairing_is_lan_only_and_returns_six_digit_code(monkeypatch, tmp_path):
+  monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
+  slug_path = tmp_path / "glxyslug"
+  session_path = tmp_path / "glxysession"
+  slug_path.write_text("testGalaxySlug01")
+  session_path.write_text("s" * 64)
+  client, _ = _params_client(monkeypatch, {}, "tici")
+
+  remote = client.post(
+    "/api/external-app/pairing",
+    base_url="https://galaxy.firestar.link",
+    environ_base={"REMOTE_ADDR": "203.0.113.10"},
+  )
+  assert remote.status_code == 403
+
+  created = client.post(
+    "/api/external-app/pairing",
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.50"},
+  )
+  assert created.status_code == 200
+  pairing = created.get_json()
+  assert pairing["pairingCode"].isdigit()
+  assert len(pairing["pairingCode"]) == 6
+  assert pairing["qrData"].startswith("starpilot-external-v1:")
+
+  paired = client.post(
+    "/api/external-app/pair",
+    json={
+      "code": pairing["pairingCode"],
+      "clientName": "RangeBridge",
+      "requestedCapabilities": ["vehicleTelemetry", "galaxySession"],
+    },
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.51"},
+  )
+  assert paired.status_code == 200
+  connection = paired.get_json()
+  assert connection["capabilities"]["vehicleTelemetry"]["baseURLs"] == ["http://192.168.0.75:8082"]
+  assert connection["capabilities"]["galaxySession"]["portalURL"] == "https://galaxy.firestar.link/testGalaxySlug01"
+  assert connection["capabilities"]["galaxySession"]["cookieName"] == "galaxy_session"
+  assert connection["capabilities"]["galaxySession"]["sessionToken"] == f"testGalaxySlug01%3A{'s' * 64}"
+  bearer = connection["capabilities"]["vehicleTelemetry"]["bearerToken"]
+  remote_telemetry = client.get(
+    "/testGalaxySlug01/api/vehicle/telemetry",
+    headers={"Authorization": f"Bearer {bearer}"},
+  )
+  assert remote_telemetry.status_code == 503
+  wrong_route = client.get(
+    "/wrongGalaxySlug/api/vehicle/telemetry",
+    headers={"Authorization": f"Bearer {bearer}"},
+  )
+  assert wrong_route.status_code == 404
+
+
+def test_external_app_pairing_requires_cloud_session_when_requested(monkeypatch, tmp_path):
+  monkeypatch.setenv("SP_GALAXY_DIR", str(tmp_path))
+  client, _ = _params_client(monkeypatch, {}, "tici")
+  created = client.post(
+    "/api/external-app/pairing",
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.50"},
+  )
+
+  paired = client.post(
+    "/api/external-app/pair",
+    json={
+      "code": created.get_json()["pairingCode"],
+      "clientName": "RangeBridge",
+      "requestedCapabilities": ["vehicleTelemetry", "galaxySession"],
+    },
+    base_url="http://192.168.0.75:8082",
+    environ_base={"REMOTE_ADDR": "192.168.0.51"},
+  )
+
+  assert paired.status_code == 409
+  assert "cloud portal" in paired.get_json()["error"]
+
 def test_params_compat_accepts_json_strings_for_json_keys():
   backend = FakeParamsBackend(
     key_types={"FavoriteDestinations": ParamKeyType.JSON},
