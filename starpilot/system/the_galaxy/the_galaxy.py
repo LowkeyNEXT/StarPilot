@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import importlib
 import ipaddress
@@ -14,7 +14,6 @@ from io import BytesIO
 from pathlib import Path
 
 import base64
-import errno
 import hashlib
 import json
 import re
@@ -22,21 +21,19 @@ import requests
 import secrets
 import selectors
 import shutil
-import signal
 import subprocess
 import threading
 import time
-import traceback
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from cereal import car, custom, log, messaging
 from opendbc.can.parser import CANParser
 from opendbc.car.gm.values import GMFlags
+from opendbc.car.hyundai.values import CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_TELEMETRY_CAR
 from opendbc.car.toyota.carcontroller import LOCK_CMD, UNLOCK_CMD
 from opendbc.car.toyota.values import ToyotaStarPilotFlags
 from openpilot.common.constants import CV
 from openpilot.common.params import ParamKeyFlag, ParamKeyType, Params
-from openpilot.common.realtime import DT_HW
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.hardware.hw import Paths
@@ -53,9 +50,15 @@ from openpilot.starpilot.system.vehicle_telemetry import (
   load_vehicle_telemetry_config,
   load_vehicle_telemetry_status,
   public_vehicle_telemetry_config,
+  save_vehicle_telemetry_config,
   telemetry_response,
 )
 from openpilot.starpilot.system.external_app_pairing import create_pairing, complete_pairing
+from openpilot.system.vehicle_telemetry.setup import (
+  TELEMETRY_SETUP_COOKIE_NAME,
+  TELEMETRY_SETUP_TOKEN_HEADER,
+  telemetry_setup_token_is_authorized,
+)
 from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
@@ -679,6 +682,66 @@ def _request_is_lan():
     return False
   host = (request.host.split(":", 1)[0] if not request.host.startswith("[") else request.host.split("]", 1)[0][1:]).lower()
   return _is_lan_ip(host) or host in ("localhost", "comma") or host.endswith(".local")
+
+
+def _request_is_lan_setup():
+  if not _request_is_lan():
+    return False
+  supplied = request.cookies.get(TELEMETRY_SETUP_COOKIE_NAME) or request.headers.get(TELEMETRY_SETUP_TOKEN_HEADER, "")
+  return telemetry_setup_token_is_authorized(supplied, _get_galaxy_dir())
+
+
+def _merge_vehicle_telemetry_config(current, update):
+  """Merge a Galaxy form payload without echoing or erasing stored secrets."""
+  update = update if isinstance(update, dict) else {}
+  merged = json.loads(json.dumps(current))
+  requested_mode = str(update.get("mode") or current.get("mode") or "off").strip().lower()
+  merged["mode"] = requested_mode if requested_mode in ("off", "send", "galaxy") else "off"
+
+  fetch = merged.setdefault("fetch", {})
+  fetch["enabled"] = merged["mode"] == "galaxy"
+  fetch["bindAddress"] = "127.0.0.1"
+  fetch["port"] = 7766
+  supplied_fetch_token = str(update.get("fetchToken") or "").strip()
+  generated_fetch_token = ""
+  if supplied_fetch_token:
+    fetch["token"] = supplied_fetch_token
+  if fetch["enabled"] and len(str(fetch.get("token") or "")) < 32 and not fetch.get("clients"):
+    generated_fetch_token = secrets.token_urlsafe(32)
+    fetch["token"] = generated_fetch_token
+
+  push_update = update.get("push") if isinstance(update.get("push"), dict) else {}
+  push = merged.setdefault("push", {})
+  push["enabled"] = merged["mode"] == "send"
+  if "url" in push_update:
+    push["url"] = str(push_update.get("url") or "").strip()
+  if "maximumBatteryCapacityKilowattHours" in push_update:
+    push["maximumBatteryCapacityKilowattHours"] = push_update.get("maximumBatteryCapacityKilowattHours")
+  supplied_push_token = str(update.get("pushToken") or "").strip()
+  if supplied_push_token:
+    push["token"] = supplied_push_token
+  return merged, generated_fetch_token
+
+
+def _vehicle_telemetry_identity():
+  try:
+    cp_bytes = params.get("CarParamsPersistent")
+    if not cp_bytes:
+      return False, ""
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+      supported = cp.carFingerprint in (CAN_EV_CLUSTER_DTE_CAR | CANFD_EV_TELEMETRY_CAR)
+      vin = str(cp.carVin or "").strip().upper()
+      return supported, vin if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) else ""
+  except Exception:
+    return False, ""
+
+
+def _vehicle_telemetry_connection(config, galaxy_base_url):
+  """Return the Galaxy capability URL when its telemetry mode is active."""
+  parsed = urlsplit(str(galaxy_base_url or ""))
+  if config.get("mode") != "galaxy" or not parsed.hostname:
+    return [], "/api/vehicle/telemetry"
+  return [urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))], "/api/vehicle/telemetry"
 
 
 def _parse_last_gps_position(raw_value):
@@ -3982,25 +4045,26 @@ def setup(app):
   @app.route("/api/vehicle/telemetry", methods=["GET"])
   @app.route("/<galaxy_slug>/api/vehicle/telemetry", methods=["GET"])
   def vehicle_telemetry(galaxy_slug=None):
+    config = load_vehicle_telemetry_config()
+    if config["mode"] != "galaxy":
+      return jsonify({"error": "Galaxy is not the active EV Vehicle Telemetry transport."}), 404
     if galaxy_slug is not None:
       configured_slug = _read_galaxy_text(GALAXY_SLUG_FILE)
       if not configured_slug or not secrets.compare_digest(str(galaxy_slug), configured_slug):
         return jsonify({"error": "Galaxy route not found."}), 404
-    config = load_vehicle_telemetry_config()
     if not config["fetch"]["enabled"]:
-      return jsonify({"error": "Vehicle telemetry fetch is disabled."}), 404
+      return jsonify({"error": "EV Vehicle Telemetry fetch is disabled."}), 404
     if not is_fetch_authorized(config, request.headers.get("Authorization")):
-      response = jsonify({"error": "Vehicle telemetry authorization failed."})
+      response = jsonify({"error": "EV Vehicle Telemetry authorization failed."})
       response.status_code = 401
       response.headers["WWW-Authenticate"] = 'Bearer realm="vehicle-telemetry"'
       return response
 
     response_payload = telemetry_response(
       VehicleTelemetryCache().load(),
-      vehicle_id=config["push"]["vehicleId"],
     )
     if response_payload is None:
-      return jsonify({"error": "No validated vehicle telemetry has been cached yet."}), 503
+      return jsonify({"error": "No validated EV Vehicle Telemetry has been cached yet."}), 503
     response = jsonify(response_payload)
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -4008,24 +4072,53 @@ def setup(app):
   @app.route("/api/vehicle/telemetry/status", methods=["GET"])
   def vehicle_telemetry_status():
     config = load_vehicle_telemetry_config()
-    if not config["fetch"]["enabled"] or not is_fetch_authorized(config, request.headers.get("Authorization")):
-      return jsonify({"error": "Vehicle telemetry fetch is disabled or unauthorized."}), 404
+    if (config["mode"] != "galaxy" or not config["fetch"]["enabled"]
+        or not is_fetch_authorized(config, request.headers.get("Authorization"))):
+      return jsonify({"error": "EV Vehicle Telemetry fetch is disabled or unauthorized."}), 404
 
     response = jsonify({
       "config": public_vehicle_telemetry_config(config),
       "cache": telemetry_response(
         VehicleTelemetryCache().load(),
-        vehicle_id=config["push"]["vehicleId"],
       ),
       "exporter": load_vehicle_telemetry_status(),
     })
     response.headers["Cache-Control"] = "no-store"
     return response
 
+  @app.route("/api/vehicle/telemetry/config", methods=["GET", "POST"])
+  def vehicle_telemetry_config():
+    if not _request_is_lan_setup():
+      return jsonify({"error": "Start a temporary EV Vehicle Telemetry setup session from the comma before viewing or changing configuration."}), 403
+    generated_fetch_token = ""
+    if request.method == "POST":
+      current = load_vehicle_telemetry_config()
+      merged, generated_fetch_token = _merge_vehicle_telemetry_config(current, request.get_json(silent=True) or {})
+      config = save_vehicle_telemetry_config(merged)
+    else:
+      config = load_vehicle_telemetry_config()
+
+    supported, vin = _vehicle_telemetry_identity()
+    response_payload = {
+      "config": public_vehicle_telemetry_config(config),
+      "cache": telemetry_response(VehicleTelemetryCache().load()),
+      "exporter": load_vehicle_telemetry_status(),
+      "supported": supported,
+      "vinAvailable": bool(vin),
+    }
+    if generated_fetch_token:
+      response_payload["generatedFetchToken"] = generated_fetch_token
+    response = jsonify(response_payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
   @app.route("/api/external-app/pairing", methods=["POST"])
   def create_external_app_pairing():
-    if not _request_is_lan():
-      return jsonify({"error": "External-app pairing is available only on the local network."}), 403
+    if not _request_is_lan_setup():
+      return jsonify({"error": "Start a temporary EV Vehicle Telemetry setup session from the comma before pairing an app."}), 403
+    config = load_vehicle_telemetry_config()
+    if config["mode"] != "galaxy":
+      return jsonify({"error": "Select Galaxy portal telemetry before pairing an app."}), 409
     try:
       pairing = create_pairing(GALAXY_DIR, request.host_url)
       try:
@@ -4050,6 +4143,10 @@ def setup(app):
     if not _request_is_lan():
       return jsonify({"error": "External-app pairing is available only on the local network."}), 403
     data = request.get_json(silent=True) or {}
+    config = load_vehicle_telemetry_config()
+    telemetry_base_urls, telemetry_path = _vehicle_telemetry_connection(config, request.host_url)
+    if not telemetry_base_urls:
+      return jsonify({"error": "The configured EV Vehicle Telemetry transport is not ready."}), 409
     slug = _read_galaxy_text(GALAXY_SLUG_FILE)
     session_token = _build_galaxy_session_value(slug, _read_galaxy_text(GALAXY_SESSION_FILE))
     requested_capabilities = data.get("requestedCapabilities") if isinstance(data.get("requestedCapabilities"), list) else None
@@ -4066,6 +4163,8 @@ def setup(app):
       data.get("clientName", "External app"),
       requested_capabilities=requested_capabilities,
       legacy_connection=legacy_connection,
+      telemetry_base_urls=telemetry_base_urls,
+      telemetry_path=telemetry_path,
     )
     if error:
       return jsonify({"error": error}), 401
@@ -6389,10 +6488,13 @@ def setup(app):
     slug = _read_galaxy_text(GALAXY_SLUG_FILE)
     token = _read_galaxy_text(GALAXY_SESSION_FILE)
     paired = len(_read_galaxy_text(GALAXY_AUTH_FILE)) == 64 and bool(slug and token)
+    telemetry_supported, _ = _vehicle_telemetry_identity()
     return jsonify({
       "appUrl": GALAXY_PLAY_STORE_URL,
+      "cookieName": GALAXY_COOKIE_NAME,
       "paired": paired,
-      "hasSession": bool(token),
+      "sessionToken": _build_galaxy_session_value(slug, token),
+      "vehicleTelemetrySupported": telemetry_supported,
     })
 
   @app.route("/api/galaxy/pair", methods=["POST"])
@@ -6426,135 +6528,6 @@ def setup(app):
       if file_path.is_file():
         file_path.unlink()
     return jsonify({"message": "Galaxy unpaired successfully."})
-
-  @app.route("/api/tailscale/installed", methods=["GET"])
-  def tailscale_installed():
-    base = "/data/tailscale"
-    tailscale_binary = f"{base}/tailscale"
-    tailscaled_binary = f"{base}/tailscaled"
-
-    systemd_unit = "/etc/systemd/system/tailscaled.service"
-
-    if os.path.exists(tailscale_binary) and os.path.exists(tailscaled_binary) and os.path.exists(systemd_unit):
-      return jsonify({"installed": True})
-
-    result = subprocess.run(["which", "tailscale"], capture_output=True, text=True)
-    if result.returncode == 0:
-      return jsonify({"installed": True})
-
-    return jsonify({"installed": False})
-
-  @app.route("/api/tailscale/setup", methods=["POST"])
-  def tailscale_setup():
-    arch = "arm64"
-    base = "/data/tailscale"
-
-    result = subprocess.run(
-      "curl -s https://pkgs.tailscale.com/stable/ | grep -oP 'tailscale_\\K[0-9]+\\.[0-9]+\\.[0-9]+' | sort -V | tail -1",
-      shell=True, capture_output=True, text=True
-    )
-
-    version = result.stdout.strip() or "1.84.0"
-
-    bin_dir = f"{base}/tailscale_{version}_{arch}"
-    state = f"{base}/state"
-    socket = f"{base}/tailscaled.sock"
-    tgz_path = f"{base}/tailscale.tgz"
-
-    tgz_url = f"https://pkgs.tailscale.com/stable/tailscale_{version}_{arch}.tgz"
-
-    os.makedirs(state, exist_ok=True)
-
-    run_cmd(["curl", "-fsSL", tgz_url, "-o", tgz_path], "Downloaded Tailscale archive.", "Failed to download Tailscale archive.")
-
-    extract_tar(tgz_path, base)
-
-    run_cmd(["cp", f"{bin_dir}/tailscale", f"{base}/tailscale"], "Copied tailscale binary.", "Failed to copy tailscale binary.")
-    run_cmd(["cp", f"{bin_dir}/tailscaled", f"{base}/tailscaled"], "Copied tailscaled binary.", "Failed to copy tailscaled binary.")
-    run_cmd(["chmod", "+x", f"{base}/tailscale", f"{base}/tailscaled"], "Made binaries executable.", "Failed to chmod binaries.")
-
-    systemd_unit = f"""[Unit]
-    Description=Tailscale node agent
-    After=network.target
-
-    [Service]
-    ExecStart={base}/tailscaled \\
-      --tun=userspace-networking \\
-      --socks5-server=localhost:1055 \\
-      --state={state}/tailscaled.state \\
-      --socket={socket} \\
-      --statedir={state}
-    Restart=on-failure
-    RestartSec=5
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-    unit_tmp = f"{base}/tailscaled.service"
-    with open(unit_tmp, "w") as f:
-      f.write(systemd_unit)
-
-    run_cmd(["sudo", "mount", "-o", "remount,rw", "/"], "Remounted / as read-write.", "Failed to remount / as read-write.")
-    run_cmd(["sudo", "install", "-m", "644", unit_tmp, "/etc/systemd/system/tailscaled.service"], "Installed systemd unit.", "Failed to install systemd unit.")
-    run_cmd(["sudo", "systemctl", "daemon-reload"], "Reloaded systemd daemon.", "Failed to reload systemd daemon.")
-    run_cmd(["sudo", "systemctl", "enable", "/etc/systemd/system/tailscaled.service"], "Enabled tailscaled service.", "Failed to enable tailscaled service.")
-    run_cmd(["sudo", "systemctl", "restart", "tailscaled"], "Started tailscaled service.", "Failed to start tailscaled service.")
-
-    proc = subprocess.Popen(
-      ["sudo", f"{base}/tailscale", "--socket", socket, "up", "--hostname", f"{HARDWARE.get_device_type()}-the-galaxy"],
-      stdout=subprocess.PIPE,
-      stderr=subprocess.STDOUT,
-      text=True,
-      preexec_fn=os.setsid
-    )
-
-    auth_url = None
-    for line in proc.stdout:
-      match = re.search(r"https://login\.tailscale\.com/\S+", line)
-      if match and not auth_url:
-        auth_url = match.group(0)
-        run_cmd(["sudo", "kill", "-TERM", f"-{proc.pid}"], "Sent SIGTERM to Tailscale setup process.", "Failed to send SIGTERM to Tailscale setup process.")
-        proc.wait(timeout=5)
-        break
-
-    return jsonify({
-      "message": "Tailscale setup started. Please authenticate in your browser.",
-      "auth_url": auth_url
-    }), 200
-
-  @app.route("/api/tailscale/uninstall", methods=["POST"])
-  def tailscale_uninstall():
-    base = "/data/tailscale"
-    state = f"{base}/state"
-    unit_path = "/etc/systemd/system/tailscaled.service"
-    local_unit = f"{base}/tailscaled.service"
-
-    run_cmd(["sudo", "mount", "-o", "remount,rw", "/"], "Remounted / as read-write.", "Failed to remount /.")
-    run_cmd(["sudo", "systemctl", "stop", "tailscaled"], "Stopped tailscaled.", "Failed to stop tailscaled.")
-    run_cmd(["sudo", "systemctl", "disable", "tailscaled"], "Disabled tailscaled.", "Failed to disable tailscaled.")
-
-    if os.path.exists(unit_path):
-      run_cmd(["sudo", "rm", unit_path], "Removed systemd unit file.", "Failed to remove systemd unit file.")
-      run_cmd(["sudo", "systemctl", "daemon-reload"], "Reloaded systemd daemon.", "Failed to reload systemd.")
-
-    delete_file(local_unit)
-
-    for filename in ["tailscale", "tailscaled", "tailscale.tgz"]:
-      delete_file(os.path.join(base, filename))
-
-    for item in os.listdir(base):
-      if item.startswith("tailscale_"):
-        item_path = os.path.join(base, item)
-        if os.path.isdir(item_path):
-          run_cmd(["sudo", "rm", "-rf", item_path], f"Removed {item_path}.", f"Failed to remove {item_path}.")
-
-    if os.path.exists(state):
-      run_cmd(["sudo", "rm", "-rf", state], "Removed tailscale state dir.", "Failed to remove tailscale state dir.")
-
-    if os.path.exists(base):
-      run_cmd(["sudo", "rm", "-rf", base], "Removed tailscale dir.", "Failed to remove tailscale dir.")
-
-    return jsonify({"message": "Tailscale uninstalled!"}), 200
 
   @app.route("/api/themes", methods=["POST"])
   def save_theme_route():

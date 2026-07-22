@@ -1,6 +1,5 @@
 import { html, reactive } from "/assets/vendor/arrow-core.js"
 import { Modal } from "/assets/components/modal.js"
-import { TailscaleControl } from "/assets/components/tailscale/tailscale.js"
 
 const FACTORY_RESET_STATUS_POLL_INTERVAL_MS = 1000
 
@@ -281,7 +280,6 @@ export function ToggleControl() {
         </div>
       </section>
 
-      ${TailscaleControl()}
     </div>
     ${() => state.showResetDefaultModal ? Modal({
     title: "Reset Toggles",

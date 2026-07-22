@@ -82,11 +82,6 @@
   width: min(40vw, 240px);
 }
 
-.navkeys-pairing-subtitle {
-  margin: 0 0 var(--margin-base);
-  text-align: left;
-}
-
 .navkeys-app-container {
   flex-basis: min(100%, calc((var(--width-lg) * 2) + var(--gap-lg)));
   max-width: calc((var(--width-lg) * 2) + var(--gap-lg));
@@ -162,6 +157,43 @@
 .navkeys-token-input {
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
+}
+
+.navkeys-select {
+  width: 100%;
+}
+
+.navkeys-telemetry-actions {
+  justify-content: center;
+  margin-top: var(--margin-base);
+}
+
+.navkeys-telemetry-grid {
+  display: grid;
+  gap: var(--gap-sm);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-top: var(--margin-base);
+}
+
+.navkeys-info-button {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.navkeys-telemetry-info {
+  background: var(--input-bg);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--margin-base);
+  padding: var(--padding-sm);
+}
+
+.navkeys-telemetry-status {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  margin-top: var(--margin-base);
 }
 
 .navkeys-label {

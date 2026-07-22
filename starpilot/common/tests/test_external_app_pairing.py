@@ -1,7 +1,14 @@
 import base64
 import json
 
+import pytest
+
 from openpilot.starpilot.system import external_app_pairing, vehicle_telemetry
+
+
+@pytest.fixture(autouse=True)
+def configure_starpilot_telemetry_adapter():
+  vehicle_telemetry.configure_starpilot_vehicle_telemetry()
 
 
 def test_one_time_pairing_issues_scoped_telemetry_connection(tmp_path, monkeypatch):
@@ -37,6 +44,7 @@ def test_one_time_pairing_issues_scoped_telemetry_connection(tmp_path, monkeypat
   assert len(telemetry["bearerToken"]) >= 32
   assert connection["capabilities"]["galaxySession"]["cookieName"] == "galaxy_session"
   config = vehicle_telemetry.load_vehicle_telemetry_config()
+  assert config["mode"] == "galaxy"
   assert vehicle_telemetry.is_fetch_authorized(config, f"Bearer {telemetry['bearerToken']}")
 
   replay, replay_error = external_app_pairing.complete_pairing(

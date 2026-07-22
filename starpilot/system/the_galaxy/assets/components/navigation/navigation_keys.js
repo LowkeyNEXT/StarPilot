@@ -23,13 +23,25 @@ export function NavKeys() {
     editPublic: false, editSecret: false,
     savedPublic: false, savedSecret: false,
 
+    galaxyCookieName: "galaxy_session",
+    galaxySessionToken: "",
     galaxyAppUrl: DEFAULT_PLAY_STORE_URL,
     galaxyPaired: false,
+    galaxySessionVisible: false,
+
     externalPairingQrData: "",
     externalPairingQrImage: "",
     externalPairingCode: "",
-    externalPairingExpiresAt: 0,
     externalPairingLoading: false,
+
+    telemetrySupported: false,
+    telemetryInfoVisible: false,
+    telemetryMode: "off",
+    telemetryPushUrl: "",
+    telemetryPushToken: "",
+    telemetryBatteryCapacity: "",
+    telemetryVinAvailable: false,
+    telemetrySaving: false,
 
     showDeleteModal: false,
     keyToDelete: null,
@@ -136,6 +148,7 @@ export function NavKeys() {
     path: {
       galaxy: "/api/galaxy/session",
       externalPairing: "/api/external-app/pairing",
+      telemetryConfig: "/api/vehicle/telemetry/config",
       key: "/api/navigation_key",
       nav: "/api/navigation"
     },
@@ -171,7 +184,59 @@ export function NavKeys() {
       }
 
       state.galaxyAppUrl = data.appUrl || DEFAULT_PLAY_STORE_URL
+      state.galaxyCookieName = data.cookieName || "galaxy_session"
       state.galaxyPaired = !!data.paired
+      state.galaxySessionToken = data.sessionToken || ""
+      state.galaxySessionVisible = false
+      state.telemetrySupported = !!data.vehicleTelemetrySupported
+      if (state.telemetrySupported) {
+        await api.loadTelemetry()
+      }
+    },
+
+    copyGalaxySession: async () => {
+      try {
+        await util.copyText(state.galaxySessionToken)
+        showMessage("message", "Session token copied!", "app")
+      } catch (e) {
+        showMessage("error", "Copy failed...", "app")
+      }
+    },
+
+    loadTelemetry: async () => {
+      const { ok, data } = await util.req(api.path.telemetryConfig)
+      if (!ok) return
+      state.telemetryMode = data.config?.mode || "off"
+      state.telemetryPushUrl = data.config?.push?.url || ""
+      state.telemetryBatteryCapacity = data.config?.push?.maximumBatteryCapacityKilowattHours ?? ""
+      state.telemetryVinAvailable = !!data.vinAvailable
+    },
+
+    saveTelemetry: async () => {
+      state.telemetrySaving = true
+      const payload = {
+        mode: state.telemetryMode,
+        pushToken: state.telemetryPushToken,
+        push: {
+          url: state.telemetryPushUrl,
+          maximumBatteryCapacityKilowattHours: state.telemetryBatteryCapacity || null,
+        },
+      }
+      const { ok, data } = await util.req(api.path.telemetryConfig, {
+        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      })
+      state.telemetrySaving = false
+      if (!ok) {
+        return showMessage("error", data.error || "Could not save EV Vehicle Telemetry...", "telemetry")
+      }
+      state.telemetryPushToken = ""
+      state.telemetryMode = data.config?.mode || "off"
+      state.telemetryPushUrl = data.config?.push?.url || ""
+      state.telemetryBatteryCapacity = data.config?.push?.maximumBatteryCapacityKilowattHours ?? ""
+      state.telemetryVinAvailable = !!data.vinAvailable
+      showMessage("message", "EV Vehicle Telemetry saved.", "telemetry")
     },
 
     createExternalPairing: async () => {
@@ -184,7 +249,6 @@ export function NavKeys() {
       state.externalPairingQrData = data.qrData || ""
       state.externalPairingQrImage = data.qrImageDataURL || ""
       state.externalPairingCode = data.pairingCode || ""
-      state.externalPairingExpiresAt = Number(data.expiresAt || 0)
       showMessage("message", "One-time pairing is ready for 10 minutes.", "app")
     },
 
@@ -386,19 +450,54 @@ export function NavKeys() {
         </a>
       </div>
 
-      <div class="navkeys-subtitle">
-        Pair RangeBridge, Galaxy Nav, or another external app without copying URLs or reusable secrets.
+      <label class="navkeys-label" for="galaxy-cookie-name">Cookie Name</label>
+      <div class="navkeys-row">
+        <input
+          class="navkeys-input navkeys-token-input"
+          id="galaxy-cookie-name"
+          readonly
+          value="${() => state.galaxyCookieName}"
+        />
       </div>
 
-      <div class="navkeys-app-actions navkeys-pair-actions">
+      <label class="navkeys-label" for="galaxy-session-token">Session Token</label>
+      <div class="navkeys-row">
+        <input
+          class="navkeys-input navkeys-token-input"
+          id="galaxy-session-token"
+          placeholder="${() => state.galaxyPaired ? "Session token unavailable..." : "Pair Galaxy to create a session token..."}"
+          readonly
+          type="${() => state.galaxySessionVisible ? "text" : "password"}"
+          value="${() => state.galaxySessionToken}"
+        />
+        <button
+          aria-label="${() => state.galaxySessionVisible ? "Hide session token" : "Show session token"}"
+          class="navkeys-btn navkeys-icon-btn"
+          @click="${() => { state.galaxySessionVisible = !state.galaxySessionVisible }}"
+          disabled="${() => !state.galaxySessionToken}"
+          title="${() => state.galaxySessionVisible ? "Hide session token" : "Show session token"}">
+          <i class="${() => `bi ${state.galaxySessionVisible ? "bi-eye-slash" : "bi-eye"}`}"></i>
+        </button>
         <button
           class="navkeys-btn navkeys-copy-btn"
-          @click="${api.createExternalPairing}"
-          disabled="${() => state.externalPairingLoading}">
-          <i class="bi bi-qr-code"></i>
-          <span>${() => state.externalPairingLoading ? "Creating..." : "Create Pairing QR"}</span>
+          @click="${api.copyGalaxySession}"
+          disabled="${() => !state.galaxySessionToken}">
+          <i class="bi bi-copy"></i>
+          <span>Copy</span>
         </button>
       </div>
+
+      ${() => state.telemetrySupported ? html`
+        <div class="navkeys-app-actions navkeys-pair-actions">
+          <button
+            class="navkeys-btn navkeys-copy-btn"
+            @click="${api.createExternalPairing}"
+            disabled="${() => state.externalPairingLoading || state.telemetryMode !== "galaxy"}">
+            <i class="bi bi-qr-code"></i>
+            <span>${() => state.externalPairingLoading ? "Creating..." : "Create Pairing QR"}</span>
+          </button>
+        </div>
+      ` : ""}
 
       ${() => state.externalPairingQrData ? html`
         <div class="navkeys-pairing-card">
@@ -407,19 +506,75 @@ export function NavKeys() {
           ` : ""}
           <div class="navkeys-pairing-details">
             <div class="navkeys-label">One-time connection package</div>
-            <div class="navkeys-pairing-code" aria-label="Six digit pairing code">
-              ${state.externalPairingCode}
-            </div>
-            <div class="navkeys-subtitle navkeys-pairing-subtitle">
-              Scan the QR or enter this six-digit code in an app on the same LAN. It expires at ${new Date(state.externalPairingExpiresAt * 1000).toLocaleTimeString()} and can be used once.
-            </div>
+            <div class="navkeys-pairing-code" aria-label="Six digit pairing code">${state.externalPairingCode}</div>
             <button class="navkeys-btn navkeys-copy-btn" @click="${api.copyExternalPairing}">
-              <i class="bi bi-copy"></i>
-              <span>Copy Pairing Code</span>
+              <i class="bi bi-copy"></i><span>Copy Pairing Code</span>
             </button>
           </div>
         </div>
       ` : ""}
+    `
+  }
+
+  function telemetryInput(label, property, { type = "text", placeholder = "", secret = false } = {}) {
+    return html`
+      <label class="navkeys-label">${label}</label>
+      <input
+        autocomplete="${secret ? "new-password" : "off"}"
+        class="navkeys-input ${secret ? "navkeys-token-input" : ""}"
+        type="${type}"
+        placeholder="${placeholder}"
+        value="${() => state[property]}"
+        @input="${(event) => state[property] = event.target.value}" />
+    `
+  }
+
+  function renderTelemetryConfig() {
+    return html`
+      <div class="navkeys-title">
+        EV Vehicle Telemetry
+        <button
+          aria-expanded="${() => state.telemetryInfoVisible}"
+          aria-label="About EV Vehicle Telemetry"
+          class="navkeys-help-icon navkeys-info-button"
+          @click="${() => state.telemetryInfoVisible = !state.telemetryInfoVisible}">
+          <i class="bi bi-question-circle-fill"></i>
+        </button>
+      </div>
+
+      ${() => state.telemetryInfoVisible ? html`
+        <div class="navkeys-telemetry-info">
+          Shares read-only battery, range, charging, plug, and charge-time data with Galaxy or one custom HTTPS endpoint. The VIN is supplied automatically. Off stops collection and removes saved telemetry; custom uploads run only while driving or charging.
+        </div>
+      ` : ""}
+
+      <label class="navkeys-label">Operating mode</label>
+      <select
+        class="navkeys-input navkeys-select"
+        value="${() => state.telemetryMode}"
+        @change="${(event) => state.telemetryMode = event.target.value}">
+        <option value="off">Off</option>
+        <option value="galaxy">Galaxy portal</option>
+        <option value="send">Custom HTTPS backend</option>
+      </select>
+
+      ${() => state.telemetryMode === "send" ? html`
+        <div class="navkeys-telemetry-grid">
+          <div>${telemetryInput("Backend URL", "telemetryPushUrl", { placeholder: "https://telemetry.example/ingest" })}</div>
+          <div>${telemetryInput("Bearer token (leave blank to keep)", "telemetryPushToken", { secret: true, placeholder: "••••••••" })}</div>
+          <div>${telemetryInput("Battery capacity (kWh, optional)", "telemetryBatteryCapacity", { type: "number" })}</div>
+        </div>
+        <div class="navkeys-telemetry-status">
+          ${() => state.telemetryVinAvailable ? "VIN will be supplied automatically." : "VIN will be supplied automatically when the vehicle identifies itself."}
+        </div>
+      ` : ""}
+
+      <div class="navkeys-app-actions navkeys-telemetry-actions">
+        <button class="navkeys-btn navkeys-copy-btn" @click="${api.saveTelemetry}" disabled="${() => state.telemetrySaving}">
+          <i class="bi bi-floppy-fill"></i>
+          <span>${() => state.telemetrySaving ? "Saving..." : "Save Telemetry"}</span>
+        </button>
+      </div>
     `
   }
 
@@ -437,6 +592,12 @@ export function NavKeys() {
         ${renderAppKeys()}
         ${renderStatus("app")}
       </div>
+      ${() => state.telemetrySupported ? html`
+        <div class="navkeys-container navkeys-app-container">
+          ${renderTelemetryConfig()}
+          ${renderStatus("telemetry")}
+        </div>
+      ` : ""}
     </div>
     ${() => state.showDeleteModal ? Modal({
       title: "Confirm Delete",
