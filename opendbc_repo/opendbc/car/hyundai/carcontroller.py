@@ -7,7 +7,7 @@ from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
-from opendbc.car.hyundai.carstate import resolve_canfd_native_blindspot_state
+from opendbc.car.hyundai.carstate import EV9_RAW_BLINDSPOT_STALE_NS, resolve_canfd_native_blindspot_state
 from opendbc.car.hyundai.ev9_dash import Ev9LaneChangeAnimationState, update_lane_change_animation
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
@@ -238,7 +238,13 @@ def get_ev9_blindspot_warning_inputs(CS, now_nanos: int) -> EV9BlindspotWarningI
     getattr(CS, "native_blindspot_ts", 0), now_nanos,
   )
   if not source_fresh:
-    return EV9BlindspotWarningInputs()
+    fallback_timestamp = int(getattr(CS, "ev9_reconstructed_blindspot_ts", 0))
+    fallback_age = int(now_nanos) - fallback_timestamp
+    source_fresh = fallback_timestamp > 0 and 0 <= fallback_age <= EV9_RAW_BLINDSPOT_STALE_NS
+    if not source_fresh:
+      return EV9BlindspotWarningInputs()
+    left_detected = bool(getattr(CS, "ev9_reconstructed_left_blindspot", False))
+    right_detected = bool(getattr(CS, "ev9_reconstructed_right_blindspot", False))
 
   left_stalk_active = bool(getattr(CS, "left_blinker_stalk", False))
   right_stalk_active = bool(getattr(CS, "right_blinker_stalk", False))

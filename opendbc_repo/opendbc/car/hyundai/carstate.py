@@ -26,6 +26,7 @@ BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: Bu
 IONIQ_6_BLINDSPOT_RIGHT_MASK = 0x08
 IONIQ_6_BLINDSPOT_LEFT_MASK = 0x10
 CANFD_NATIVE_BLINDSPOT_STALE_NS = 100_000_000
+EV9_RAW_BLINDSPOT_STALE_NS = 150_000_000
 CANFD_CAMERA_LEAD_MIN_DISTANCE = 0.1
 ALT_BUS_LDA_BUTTON_BURST_DEBOUNCE_NS = int(1.3e9)
 
@@ -165,6 +166,12 @@ class CarState(CarStateBase):
     self.native_right_blindspot_state = 0
     self.native_blindspot_ts = 0
     if CP.carFingerprint == CAR.KIA_EV9:
+      self.ev9_raw_blindspot_state = 0
+      self.ev9_raw_blindspot_ts = 0
+      self.ev9_raw_blindspot_fresh = False
+      self.ev9_reconstructed_left_blindspot = False
+      self.ev9_reconstructed_right_blindspot = False
+      self.ev9_reconstructed_blindspot_ts = 0
       self.hba_icon = 0
       self.main_cruise_on = False
       self.angle_steering_angle = 0.0
@@ -513,6 +520,12 @@ class CarState(CarStateBase):
     if corner_radar_bsm:
       self.left_blindspot_from_radar, self.right_blindspot_from_radar = decode_ioniq_6_blindspot_radar_state(
         cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      self.ev9_raw_blindspot_state = int(cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
+      self.ev9_raw_blindspot_ts = cp.ts_nanos["BLINDSPOTS_FRONT_CORNER_2"]["CHECKSUM"]
+      raw_age_nanos = max(cp.ts_nanos["WHEEL_SPEEDS"]["CHECKSUM"], self.ev9_raw_blindspot_ts) - self.ev9_raw_blindspot_ts
+      self.ev9_raw_blindspot_fresh = self.ev9_raw_blindspot_ts > 0 and \
+        0 <= raw_age_nanos <= EV9_RAW_BLINDSPOT_STALE_NS
     if self.CP.enableBsm:
       if self.CP.carFingerprint == CAR.KIA_EV9:
         self.native_left_blindspot_state = int(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"])

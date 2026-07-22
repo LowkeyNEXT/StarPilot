@@ -8,9 +8,10 @@ from opendbc.car.structs import CarParams
 from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.carstate import get_canfd_speed_limit_state
 from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
-                                             Ev9LaneChangeAnimationState, display_context_valid, filter_side_objects, \
-                                             radar_backed_object, select_lane_change_direction, select_stop_target, \
-                                             update_lane_change_animation, validate_slots_for_output
+                                             Ev9LaneChangeAnimationState, Ev9RawBlindspotGateState, display_context_valid, \
+                                             filter_side_objects, radar_backed_object, select_lane_change_direction, \
+                                             select_stop_target, update_ev9_raw_blindspot_gate, update_lane_change_animation, \
+                                             validate_slots_for_output
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import ev9_dash_display_candidate, ev9_dash_side_candidate, \
                                                     ev9_dash_side_retention_candidate
@@ -48,6 +49,42 @@ def test_display_context_requires_live_radar_main_and_drive():
   assert not display_context_valid(False, True, True)
   assert not display_context_valid(True, False, True)
   assert not display_context_valid(True, True, False)
+
+
+def test_raw_blindspot_left_requires_strict_adjacent_moving_track():
+  state = Ev9RawBlindspotGateState()
+  adjacent = point(track_id=7, distance=30.0, lateral=3.0, relative_speed=0.0)
+  assert update_ev9_raw_blindspot_gate(state, 0x12, True, True, [adjacent], {7}, {7}, 15.0) == (True, False)
+
+  two_lanes_away = point(track_id=7, distance=30.0, lateral=6.5, relative_speed=0.0)
+  assert update_ev9_raw_blindspot_gate(state, 0x12, True, True, [two_lanes_away], {7}, {7}, 15.0) == (False, False)
+  assert update_ev9_raw_blindspot_gate(state, 0x12, True, True, [adjacent], {7}, set(), 15.0) == (False, False)
+
+  stationary_wall = point(track_id=7, distance=30.0, lateral=3.0, relative_speed=-15.0)
+  assert update_ev9_raw_blindspot_gate(state, 0x12, True, True, [stationary_wall], {7}, {7}, 15.0) == (False, False)
+
+
+def test_raw_blindspot_right_requires_three_adjacent_display_scans_without_hold():
+  state = Ev9RawBlindspotGateState()
+  adjacent = point(track_id=8, distance=25.0, lateral=-3.0, relative_speed=0.0)
+  for _ in range(2):
+    assert update_ev9_raw_blindspot_gate(state, 0x0A, True, True, [adjacent], {8}, {8}, 15.0) == (False, False)
+  assert update_ev9_raw_blindspot_gate(state, 0x0A, True, True, [adjacent], {8}, {8}, 15.0) == (False, True)
+  assert update_ev9_raw_blindspot_gate(state, 0x0A, True, True, [], set(), set(), 15.0) == (False, False)
+
+
+@pytest.mark.parametrize(("raw_state", "raw_fresh", "drive_gear"), [
+  (0x10, True, True),  # Missing the observed 0x02 base bit.
+  (0x12, False, True),
+  (0x12, True, False),
+])
+def test_raw_blindspot_gate_fails_closed_without_fresh_drive_context(raw_state, raw_fresh, drive_gear):
+  state = Ev9RawBlindspotGateState(2, 2)
+  adjacent = point(track_id=7, distance=30.0, lateral=3.0, relative_speed=0.0)
+  assert update_ev9_raw_blindspot_gate(
+    state, raw_state, raw_fresh, drive_gear, [adjacent], {7}, {7}, 15.0,
+  ) == (False, False)
+  assert state.left_hits == state.right_hits == 0
 
 
 def test_tracker_requires_three_samples_and_smooths_distance():

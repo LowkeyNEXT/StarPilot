@@ -10,7 +10,7 @@ without feeding any display-only decision back into planning or control.
 | Center lead car | On while HDA is active | Fused, radar-backed `radarState.leadOne`; three 20 Hz acquisition samples, four-sample dropout/confidence hold, and a 0.35 distance EMA. Vision-only and nearest-raw fallbacks are rejected. |
 | Target/headway line | On while HDA is active | A committed, valid StarPilot stop target overrides the stock EV9 `1.626 * vEgo` headway. Invalid/stale plans fall back to headway. |
 | Speed-limit sign | On | Uses the shared EV6/Hyundai CAN-FD `FR_CMR_02_100ms` path and its existing ECAN/CAM bus selection. Raw values 1–253 pass through, warning maps to normal/red, and valid signs carry stock `COUNTRY=7`; 254/255 fail neutral. |
-| Mirror/dash BSM warning | On when authoritative input is present | Fresh native `0x1BA` state plus the matching physical `0x413` stalk bit. Missing or older-than-100 ms native state clears the warning. The retained `0x36A` proxy is not used. |
+| Mirror/dash BSM warning | On | Fresh native `0x1BA` remains authoritative. When it is stale, retained `0x36A` must coincide with a moving MRR35 track inside the adjacent-lane band; the matching physical `0x413` stalk escalates that detection to the flashing/audible warning. Missing/stale raw or radar input fails neutral. |
 | Left/right scene cars | On while HDA is active | Strict MRR35 lifecycle, motion rejection, unambiguous acquisition, stable track retention, and the same 0.35 distance EMA. A fused track is promoted atomically between center and either adjacent slot so it cannot blink out or duplicate during a lane crossing. `KiaEv9ClusterSideObjectsEnabled=0` remains an emergency kill switch. |
 | Second/rear side slots | Encoded, neutral without truth | Both left/right rear CCNC slots, their 8-bit range, output validation, and the side-object kill switch are implemented. Stock can populate front and rear simultaneously, but the retained buses do not expose a production-safe rear-occupancy decision, so runtime output fails neutral instead of inventing an object. |
 | Comma lane-change animation | Off | Both left and right are implemented. Dynamic `0x3C1` synthesis preserves the live OEM body, follows the stock semantic counter, recomputes CRC, and is safety-allowlisted only on bus 1 with length 8. It still needs on-vehicle cluster/fault validation because the OEM sender remains live. |
@@ -27,10 +27,9 @@ sudo reboot
 
 Reverse either Boolean to restore its default state.
 
-When ADAS transmit suppression removes native `0x1BA`, faithful BSM is not
-available from the retained front/corner signals. Restoring it requires an
-authoritative hardware-visible source or relay; the reconstruction deliberately
-shows no warning instead of guessing.
+When ADAS transmit suppression removes native `0x1BA`, the conservative raw
+fallback provides limited-coverage warning output. It remains warning-output-only and
+does not feed planning, lane-change policy, AEB, BCA, or longitudinal control.
 
 ## Route evidence
 
@@ -62,16 +61,16 @@ camera path selects ECAN for LKA-steering cars such as the EV6/EV9 and CAM for
 the other CAN-FD topology; only the EV9 CCNC encoder consumes the preserved raw
 state, so other platforms keep their existing dashboard-speed behavior.
 
-The BSM corpus contained 4,821 native left-lamp and 2,238 native right-lamp
+The d4-d6 BSM corpus contained 4,821 native left-lamp and 2,238 native right-lamp
 samples. Retained `0x36A` alone measured only 23.8% precision/21.8% recall on
 the left and 22.7%/30.9% on the right. Requiring an MRR35 target in the
 adjacent-lane band (`2.5`–`4.0` m left or `2.5`–`4.5` m right) raised precision
-to 79.3%/82.0%, but recall collapsed to 2.2% on both sides. Per-route left
-recall varied from 0.3% to 6.4%, and the right candidate appeared on only one
-route. The forward radar therefore cannot safely distinguish an adjacent-lane
-BSM object from a two-lanes-away proxy. Fresh native corner-lamp state remains
-authoritative and is intentionally not filtered; stale/missing state fails
-neutral instead of accepting the low-confidence proxy.
+to 79.3% left and 82.0% right with no acquisition delay. Three consecutive
+right scans improved right precision to 87.3%; every tested dropout hold made
+both sides less precise, so production uses no hold. Recall remains about 2.2%
+because the forward MRR35 cannot see most rear blind-zone objects. The fallback
+therefore prioritizes rejecting two-lanes-away proxies over coverage. Fresh
+native corner-lamp state is intentionally not filtered and always wins.
 
 Stock populated left front+rear simultaneously in 1,183 active samples and
 right front+rear in 58. The full active corpus contained 3,569 left-rear and
@@ -102,6 +101,13 @@ quoted globs:
 
 Use `--json` for machine-readable results. Use `--suppress-side-output` to
 score the persistent side-object kill-switch behavior.
+
+Score the exact production raw-BSM fallback separately:
+
+```bash
+./dev python tools/ev9_dash/score_stock_bsm.py \
+  --stock '/path/to/stock-rlogs/000000d[456]--*/rlog.zst'
+```
 
 ## Next recreations to validate
 

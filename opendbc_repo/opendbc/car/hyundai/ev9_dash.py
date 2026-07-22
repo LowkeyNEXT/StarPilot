@@ -6,6 +6,9 @@ from typing import Any
 MIN_OBJECT_DISTANCE = 0.1
 MAX_TARGET_DISTANCE = 204.7
 SIDE_MOVING_OBJECT_MIN_SPEED = 2.78
+EV9_RAW_BLINDSPOT_BASE_MASK = 0x02
+EV9_RAW_BLINDSPOT_RIGHT_MASK = 0x08
+EV9_RAW_BLINDSPOT_LEFT_MASK = 0x10
 EV9_LANE_CHANGE_LIVE_STALE_NS = 300_000_000
 EV9_LANE_CHANGE_ONSET_PHASES = {
   0: "trigger",
@@ -63,6 +66,53 @@ class Ev9DashTrackCandidates:
   display: frozenset[int] = frozenset()
   side: frozenset[int] = frozenset()
   side_retention: frozenset[int] = frozenset()
+
+
+@dataclass
+class Ev9RawBlindspotGateState:
+  left_hits: int = 0
+  right_hits: int = 0
+
+  def clear(self) -> tuple[bool, bool]:
+    self.left_hits = 0
+    self.right_hits = 0
+    return False, False
+
+
+def update_ev9_raw_blindspot_gate(state: Ev9RawBlindspotGateState, raw_state: int, raw_fresh: bool,
+                                  drive_gear: bool, points: list[Any], display_track_ids: set[int],
+                                  side_track_ids: set[int], v_ego: float) -> tuple[bool, bool]:
+  """Conservatively qualify retained 0x36A against adjacent-lane MRR35 tracks.
+
+  Stock-route precision is asymmetric: left requires the strict side lifecycle,
+  while right uses the broader display lifecycle and three consecutive scans.
+  No dropout hold is applied because every tested hold increased false output.
+  """
+  if not raw_fresh or not drive_gear or not (int(raw_state) & EV9_RAW_BLINDSPOT_BASE_MASK):
+    return state.clear()
+
+  def qualified(point: Any, left: bool) -> bool:
+    if not bool(getattr(point, "measured", False)):
+      return False
+    track_id = int(getattr(point, "trackId", -1))
+    distance = float(getattr(point, "dRel", math.nan))
+    lateral = float(getattr(point, "yRel", math.nan))
+    relative_speed = float(getattr(point, "vRel", math.nan))
+    if track_id < 0 or not all(math.isfinite(value) for value in (distance, lateral, relative_speed)) or \
+       not MIN_OBJECT_DISTANCE < distance <= 60.0 or \
+       abs(float(v_ego) + relative_speed) < SIDE_MOVING_OBJECT_MIN_SPEED:
+      return False
+    if left:
+      return track_id in side_track_ids and 2.5 <= lateral <= 4.0
+    return track_id in display_track_ids and -4.5 <= lateral <= -2.5
+
+  left_candidate = bool(int(raw_state) & EV9_RAW_BLINDSPOT_LEFT_MASK) and \
+    any(qualified(point, True) for point in points)
+  right_candidate = bool(int(raw_state) & EV9_RAW_BLINDSPOT_RIGHT_MASK) and \
+    any(qualified(point, False) for point in points)
+  state.left_hits = min(state.left_hits + 1, 1) if left_candidate else 0
+  state.right_hits = min(state.right_hits + 1, 3) if right_candidate else 0
+  return state.left_hits >= 1, state.right_hits >= 3
 
 
 @dataclass(frozen=True)

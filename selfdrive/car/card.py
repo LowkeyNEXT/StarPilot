@@ -19,8 +19,9 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.hyundai.ev9_dash import ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
-                                             Ev9DashTrackCandidates, display_context_valid, filter_side_objects, \
-                                             select_lane_change_direction, select_stop_target, validate_slots_for_output
+                                             Ev9DashTrackCandidates, Ev9RawBlindspotGateState, display_context_valid, \
+                                             filter_side_objects, select_lane_change_direction, select_stop_target, \
+                                             update_ev9_raw_blindspot_gate, validate_slots_for_output
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -184,6 +185,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
     self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
     self.ev9_dash_tracker = Ev9DashObjectTracker()
+    self.ev9_raw_blindspot_gate = Ev9RawBlindspotGateState()
     self.ev9_dash_slots = ClusterObjectSlots()
     self.ev9_dash_scene = Ev9DashScene()
     self.ev9_dash_side_objects_enabled = self.params.get_bool("KiaEv9ClusterSideObjectsEnabled")
@@ -259,6 +261,7 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+    self._update_ev9_raw_blindspot_gate(CS, RD)
     self._update_ev9_dash_tracker(CS, RD)
 
     can_rcv_valid = len(can_strs) > 0
@@ -358,6 +361,32 @@ class Car:
       float(CS.vEgo),
       bool(CS.standstill),
     )
+
+  def _update_ev9_raw_blindspot_gate(self, CS: car.CarState, RD: structs.RadarDataT | None) -> None:
+    if str(self.CP.carFingerprint) != "KIA_EV9" or RD is None:
+      return
+    if any(RD.errors.to_dict().values()):
+      self.ev9_raw_blindspot_gate.clear()
+      self.CI.CS.ev9_reconstructed_left_blindspot = False
+      self.CI.CS.ev9_reconstructed_right_blindspot = False
+      self.CI.CS.ev9_reconstructed_blindspot_ts = 0
+      return
+
+    candidates = getattr(self.RI, "ev9_dash_track_candidates", Ev9DashTrackCandidates())
+    left, right = update_ev9_raw_blindspot_gate(
+      self.ev9_raw_blindspot_gate,
+      int(getattr(self.CI.CS, "ev9_raw_blindspot_state", 0)),
+      bool(getattr(self.CI.CS, "ev9_raw_blindspot_fresh", False)),
+      CS.gearShifter == structs.CarState.GearShifter.drive,
+      list(RD.points),
+      set(candidates.display),
+      set(candidates.side),
+      float(CS.vEgo),
+    )
+    self.CI.CS.ev9_reconstructed_left_blindspot = left
+    self.CI.CS.ev9_reconstructed_right_blindspot = right
+    self.CI.CS.ev9_reconstructed_blindspot_ts = int(getattr(self.CI.CS, "ev9_raw_blindspot_ts", 0)) \
+      if bool(getattr(self.CI.CS, "ev9_raw_blindspot_fresh", False)) else 0
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None, FPCS: custom.StarPilotCarState):
     """carState and carParams publish loop"""

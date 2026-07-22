@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from opendbc.car.hyundai.carcontroller import BlindspotWarningState, get_ev9_blindspot_warning_inputs, update_blindspot_warning
-from opendbc.car.hyundai.carstate import CANFD_NATIVE_BLINDSPOT_STALE_NS, decode_canfd_blinker_stalks, \
-                                           resolve_canfd_native_blindspot_state
+from opendbc.car.hyundai.carstate import CANFD_NATIVE_BLINDSPOT_STALE_NS, EV9_RAW_BLINDSPOT_STALE_NS, \
+                                           decode_canfd_blinker_stalks, resolve_canfd_native_blindspot_state
 
 
 def test_canfd_blinker_stalks_use_physical_0x413_bits():
@@ -52,7 +52,7 @@ def test_ev9_warning_uses_native_lamp_and_physical_stalk():
   assert not inputs.right_detected and not inputs.right_stalk_active
 
 
-def test_ev9_warning_ignores_raw_proxy_without_native_0x1ba():
+def test_ev9_warning_ignores_ungated_legacy_raw_proxy_without_native_0x1ba():
   cs = SimpleNamespace(
     native_left_blindspot_state=0,
     native_right_blindspot_state=0,
@@ -64,6 +64,64 @@ def test_ev9_warning_ignores_raw_proxy_without_native_0x1ba():
   )
   assert get_ev9_blindspot_warning_inputs(cs, 1_000_000_000).source_fresh is False
   assert get_ev9_blindspot_warning_inputs(cs, 1_000_000_000).left_detected is False
+
+
+def test_ev9_warning_uses_fresh_distance_gated_fallback_and_matching_stalk():
+  timestamp_nanos = 1_000_000_000
+  cs = SimpleNamespace(
+    native_left_blindspot_state=0,
+    native_right_blindspot_state=0,
+    native_blindspot_ts=0,
+    ev9_reconstructed_left_blindspot=False,
+    ev9_reconstructed_right_blindspot=True,
+    ev9_reconstructed_blindspot_ts=timestamp_nanos,
+    left_blinker_stalk=False,
+    right_blinker_stalk=True,
+  )
+  inputs = get_ev9_blindspot_warning_inputs(cs, timestamp_nanos + EV9_RAW_BLINDSPOT_STALE_NS)
+  assert inputs.source_fresh
+  assert inputs.right_detected and inputs.right_stalk_active
+  assert not inputs.left_detected and not inputs.left_stalk_active
+
+  warning = update_blindspot_warning(
+    BlindspotWarningState(), inputs.right_detected and inputs.right_stalk_active, inputs.right_stalk_active,
+  )
+  assert warning.mirror_lamp_active
+  assert warning.sound_active
+
+
+def test_fresh_native_blindspot_remains_authoritative_over_distance_gated_fallback():
+  timestamp_nanos = 1_000_000_000
+  cs = SimpleNamespace(
+    native_left_blindspot_state=1,
+    native_right_blindspot_state=0,
+    native_blindspot_ts=timestamp_nanos,
+    ev9_reconstructed_left_blindspot=False,
+    ev9_reconstructed_right_blindspot=True,
+    ev9_reconstructed_blindspot_ts=timestamp_nanos,
+    left_blinker_stalk=False,
+    right_blinker_stalk=True,
+  )
+  inputs = get_ev9_blindspot_warning_inputs(cs, timestamp_nanos)
+  assert inputs.left_detected
+  assert not inputs.right_detected
+
+
+def test_stale_distance_gated_fallback_fails_neutral():
+  timestamp_nanos = 1_000_000_000
+  cs = SimpleNamespace(
+    native_left_blindspot_state=0,
+    native_right_blindspot_state=0,
+    native_blindspot_ts=0,
+    ev9_reconstructed_left_blindspot=True,
+    ev9_reconstructed_right_blindspot=False,
+    ev9_reconstructed_blindspot_ts=timestamp_nanos,
+    left_blinker_stalk=True,
+    right_blinker_stalk=False,
+  )
+  inputs = get_ev9_blindspot_warning_inputs(cs, timestamp_nanos + EV9_RAW_BLINDSPOT_STALE_NS + 1)
+  assert not inputs.source_fresh
+  assert not inputs.left_detected
 
 
 def test_ev9_warning_suppresses_ambiguous_dual_stalk_state():
