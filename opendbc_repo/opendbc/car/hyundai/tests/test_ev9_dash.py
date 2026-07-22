@@ -6,6 +6,7 @@ from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus
 from opendbc.car.structs import CarParams
 from opendbc.car.hyundai import hyundaicanfd
+from opendbc.car.hyundai.carstate import get_canfd_speed_limit_state
 from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
                                              Ev9LaneChangeAnimationState, display_context_valid, filter_side_objects, \
                                              radar_backed_object, select_lane_change_direction, select_stop_target, \
@@ -13,7 +14,7 @@ from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9D
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import ev9_dash_display_candidate, ev9_dash_side_candidate, \
                                                     ev9_dash_side_retention_candidate
-from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
+from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HyundaiStarPilotFlags
 
 
 def point(track_id=1, distance=30.0, lateral=0.0, relative_speed=-1.0, measured=True):
@@ -130,19 +131,25 @@ def test_primary_confidence_holds_four_low_probability_scans_then_clears():
 
 def test_left_slot_is_stable_and_excludes_primary():
   tracker = Ev9DashObjectTracker()
-  points = [
-    point(track_id=1, distance=25.0, lateral=0.0, relative_speed=0.0),
-    point(track_id=2, distance=35.0, lateral=3.0, relative_speed=0.0),
-    point(track_id=3, distance=30.0, lateral=3.2, relative_speed=0.0),
-  ]
-  slots = acquire(tracker, points, side={2, 3})
+  primary = point(track_id=1, distance=25.0, lateral=0.0, relative_speed=0.0)
+  track_3 = point(track_id=3, distance=30.0, lateral=3.2, relative_speed=0.0)
+  slots = acquire(tracker, [primary, track_3], side={3})
   assert slots.left is not None
   assert slots.left.track_id == 3
 
-  moved = [points[0], point(track_id=2, distance=29.0, lateral=3.0, relative_speed=0.0), points[2]]
+  moved = [primary, point(track_id=2, distance=29.0, lateral=3.0, relative_speed=0.0), track_3]
   slots = update(tracker, moved, side={2, 3})
   assert slots.left is not None
   assert slots.left.track_id == 3
+
+
+def test_side_slot_does_not_acquire_from_ambiguous_candidates():
+  tracker = Ev9DashObjectTracker()
+  points = [
+    point(track_id=2, distance=35.0, lateral=3.0, relative_speed=0.0),
+    point(track_id=3, distance=30.0, lateral=3.2, relative_speed=0.0),
+  ]
+  assert acquire(tracker, points, preferred=-1, side={2, 3}).left is None
 
 
 def test_right_slot_requires_deep_entry_then_retains_toward_lane_edge():
@@ -155,6 +162,13 @@ def test_right_slot_requires_deep_entry_then_retains_toward_lane_edge():
   slots = update(tracker, [retained], preferred=-1, side=set(), retention={4})
   assert slots.right is not None
   assert slots.right.track_id == 4
+
+
+def test_right_slot_accepts_route_observed_inner_entry():
+  tracker = Ev9DashObjectTracker()
+  entering = point(track_id=4, distance=40.0, lateral=-2.4, relative_speed=0.0)
+  slots = acquire(tracker, [entering], preferred=-1, side={4}, retention={4})
+  assert slots.right is not None
 
 
 def test_right_lane_edge_ghost_cannot_enter_without_deep_history():
@@ -240,14 +254,15 @@ def test_lane_change_direction_requires_active_committed_model_maneuver():
   assert select_lane_change_direction(True, True, True, None) is None
 
 
-def test_lane_change_animation_uses_route_backed_onset_then_live_phase():
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_lane_change_animation_uses_route_backed_onset_then_live_phase(side):
   state = Ev9LaneChangeAnimationState()
   live_timestamp = 1_000_000_000
   assert update_lane_change_animation(state, True, None, False, live_timestamp, live_timestamp) is None
   phases = []
   for frame in range(15):
     command = update_lane_change_animation(
-      state, True, "left", False, live_timestamp, live_timestamp + frame * 10_000_000,
+      state, True, side, False, live_timestamp, live_timestamp + frame * 10_000_000,
     )
     if command is not None:
       phases.append((frame, command.phase, command.counter_offset))
@@ -259,15 +274,35 @@ def test_lane_change_animation_uses_route_backed_onset_then_live_phase():
   # A received baseline frame queues one phase-locked steady override for the
   # following control tick rather than colliding on the receive tick.
   live_timestamp = 1_200_000_000
-  assert update_lane_change_animation(state, True, "left", False, live_timestamp, live_timestamp) is None
+  assert update_lane_change_animation(state, True, side, False, live_timestamp, live_timestamp) is None
   command = update_lane_change_animation(
-    state, True, "left", False, live_timestamp, live_timestamp + 10_000_000,
+    state, True, side, False, live_timestamp, live_timestamp + 10_000_000,
   )
   assert command is not None
-  assert (command.side, command.phase, command.counter_offset) == ("left", "steady", 2)
+  assert (command.side, command.phase, command.counter_offset) == (side, "steady", 2)
   assert update_lane_change_animation(
-    state, True, "left", False, live_timestamp, live_timestamp + 20_000_000,
+    state, True, side, False, live_timestamp, live_timestamp + 20_000_000,
   ) is None
+
+
+def test_canfd_speed_limit_state_reuses_camera_decode_and_preserves_unlimited():
+  CP = SimpleNamespace(flags=int(HyundaiFlags.CANFD_LKA_STEERING))
+  FPCP = SimpleNamespace(flags=int(HyundaiStarPilotFlags.SPEED_LIMIT_AVAILABLE))
+  camera_values = {"ISLW_SpdCluMainDis": 60, "ISLA_SpdWrn": 1}
+  cp = SimpleNamespace(vl={"FR_CMR_02_100ms": camera_values})
+  cp_cam = SimpleNamespace(vl={"FR_CMR_02_100ms": {"ISLW_SpdCluMainDis": 35, "ISLA_SpdWrn": 0}})
+
+  assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (60, True)
+  camera_values["ISLW_SpdCluMainDis"] = 253
+  camera_values["ISLA_SpdWrn"] = 0
+  assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (253, False)
+  for invalid in (0, 254, 255):
+    camera_values["ISLW_SpdCluMainDis"] = invalid
+    assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (0, False)
+
+  FPCP.flags = 0
+  camera_values["ISLW_SpdCluMainDis"] = 60
+  assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (0, False)
 
 
 def test_lane_change_animation_fails_neutral_for_physical_stalk_or_stale_sender():
@@ -429,7 +464,7 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
     primary=ClusterObject(1, 30.0, 0.2, -1.0),
     left=ClusterObject(2, 40.0, 3.4, 0.0),
     right=ClusterObject(3, 35.0, -3.1, 0.0),
-  ))
+  ), speed_limit_raw=60, speed_limit_warning=True)
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
   hud = SimpleNamespace(leadDistanceBars=3)
 
@@ -452,12 +487,17 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   assert status["LEAD_RIGHT_LATERAL"] == pytest.approx(3.0)
   assert status["LEAD_LEFT_REAR_STATUS"] == 0
   assert status["LEAD_RIGHT_REAR_STATUS"] == 0
+  assert status["SPEEDLIMIT"] == 60
+  assert status["SPEEDLIMIT_FLASH"] == 4
+  assert status["SPEEDLIMIT_WEATHER"] == 0
 
   parser.update([(2, hyundaicanfd.create_ccnc_angle_long_status_messages(
     packer, CP, can_bus, 2, enabled=True, main_cruise_enabled=True,
-    hud=hud, out=out, dash_scene=Ev9DashScene(stop_target_distance=42.0),
+    hud=hud, out=out, dash_scene=Ev9DashScene(stop_target_distance=42.0, speed_limit_raw=253),
   ))])
   assert parser.vl["CCNC_0x161"]["TARGET_DISTANCE"] == pytest.approx(42.0)
+  assert parser.vl["CCNC_0x162"]["SPEEDLIMIT"] == 253
+  assert parser.vl["CCNC_0x162"]["SPEEDLIMIT_FLASH"] == 2
 
 
 def test_ccnc_status_hides_objects_outside_active_hda():

@@ -997,6 +997,9 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
   right = getattr(objects, "right", None)
   objects_active = bool(enabled and objects is not None)
   stop_target_distance = getattr(dash_scene, "stop_target_distance", None)
+  speed_limit_raw = int(getattr(dash_scene, "speed_limit_raw", 0))
+  speed_limit_raw = speed_limit_raw if 1 <= speed_limit_raw <= 253 else 0
+  speed_limit_warning = bool(getattr(dash_scene, "speed_limit_warning", False))
   if not enabled:
     target_distance = 204.6
   elif stop_target_distance is not None:
@@ -1049,6 +1052,9 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
     "FAULT_HBA", "FAULT_ESS",
   )}
   values_162.update({
+    "SPEEDLIMIT": speed_limit_raw,
+    "SPEEDLIMIT_FLASH": 4 if speed_limit_warning and speed_limit_raw else 2 if speed_limit_raw else 0,
+    "SPEEDLIMIT_WEATHER": 0,
     "VIBRATE": 0,
     "LEAD": 2 if objects_active and primary is not None else 0,
     "LEAD_DISTANCE": object_distance(primary) if objects_active and primary is not None else 0.0,

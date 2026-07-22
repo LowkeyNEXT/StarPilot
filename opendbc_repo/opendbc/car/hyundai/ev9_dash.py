@@ -68,10 +68,12 @@ class Ev9DashScene:
   objects: ClusterObjectSlots = ClusterObjectSlots()
   stop_target_distance: float | None = None
   lane_change_direction: str | None = None
+  speed_limit_raw: int = 0
+  speed_limit_warning: bool = False
 
 
 def filter_side_objects(slots: ClusterObjectSlots, side_objects_enabled: bool) -> ClusterObjectSlots:
-  """Fail closed on side slots whose classifier did not transfer to the holdout route."""
+  """Apply the persistent side-object kill switch without changing primary output."""
   return slots if side_objects_enabled else ClusterObjectSlots(primary=slots.primary)
 
 
@@ -258,7 +260,7 @@ class Ev9DashObjectTracker:
     # A present track that no longer passes the route-derived display discriminator is
     # removed immediately. A genuinely absent track receives the short hold.
     incoming_track_ids = {int(point.trackId) for point in points if self._valid_point(point)}
-    # UNKNOWN_7 is a strong display discriminator on the preserved d4-d6
+    # The raw display discriminator is strong on the preserved d4-d6
     # firmware, but a held-out stock route uses a different score range. The
     # fused radar-backed lead is already the strongest available primary proof,
     # so never make that route-variant score a mandatory primary gate.
@@ -346,7 +348,7 @@ class Ev9DashObjectTracker:
     # rejects long-lived d6 roadside ghosts without keying on radar addresses.
     for track in self.tracks.values():
       right_entry = track.track_id in seen and track.side_qualified and \
-        -4.3 < track.raw_lateral < -2.8 and track.raw_distance < 60.0 and \
+        -4.3 < track.raw_lateral < -2.2 and track.raw_distance < 60.0 and \
         self._side_motion_valid(track, v_ego, standstill)
       track.right_entry_hits = track.right_entry_hits + 1 if right_entry else 0
 
@@ -370,7 +372,10 @@ class Ev9DashObjectTracker:
 
     def choose(slot: str, candidates: list[_TrackedObject]) -> _TrackedObject | None:
       chosen = next((track for track in candidates if track.track_id == self.slot_track_ids[slot]), None)
-      if chosen is None and candidates:
+      # Start a side slot only from an unambiguous radar scene. Once acquired,
+      # retain the same track through short-lived additional candidates so the
+      # rendered car does not jump between adjacent vehicles.
+      if chosen is None and len(candidates) == 1:
         chosen = candidates[0]
       self.slot_track_ids[slot] = chosen.track_id if chosen is not None else -1
       return chosen

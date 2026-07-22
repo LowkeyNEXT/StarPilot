@@ -38,16 +38,18 @@ def get_non_scc_cruise_signals(CP) -> tuple[str, str, str, str, str, str]:
   return "EMS16", "CRUISE_LAMP_M", "EMS16", "CRUISE_LAMP_S", "LVR12", "CF_Lvr_CruiseSet"
 
 
-def calculate_canfd_speed_limit(CP, FPCP, cp, cp_cam, speed_factor):
+def get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) -> tuple[int, bool]:
   if not (FPCP.flags & HyundaiStarPilotFlags.SPEED_LIMIT_AVAILABLE):
-    return 0.0
+    return 0, False
 
   speed_limit_bus = cp if CP.flags & HyundaiFlags.CANFD_LKA_STEERING else cp_cam
   try:
-    speed_limit = speed_limit_bus.vl["FR_CMR_02_100ms"]["ISLW_SpdCluMainDis"]
-    return speed_limit * speed_factor if 1 <= speed_limit <= 252 else 0.0
+    values = speed_limit_bus.vl["FR_CMR_02_100ms"]
+    speed_limit = int(values["ISLW_SpdCluMainDis"])
+    valid = 1 <= speed_limit <= 253  # 253 is the stock unlimited-speed symbol; 254/255 are invalid.
+    return (speed_limit, int(values["ISLA_SpdWrn"]) == 1) if valid else (0, False)
   except (KeyError, ValueError):
-    return 0.0
+    return 0, False
 
 
 def decode_ioniq_6_blindspot_radar_state(state: int) -> tuple[bool, bool]:
@@ -147,6 +149,8 @@ class CarState(CarStateBase):
     self.stock_camera_lead_distance = 0.0
     self.stock_camera_lead_rel_speed = 0.0
     self.stock_camera_lead_ts = 0
+    self.dashboard_speed_limit_raw = 0
+    self.dashboard_speed_limit_warning = False
     self.stock_blinker_stalks = {}
     self.stock_blinker_stalks_ts = 0
     self.blindspots_rear_corners = {}
@@ -606,7 +610,11 @@ class CarState(CarStateBase):
     ret.blockPcmEnable = not self.recent_button_interaction()
 
     fp_ret = custom.StarPilotCarState.new_message()
-    fp_ret.dashboardSpeedLimit = calculate_canfd_speed_limit(self.CP, self.FPCP, cp, cp_cam, speed_factor)
+    self.dashboard_speed_limit_raw, self.dashboard_speed_limit_warning = get_canfd_speed_limit_state(
+      self.CP, self.FPCP, cp, cp_cam,
+    )
+    fp_ret.dashboardSpeedLimit = self.dashboard_speed_limit_raw * speed_factor \
+      if self.dashboard_speed_limit_raw <= 252 else 0.0
 
     if self.CP.flags & HyundaiFlags.EV:
       drive_mode = cp.vl["DRIVE_MODE_EV"]["DRIVE_MODE"]

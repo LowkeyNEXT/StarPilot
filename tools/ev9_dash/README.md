@@ -9,22 +9,22 @@ without feeding any display-only decision back into planning or control.
 | --- | --- | --- |
 | Center lead car | On while HDA is active | Fused, radar-backed `radarState.leadOne`; three 20 Hz acquisition samples, four-sample dropout/confidence hold, and a 0.35 distance EMA. Vision-only and nearest-raw fallbacks are rejected. |
 | Target/headway line | On while HDA is active | A committed, valid StarPilot stop target overrides the stock EV9 `1.626 * vEgo` headway. Invalid/stale plans fall back to headway. |
+| Speed-limit sign | On | Reuses the generic Hyundai `FR_CMR_02_100ms` decode, copies raw values 1–253, and maps the stock warning state to normal/red CCNC sign color. Values 254/255 fail neutral. |
 | Mirror/dash BSM warning | On when authoritative input is present | Fresh native `0x1BA` state plus the matching physical `0x413` stalk bit. Missing or older-than-100 ms native state clears the warning. The retained `0x36A` proxy is not used. |
-| Left/right scene cars | Off | `KiaEv9ClusterSideObjectsEnabled=0`. Route 128 falsified the candidate classifier, so production output is suppressed even though the scorer retains shadow metrics. |
-| Comma lane-change animation | Off | `KiaEv9ClusterLaneChangeAnimationEnabled=0`. Dynamic `0x3C1` synthesis preserves the live OEM body, follows the stock semantic counter, recomputes CRC, and is safety-allowlisted only on bus 1 with length 8. It still needs on-vehicle cluster/fault validation because the OEM sender remains live. |
+| Left/right scene cars | On while HDA is active | Strict MRR35 lifecycle, motion rejection, unambiguous acquisition, stable track retention, and the same 0.35 distance EMA. `KiaEv9ClusterSideObjectsEnabled=0` remains an emergency kill switch. |
+| Comma lane-change animation | Off | Both left and right are implemented. Dynamic `0x3C1` synthesis preserves the live OEM body, follows the stock semantic counter, recomputes CRC, and is safety-allowlisted only on bus 1 with length 8. It still needs on-vehicle cluster/fault validation because the OEM sender remains live. |
 
-The two disabled features are validation-only Params with no user-facing toggle.
-They should be changed manually only for controlled testing, followed by a
-restart of the car process. From `/data/openpilot` on a test device:
+The lane animation and side-object kill switch have no user-facing toggle.
+Change them manually only for controlled testing, followed by a restart of the
+car process. From `/data/openpilot` on a test device:
 
 ```bash
 python3 -c 'from openpilot.common.params import Params; Params().put_bool("KiaEv9ClusterLaneChangeAnimationEnabled", True)'
-python3 -c 'from openpilot.common.params import Params; Params().put_bool("KiaEv9ClusterSideObjectsEnabled", True)'
+python3 -c 'from openpilot.common.params import Params; Params().put_bool("KiaEv9ClusterSideObjectsEnabled", False)'
 sudo reboot
 ```
 
-Replace `True` with `False` to disable either gate. Side objects should remain
-disabled until a new classifier passes an untouched route.
+Reverse either Boolean to restore its default state.
 
 When ADAS transmit suppression removes native `0x1BA`, faithful BSM is not
 available from the retained front/corner signals. Restoring it requires an
@@ -37,16 +37,26 @@ The preserved stock corpus contains 72 full rlogs from routes d4, d5, d6, and
 route 15. Route 128 was used as a firmware/scenario-variance dataset during
 refinement, so it is no longer an independent holdout.
 
-Against the full d4-d6 corpus, the production primary selector measured 99.65%
-precision and 89.99% recall for presence, 98.63%/89.07% within 5 m identity,
-a 0.20 s maximum false-only episode, 0.115 m EMA MAE, 0.127 m EMA RMSE, 50.6%
-second-difference jitter reduction, and about 84 ms empirical lag.
+Across all 72 preserved logs in the production-equivalent `TARGET=3`,
+`HDA_ICON=2` envelope, the primary selector measured 99.66% precision and
+90.22% recall, with 98.65%/89.31% within-5-m identity, 0.116 m EMA MAE, 51.5%
+jitter reduction, and about 85 ms empirical lag.
 
-On route 128 it measured 96.23%/84.21% presence precision/recall,
-96.19%/84.18% identity, a 0.75 s maximum false-only episode, 0.123 m EMA MAE,
-0.149 m EMA RMSE, 75.1% jitter reduction, and about 91 ms lag. The experimental
-side selector produced 41 false left frames in two episodes up to 1.55 s while
-native CCNC showed no side car, which is why side production output is off.
+Left side presence measured 91.31% precision and 86.19% recall; correctly
+associated ranges had 0.090 m EMA MAE. Right side presence and identity measured
+97.23% precision and 68.93% recall, with 0.139 m EMA MAE and 71.6% jitter
+reduction. The selector deliberately suppresses ambiguous acquisitions rather
+than jumping between adjacent tracks. Three stock left-only episodes remained,
+with a maximum duration of 1.85 s; close/rear side slots without a trustworthy
+front-radar range remain a known limitation.
+
+Route 128 contains no `HDA_ICON=2` frames, so it is not an active-output side
+holdout. Its previously reported 41 false left frames were standby raw tracks
+that the production encoder cannot display. A new untouched active-HDA route is
+still required as a true side-output holdout.
+
+The speed-limit comparison copied 7,512 of 7,517 valid stock samples exactly;
+the five differences occurred at asynchronous message transitions.
 
 The corpus is daytime. A new untouched night/poor-weather route is required to
 validate the display-only model-confidence thresholds before calling primary
@@ -64,18 +74,17 @@ quoted globs:
   --verbose
 ```
 
-Use `--json` for machine-readable results. Side output stays labeled as a
-suppressed shadow unless `--experimental-side-output` is supplied.
+Use `--json` for machine-readable results. Use `--suppress-side-output` to
+score the persistent side-object kill-switch behavior.
 
 ## Next recreations to validate
 
-1. Copy speed-limit display from `FR_CMR_02_100ms.ISLW_SpdCluMainDis`, treating
-   254 and 255 as invalid.
-2. Provide native rear-corner/`0x1BA` visibility through hardware if BSM must
+1. Provide native rear-corner/`0x1BA` visibility through hardware if BSM must
    survive full ADAS transmit suppression.
-3. Validate lane animation on the vehicle with cluster video and fault logging
+2. Validate both lane-animation directions on the vehicle with cluster video and fault logging
    before exposing its Param in UI.
-4. Capture a new untouched night/poor-weather route for primary confidence.
+3. Capture a new untouched active-HDA route, including close/rear side cars,
+   plus night/poor-weather scenes for primary confidence.
 
 Keep RCTA/rear-distance, `0x449`, `0x472`, BCA, and vibration fields neutral;
 the retained signals do not support faithful reconstruction of them.

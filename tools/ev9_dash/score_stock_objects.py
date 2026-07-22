@@ -10,7 +10,7 @@ shell—owns route ordering, for example::
     --stock '/routes/stock-rlogs/000000d[456]--*/rlog.zst' \
     --holdout '/routes/captures/00000128--route--*/rlog.zst'
 
-Ground truth is restricted to the stock TARGET=3 display-active envelope.
+Ground truth is restricted to the stock TARGET=3, HDA_ICON=2 active envelope.
 This is intentional: 0x162 object fields can remain populated while the stock
 UI is inactive, and older captures do not all expose current CarState Main
 decoding. Spatial association is approximate (normalized 1.5 m range / 0.8 m
@@ -19,10 +19,9 @@ identity metrics. The score is display-only evidence, never BSM or planning
 truth. Model-probability confidence can fall in darkness or bad weather; the
 daytime corpus cannot establish night robustness.
 
-Production side output is fail-closed by default because route 128 contains
-strict-qualified left tracks that native CCNC does not render. Left/right
-metrics below are therefore experimental shadow/A-B metrics unless
-``--experimental-side-output`` is explicitly supplied.
+Side output is scored only in the production-equivalent HDA-active envelope.
+Use ``--suppress-side-output`` to report the persistent kill-switch behavior
+instead of the default reconstructed left/right slots.
 """
 from __future__ import annotations
 
@@ -128,6 +127,7 @@ class RouteEvaluator:
     self.latest_native = None
     self.latest_native_time = 0
     self.native_target_active = False
+    self.native_hda_active = False
     self.result = RouteResult()
     self.current_segment = ""
     self.route_start_nanos = None
@@ -157,7 +157,9 @@ class RouteEvaluator:
     self.updated_addrs.update(a for a in radar_updated if a in RADAR_ADDRS)
     ccnc_updated = self.ccnc.update([stamp, frames])
     if 0x161 in ccnc_updated:
-      self.native_target_active = int(self.ccnc.vl["CCNC_0x161"]["TARGET"]) == 3
+      values_161 = self.ccnc.vl["CCNC_0x161"]
+      self.native_target_active = int(values_161["TARGET"]) == 3
+      self.native_hda_active = int(values_161["HDA_ICON"]) == 2
 
     if 0x3C4 in self.updated_addrs:
       self.run_scan(stamp)
@@ -257,7 +259,10 @@ class RouteEvaluator:
         "strict_state_12": int(values.get("NEW_SIGNAL_12", 0)),
         "strict_state_15": int(values.get("NEW_SIGNAL_15", 0)),
         "strict_state_17": int(values.get("NEW_SIGNAL_17", 0)),
-        "radar_fields": {name: float(value) for name, value in values.items()},
+        # Full MRR35 dictionaries are needed only for side-classifier mining.
+        # Omitting them from the much more common primary samples keeps full
+        # multi-route scoring bounded on development machines.
+        "radar_fields": {name: float(value) for name, value in values.items()} if slot != "primary" else {},
       }
     self.slot_time = stamp
 
@@ -287,7 +292,10 @@ class RouteEvaluator:
 
   def score_native(self, stamp: int):
     native = self.latest_native
-    if not self.native_target_active:
+    # Production emits 0x162 objects only while controls are enabled, which
+    # stock routes encode as HDA_ICON=2. TARGET=3 also appears in standby and
+    # must not turn adjacent raw tracks into scored output.
+    if not (self.native_target_active and self.native_hda_active):
       return
     # Require a fresh completed radar scan, as the real card does. Startup and
     # malformed intervals count as fail-closed misses only after 150 ms.
@@ -464,6 +472,18 @@ def report_false_side_episodes(frames: list[SlotFrame], slot: str):
     print(message)
 
 
+def report_side_identity_mismatches(frames: list[SlotFrame], slot: str):
+  mismatched = [f for f in frames if f.slot == slot and f.truth and f.predicted and
+                abs(f.native_distance - f.ema_distance) > 5.0]
+  print(f"  {slot} identity mismatches (>5 m): {len(mismatched)}")
+  for i, episode in enumerate(episodes(mismatched, "predicted")[:12], 1):
+    message = f"    {i}: {episode[0].segment} t={episode[0].route_time:.3f}-{episode[-1].route_time:.3f}s "
+    message += f"frames={len(episode)} native={describe([f.native_distance for f in episode])}, "
+    message += f"raw={describe([f.raw_distance for f in episode])}, ema={describe([f.ema_distance for f in episode])}, "
+    message += f"y={describe([f.raw_lateral for f in episode])}, score={describe([f.score for f in episode])}"
+    print(message)
+
+
 def report_cross_dataset_left_gates(stock: list[RouteResult], holdout: list[RouteResult]):
   stock_frames = [f for r in stock for f in r.frames if f.slot == "left" and f.predicted]
   holdout_frames = [f for r in holdout for f in r.frames if f.slot == "left" and f.predicted]
@@ -518,7 +538,6 @@ def report_cross_dataset_left_gates(stock: list[RouteResult], holdout: list[Rout
   for tp_loss, neg_holdout_removed, name, operator, threshold, stock_removed in sorted(mined)[:30]:
     print(f"    {name}{operator}{threshold:g}: {tp_loss:.3%} / {stock_removed:.3%} / {-neg_holdout_removed:.3%}")
 
-
 def report_simple_gates(frames: list[SlotFrame]):
   predicted = [f for f in frames if f.slot == "primary" and f.predicted]
   tp = [f for f in predicted if f.truth]
@@ -565,7 +584,7 @@ def confusion_summary(c: Counter):
   }
 
 
-def dataset_summary(name: str, results: list[RouteResult], experimental_side_output: bool):
+def dataset_summary(name: str, results: list[RouteResult], side_output_enabled: bool):
   frames = [f for result in results for f in result.frames]
   slots = {}
   for slot in SLOTS:
@@ -585,7 +604,7 @@ def dataset_summary(name: str, results: list[RouteResult], experimental_side_out
       },
       "distance": {key: finite_or_none(value) for key, value in (distance_metrics(sf) or {}).items()},
     }
-    if slot in ("left", "right") and not experimental_side_output:
+    if slot in ("left", "right") and not side_output_enabled:
       truth_count = sum(f.truth for f in sf)
       slots[slot] = {
         "production_mode": "suppressed",
@@ -601,7 +620,7 @@ def dataset_summary(name: str, results: list[RouteResult], experimental_side_out
   return {
     "name": name,
     "routes": len(results),
-    "native_0x162_frames_in_target3": len(frames) // 3,
+    "native_0x162_frames_in_hda_active": len(frames) // 3,
     "slots": slots,
     "raw_candidate_diagnostic": {
       "matched_native_precision": finite_or_none(fdiv(candidate["matched_native"], candidate["predicted"])),
@@ -614,16 +633,16 @@ def dataset_summary(name: str, results: list[RouteResult], experimental_side_out
   }
 
 
-def report(name: str, results: list[RouteResult], experimental_side_output: bool, verbose: bool):
+def report(name: str, results: list[RouteResult], side_output_enabled: bool, verbose: bool):
   frames = [f for result in results for f in result.frames]
   print(f"\nDATASET {name}: {len(results)} routes, {len(frames) // 3} native 0x162 frames")
-  if not experimental_side_output:
+  if not side_output_enabled:
     print("  production side output: SUPPRESSED (0 predicted side frames/ghosts); left/right below are shadow metrics")
   for slot in SLOTS:
     sf = [f for f in frames if f.slot == slot]
     c = confusion(sf)
     identity = confusion(sf, 5.0)
-    label = f"{slot} (experimental shadow)" if slot in ("left", "right") and not experimental_side_output else slot
+    label = f"{slot} (suppressed shadow)" if slot in ("left", "right") and not side_output_enabled else slot
     message = f"  {label}: presence P/R={fdiv(c['tp'], c['tp'] + c['fp']):.4f}/{fdiv(c['tp'], c['tp'] + c['fn']):.4f} "
     message += f"(tp/fp/fn={c['tp']}/{c['fp']}/{c['fn']}), identity<=5m P/R="
     message += f"{fdiv(identity['tp'], identity['tp'] + identity['fp']):.4f}/"
@@ -672,6 +691,9 @@ def report(name: str, results: list[RouteResult], experimental_side_output: bool
     report_false_side_episodes(frames, "left")
     report_false_side_episodes(frames, "right")
   if verbose:
+    report_side_identity_mismatches(frames, "left")
+    report_side_identity_mismatches(frames, "right")
+  if verbose:
     report_simple_gates(frames)
 
 
@@ -685,11 +707,12 @@ def main():
   ap.add_argument("--far-model-prob-threshold", type=float, default=Ev9DashObjectTracker.PRIMARY_MODEL_PROB_FAR)
   ap.add_argument("--far-model-prob-distance", type=float, default=Ev9DashObjectTracker.PRIMARY_MODEL_PROB_FAR_DISTANCE)
   ap.add_argument("--primary-max-distance", type=float, default=Ev9DashObjectTracker.MAX_DISTANCE)
-  ap.add_argument("--experimental-side-output", action="store_true",
-                  help="label side metrics as enabled A/B output instead of production-suppressed shadow state")
+  ap.add_argument("--suppress-side-output", action="store_true",
+                  help="score the persistent side-object kill switch instead of the default reconstructed slots")
   ap.add_argument("--verbose", action="store_true", help="print false episodes and exploratory one-field gate mining")
   ap.add_argument("--json", action="store_true", help="emit a machine-readable summary")
   args = ap.parse_args()
+  side_output_enabled = not args.suppress_side_output
   if not args.stock and not args.holdout:
     ap.error("at least one of --stock or --holdout is required")
   Ev9DashObjectTracker.MAX_DISTANCE = args.primary_max_distance
@@ -735,7 +758,7 @@ def main():
       results.append(evaluator.result)
     all_results[name] = results
     if not args.json:
-      report(name, results, args.experimental_side_output, args.verbose)
+      report(name, results, side_output_enabled, args.verbose)
   if args.verbose and not args.json and {"stock-d4-d6", "holdout-128"} <= set(all_results):
     report_cross_dataset_left_gates(all_results["stock-d4-d6"], all_results["holdout-128"])
   if args.json:
@@ -749,14 +772,14 @@ def main():
         "acquisition_samples": Ev9DashObjectTracker.ACQUISITION_SAMPLES,
         "dropout_hold_samples": Ev9DashObjectTracker.DROPOUT_HOLD_SAMPLES,
         "ema_alpha": Ev9DashObjectTracker.EMA_ALPHA,
-        "experimental_side_output": args.experimental_side_output,
+        "side_output_enabled": side_output_enabled,
       },
-      "datasets": {name: dataset_summary(name, results, args.experimental_side_output)
+      "datasets": {name: dataset_summary(name, results, side_output_enabled)
                    for name, results in all_results.items()},
       "limitations": [
-        "Ground truth is restricted to native CCNC TARGET=3 and uses approximate spatial association.",
+        "Ground truth is restricted to native CCNC TARGET=3/HDA_ICON=2 and uses approximate spatial association.",
         "The preserved corpus is daytime and cannot establish model-confidence behavior at night or in poor weather.",
-        "Side metrics are experimental shadow metrics unless experimental_side_output is true.",
+        "Side metrics apply only to the HDA-active envelope where production can emit 0x162 objects.",
       ],
     }
     print(json.dumps(output, indent=2, allow_nan=False))
