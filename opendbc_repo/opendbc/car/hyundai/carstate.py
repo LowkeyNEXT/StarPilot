@@ -48,7 +48,7 @@ def get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) -> tuple[int, bool]:
     speed_limit = int(values["ISLW_SpdCluMainDis"])
     valid = 1 <= speed_limit <= 253  # 253 is the stock unlimited-speed symbol; 254/255 are invalid.
     return (speed_limit, int(values["ISLA_SpdWrn"]) == 1) if valid else (0, False)
-  except (KeyError, ValueError):
+  except (KeyError, TypeError, ValueError):
     return 0, False
 
 

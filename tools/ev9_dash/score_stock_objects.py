@@ -2,8 +2,8 @@
 """Replay the EV9 display-only object tracker against native stock CCNC output.
 
 The scorer consumes full rlogs, decodes MRR35 and CCNC 0x161/0x162, replays
-the production tracker at the radar scan boundary, and compares primary/left/
-right slot presence and range. Quote input globs so this process—not the
+the production tracker at the radar scan boundary, and compares primary plus
+front/rear left/right slot presence and range. Quote input globs so this process—not the
 shell—owns route ordering, for example::
 
   ./dev python tools/ev9_dash/score_stock_objects.py \
@@ -20,6 +20,8 @@ truth. Model-probability confidence can fall in darkness or bad weather; the
 daytime corpus cannot establish night robustness.
 
 Side output is scored only in the production-equivalent HDA-active envelope.
+Rear slots are included to make their deliberate fail-neutral behavior visible
+until an authoritative retained source is decoded.
 Use ``--suppress-side-output`` to report the persistent kill-switch behavior
 instead of the default reconstructed left/right slots.
 """
@@ -46,12 +48,18 @@ from openpilot.tools.lib.logreader import LogReader
 
 RADAR_ADDRS = tuple(range(0x3A5, 0x3C5))
 RADAR_NAMES = [f"RADAR_TRACK_{a:x}" for a in RADAR_ADDRS]
-SLOTS = ("primary", "left", "right")
+SLOTS = ("primary", "left", "right", "left_rear", "right_rear")
 NATIVE = {
   "primary": ("LEAD", 0),
   "left": ("LEAD_LEFT", 1),
   "right": ("LEAD_RIGHT", -1),
+  "left_rear": ("LEAD_LEFT_REAR_STATUS", 1),
+  "right_rear": ("LEAD_RIGHT_REAR_STATUS", -1),
 }
+
+
+def native_signal(signal: str, suffix: str) -> str:
+  return f"{signal.removesuffix('_STATUS')}_{suffix}"
 
 
 def fdiv(n: int | float, d: int | float) -> float:
@@ -283,8 +291,8 @@ class RouteEvaluator:
         for _slot, (signal, sign) in NATIVE.items():
           if not int(native[signal]):
             continue
-          d = float(native[f"{signal}_DISTANCE"]) + .2
-          y = 0.0 if sign == 0 else sign * float(native[f"{signal}_LATERAL"])
+          d = float(native[native_signal(signal, "DISTANCE")]) + .2
+          y = 0.0 if sign == 0 else sign * float(native[native_signal(signal, "LATERAL")])
           if ((point.dRel - d) / 1.5) ** 2 + ((point.yRel - y) / .8) ** 2 <= 9.0:
             matched = True
             break
@@ -302,7 +310,7 @@ class RouteEvaluator:
     fresh = stamp - self.slot_time <= 150_000_000
     for slot, (signal, _sign) in NATIVE.items():
       truth = bool(int(native[signal]))
-      native_d = float(native[f"{signal}_DISTANCE"]) if truth else math.nan
+      native_d = float(native[native_signal(signal, "DISTANCE")]) if truth else math.nan
       obj = getattr(self.slots, slot) if fresh else None
       predicted = obj is not None
       track_id, raw_d, ema_d = -1, math.nan, math.nan
@@ -310,7 +318,8 @@ class RouteEvaluator:
         track_id = int(obj.track_id)
         tracked = self.tracker.tracks.get(track_id)
         raw_d = float(tracked.raw_distance) - .2 if tracked is not None else math.nan
-        ema_d = float(obj.distance) - .2
+        max_distance = 25.5 if slot in ("left_rear", "right_rear") else 204.7
+        ema_d = min(float(obj.distance) - .2, max_distance)
       self.result.frames.append(SlotFrame(self.route, stamp * 1e-9, slot, truth, native_d,
                                           predicted, track_id, raw_d, ema_d,
                                           segment=self.current_segment,
@@ -604,7 +613,7 @@ def dataset_summary(name: str, results: list[RouteResult], side_output_enabled: 
       },
       "distance": {key: finite_or_none(value) for key, value in (distance_metrics(sf) or {}).items()},
     }
-    if slot in ("left", "right") and not side_output_enabled:
+    if slot != "primary" and not side_output_enabled:
       truth_count = sum(f.truth for f in sf)
       slots[slot] = {
         "production_mode": "suppressed",
@@ -620,7 +629,7 @@ def dataset_summary(name: str, results: list[RouteResult], side_output_enabled: 
   return {
     "name": name,
     "routes": len(results),
-    "native_0x162_frames_in_hda_active": len(frames) // 3,
+    "native_0x162_frames_in_hda_active": len(frames) // len(SLOTS),
     "slots": slots,
     "raw_candidate_diagnostic": {
       "matched_native_precision": finite_or_none(fdiv(candidate["matched_native"], candidate["predicted"])),
@@ -635,14 +644,14 @@ def dataset_summary(name: str, results: list[RouteResult], side_output_enabled: 
 
 def report(name: str, results: list[RouteResult], side_output_enabled: bool, verbose: bool):
   frames = [f for result in results for f in result.frames]
-  print(f"\nDATASET {name}: {len(results)} routes, {len(frames) // 3} native 0x162 frames")
+  print(f"\nDATASET {name}: {len(results)} routes, {len(frames) // len(SLOTS)} native 0x162 frames")
   if not side_output_enabled:
     print("  production side output: SUPPRESSED (0 predicted side frames/ghosts); left/right below are shadow metrics")
   for slot in SLOTS:
     sf = [f for f in frames if f.slot == slot]
     c = confusion(sf)
     identity = confusion(sf, 5.0)
-    label = f"{slot} (suppressed shadow)" if slot in ("left", "right") and not side_output_enabled else slot
+    label = f"{slot} (suppressed shadow)" if slot != "primary" and not side_output_enabled else slot
     message = f"  {label}: presence P/R={fdiv(c['tp'], c['tp'] + c['fp']):.4f}/{fdiv(c['tp'], c['tp'] + c['fn']):.4f} "
     message += f"(tp/fp/fn={c['tp']}/{c['fp']}/{c['fn']}), identity<=5m P/R="
     message += f"{fdiv(identity['tp'], identity['tp'] + identity['fp']):.4f}/"
@@ -691,6 +700,8 @@ def report(name: str, results: list[RouteResult], side_output_enabled: bool, ver
     report_false_side_episodes(frames, "left")
     report_false_side_episodes(frames, "right")
   if verbose:
+    report_false_side_episodes(frames, "left_rear")
+    report_false_side_episodes(frames, "right_rear")
     report_side_identity_mismatches(frames, "left")
     report_side_identity_mismatches(frames, "right")
   if verbose:

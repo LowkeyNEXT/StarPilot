@@ -152,6 +152,50 @@ def test_side_slot_does_not_acquire_from_ambiguous_candidates():
   assert acquire(tracker, points, preferred=-1, side={2, 3}).left is None
 
 
+@pytest.mark.parametrize(("side", "adjacent_lateral"), [("left", 2.6), ("right", -2.8)])
+def test_primary_moves_atomically_to_adjacent_slot(side, adjacent_lateral):
+  tracker = Ev9DashObjectTracker()
+  assert acquire(tracker, [point(track_id=7)], preferred=7, display=set()).primary is not None
+
+  moved = point(track_id=7, lateral=adjacent_lateral, relative_speed=0.0)
+  slots = update(tracker, [moved], preferred=-1, side={7}, retention={7})
+  adjacent = getattr(slots, side)
+  assert slots.primary is None
+  assert adjacent is not None and adjacent.track_id == 7
+
+
+def test_primary_handoff_wins_an_ambiguous_adjacent_scene_without_duplication():
+  tracker = Ev9DashObjectTracker()
+  primary = point(track_id=7, distance=30.0, relative_speed=0.0)
+  adjacent = point(track_id=8, distance=40.0, lateral=3.2, relative_speed=0.0)
+  slots = acquire(tracker, [primary, adjacent], preferred=7, side={8}, retention={8})
+  assert slots.primary is not None and slots.primary.track_id == 7
+  assert slots.left is not None and slots.left.track_id == 8
+
+  crossing = point(track_id=7, distance=29.0, lateral=2.6, relative_speed=0.0)
+  slots = update(tracker, [crossing, adjacent], preferred=-1, side={7, 8}, retention={7, 8})
+  assert slots.primary is None
+  assert slots.left is not None and slots.left.track_id == 7
+  assert slots.left_rear is None
+
+
+@pytest.mark.parametrize(("side", "side_lateral"), [("left", 3.0), ("right", -3.0)])
+def test_adjacent_track_remains_visible_until_atomic_primary_promotion(side, side_lateral):
+  tracker = Ev9DashObjectTracker()
+  adjacent = point(track_id=7, lateral=side_lateral, relative_speed=0.0)
+  slots = acquire(tracker, [adjacent], preferred=-1, side={7}, retention={7})
+  assert getattr(slots, side) is not None
+
+  entering = point(track_id=7, lateral=1.0 if side == "left" else -1.0, relative_speed=0.0)
+  for _ in range(tracker.ACQUISITION_SAMPLES - 1):
+    slots = update(tracker, [entering], preferred=7, side=set(), retention={7})
+    assert slots.primary is None
+    assert getattr(slots, side) is not None
+  slots = update(tracker, [entering], preferred=7, side=set(), retention={7})
+  assert slots.primary is not None and slots.primary.track_id == 7
+  assert getattr(slots, side) is None
+
+
 def test_right_slot_requires_deep_entry_then_retains_toward_lane_edge():
   tracker = Ev9DashObjectTracker()
   entering = point(track_id=4, distance=40.0, lateral=-3.2, relative_speed=0.0)
@@ -200,10 +244,12 @@ def test_validate_output_rejects_stale_primary_and_stationary_side():
   slots = ClusterObjectSlots(
     primary=ClusterObject(1, 20.0, 0.0, 0.0),
     left=ClusterObject(2, 15.0, 3.0, -15.0, True, -15.0),
+    left_rear=ClusterObject(4, 10.0, 3.0, -15.0, True, -15.0),
   )
   validated = validate_slots_for_output(slots, lead(track_id=3), 15.0, False)
   assert validated.primary is None
   assert validated.left is None
+  assert validated.left_rear is None
 
 
 def test_side_objects_fail_closed_unless_explicitly_enabled():
@@ -211,12 +257,16 @@ def test_side_objects_fail_closed_unless_explicitly_enabled():
     primary=ClusterObject(1, 20.0, 0.0, 0.0),
     left=ClusterObject(2, 15.0, 3.0, 0.0),
     right=ClusterObject(3, 15.0, -3.0, 0.0),
+    left_rear=ClusterObject(4, 10.0, 3.0, 0.0),
+    right_rear=ClusterObject(5, 10.0, -3.0, 0.0),
   )
   assert filter_side_objects(slots, True) == slots
   filtered = filter_side_objects(slots, False)
   assert filtered.primary == slots.primary
   assert filtered.left is None
   assert filtered.right is None
+  assert filtered.left_rear is None
+  assert filtered.right_rear is None
 
 
 def test_radar_backed_object_rejects_vision_only_and_invalid_values():
@@ -293,6 +343,9 @@ def test_canfd_speed_limit_state_reuses_camera_decode_and_preserves_unlimited():
   cp_cam = SimpleNamespace(vl={"FR_CMR_02_100ms": {"ISLW_SpdCluMainDis": 35, "ISLA_SpdWrn": 0}})
 
   assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (60, True)
+  CP.flags = 0
+  assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (35, False)
+  CP.flags = int(HyundaiFlags.CANFD_LKA_STEERING)
   camera_values["ISLW_SpdCluMainDis"] = 253
   camera_values["ISLA_SpdWrn"] = 0
   assert get_canfd_speed_limit_state(CP, FPCP, cp, cp_cam) == (253, False)
@@ -464,6 +517,8 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
     primary=ClusterObject(1, 30.0, 0.2, -1.0),
     left=ClusterObject(2, 40.0, 3.4, 0.0),
     right=ClusterObject(3, 35.0, -3.1, 0.0),
+    left_rear=ClusterObject(4, 18.0, 3.0, 0.0),
+    right_rear=ClusterObject(5, 22.0, -3.0, 0.0),
   ), speed_limit_raw=60, speed_limit_warning=True)
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
   hud = SimpleNamespace(leadDistanceBars=3)
@@ -485,8 +540,11 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   assert status["LEAD_RIGHT"] == 1
   assert status["LEAD_RIGHT_DISTANCE"] == pytest.approx(34.8)
   assert status["LEAD_RIGHT_LATERAL"] == pytest.approx(3.0)
-  assert status["LEAD_LEFT_REAR_STATUS"] == 0
-  assert status["LEAD_RIGHT_REAR_STATUS"] == 0
+  assert status["LEAD_LEFT_REAR_STATUS"] == 1
+  assert status["LEAD_LEFT_REAR_DISTANCE"] == pytest.approx(17.8)
+  assert status["LEAD_RIGHT_REAR_STATUS"] == 1
+  assert status["LEAD_RIGHT_REAR_DISTANCE"] == pytest.approx(21.8)
+  assert status["COUNTRY"] == 7
   assert status["SPEEDLIMIT"] == 60
   assert status["SPEEDLIMIT_FLASH"] == 4
   assert status["SPEEDLIMIT_WEATHER"] == 0
@@ -498,6 +556,30 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   assert parser.vl["CCNC_0x161"]["TARGET_DISTANCE"] == pytest.approx(42.0)
   assert parser.vl["CCNC_0x162"]["SPEEDLIMIT"] == 253
   assert parser.vl["CCNC_0x162"]["SPEEDLIMIT_FLASH"] == 2
+
+
+def test_ccnc_side_kill_switch_suppresses_all_radar_side_slots():
+  CP = CarParams.new_message()
+  CP.carFingerprint = CAR.KIA_EV9
+  CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CCNC | HyundaiFlags.CANFD_LKA_STEERING)
+  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+  can_bus = CanBus(CP)
+  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x162", 0)], can_bus.ECAN)
+  scene = Ev9DashScene(
+    objects=ClusterObjectSlots(
+      left=ClusterObject(2, 20.0, 3.0, 0.0),
+      left_rear=ClusterObject(3, 10.0, 3.0, 0.0),
+    ),
+    side_objects_enabled=False,
+  )
+  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+    packer, CP, can_bus, 1, enabled=True,
+    hud=SimpleNamespace(leadDistanceBars=3), out=SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0),
+    dash_scene=scene,
+  ))])
+  status = parser.vl["CCNC_0x162"]
+  assert status["LEAD_LEFT"] == 0
+  assert status["LEAD_LEFT_REAR_STATUS"] == 0
 
 
 def test_ccnc_status_hides_objects_outside_active_hda():

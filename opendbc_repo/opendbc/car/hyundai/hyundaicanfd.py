@@ -995,7 +995,10 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
   primary = getattr(objects, "primary", None)
   left = getattr(objects, "left", None)
   right = getattr(objects, "right", None)
+  left_rear = getattr(objects, "left_rear", None)
+  right_rear = getattr(objects, "right_rear", None)
   objects_active = bool(enabled and objects is not None)
+  side_objects_active = bool(objects_active and getattr(dash_scene, "side_objects_enabled", True))
   stop_target_distance = getattr(dash_scene, "stop_target_distance", None)
   speed_limit_raw = int(getattr(dash_scene, "speed_limit_raw", 0))
   speed_limit_raw = speed_limit_raw if 1 <= speed_limit_raw <= 253 else 0
@@ -1009,6 +1012,9 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
 
   def object_distance(obj) -> float:
     return float(np.clip(float(obj.distance) - 0.2, 0.1, 204.7))
+
+  def rear_object_distance(obj) -> float:
+    return float(np.clip(float(obj.distance) - 0.2, 0.1, 25.5))
 
   values_161 = {
     "FCA_ICON": 1,       # orange: FCA unavailable
@@ -1052,8 +1058,10 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
     "FAULT_HBA", "FAULT_ESS",
   )}
   values_162.update({
+    "COUNTRY": 7 if speed_limit_raw else 0,
     "SPEEDLIMIT": speed_limit_raw,
     "SPEEDLIMIT_FLASH": 4 if speed_limit_warning and speed_limit_raw else 2 if speed_limit_raw else 0,
+    "SIGNS": 0,
     "SPEEDLIMIT_WEATHER": 0,
     "VIBRATE": 0,
     "LEAD": 2 if objects_active and primary is not None else 0,
@@ -1064,20 +1072,21 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
     "LEAD_ALT": 0,
     "LEAD_ALT_DISTANCE": 0.0,
     "LEAD_ALT_LATERAL": 0.0,
-    "LEAD_LEFT": 1 if objects_active and left is not None else 0,
-    "LEAD_LEFT_DISTANCE": object_distance(left) if objects_active and left is not None else 0.0,
-    "LEAD_LEFT_LATERAL": 3.0 if objects_active and left is not None else 0.0,
-    "LEAD_RIGHT": 1 if objects_active and right is not None else 0,
-    "LEAD_RIGHT_DISTANCE": object_distance(right) if objects_active and right is not None else 0.0,
-    "LEAD_RIGHT_LATERAL": 3.0 if objects_active and right is not None else 0.0,
-    # Rear CCNC slots are not the native mirror-warning decision and carry no
-    # trustworthy retained range, so leave them neutral.
-    "LEAD_LEFT_REAR_STATUS": 0,
-    "LEAD_LEFT_REAR_DISTANCE": 0.0,
-    "LEAD_LEFT_REAR_LATERAL": 0.0,
-    "LEAD_RIGHT_REAR_STATUS": 0,
-    "LEAD_RIGHT_REAR_DISTANCE": 0.0,
-    "LEAD_RIGHT_REAR_LATERAL": 0.0,
+    "LEAD_LEFT": 1 if side_objects_active and left is not None else 0,
+    "LEAD_LEFT_DISTANCE": object_distance(left) if side_objects_active and left is not None else 0.0,
+    "LEAD_LEFT_LATERAL": 3.0 if side_objects_active and left is not None else 0.0,
+    "LEAD_RIGHT": 1 if side_objects_active and right is not None else 0,
+    "LEAD_RIGHT_DISTANCE": object_distance(right) if side_objects_active and right is not None else 0.0,
+    "LEAD_RIGHT_LATERAL": 3.0 if side_objects_active and right is not None else 0.0,
+    # The rear fields can encode a second qualified near-side track. Most stock
+    # fixed 25 m markers have no trustworthy retained source, so do not derive
+    # them from the independently reconstructed mirror-warning decision.
+    "LEAD_LEFT_REAR_STATUS": 1 if side_objects_active and left_rear is not None else 0,
+    "LEAD_LEFT_REAR_DISTANCE": rear_object_distance(left_rear) if side_objects_active and left_rear is not None else 0.0,
+    "LEAD_LEFT_REAR_LATERAL": 3.0 if side_objects_active and left_rear is not None else 0.0,
+    "LEAD_RIGHT_REAR_STATUS": 1 if side_objects_active and right_rear is not None else 0,
+    "LEAD_RIGHT_REAR_DISTANCE": rear_object_distance(right_rear) if side_objects_active and right_rear is not None else 0.0,
+    "LEAD_RIGHT_REAR_LATERAL": 3.0 if side_objects_active and right_rear is not None else 0.0,
   })
   return [
     _create_ccnc_adrv_message_with_signals(packer, CP, CAN, 0x161, counter, "CCNC_0x161", values_161),

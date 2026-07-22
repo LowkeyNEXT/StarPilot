@@ -501,6 +501,7 @@ class Car:
       lane_change_direction=lane_change_direction,
       speed_limit_raw=int(getattr(self.CI.CS, "dashboard_speed_limit_raw", 0)),
       speed_limit_warning=bool(getattr(self.CI.CS, "dashboard_speed_limit_warning", False)),
+      side_objects_enabled=self.ev9_dash_side_objects_enabled,
     )
     self.CI.CS.ev9_dash_scene = self.ev9_dash_scene
 

@@ -54,6 +54,8 @@ class ClusterObjectSlots:
   primary: ClusterObject | None = None
   left: ClusterObject | None = None
   right: ClusterObject | None = None
+  left_rear: ClusterObject | None = None
+  right_rear: ClusterObject | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class Ev9DashScene:
   lane_change_direction: str | None = None
   speed_limit_raw: int = 0
   speed_limit_warning: bool = False
+  side_objects_enabled: bool = True
 
 
 def filter_side_objects(slots: ClusterObjectSlots, side_objects_enabled: bool) -> ClusterObjectSlots:
@@ -215,11 +218,16 @@ class Ev9DashObjectTracker:
   PRIMARY_MODEL_PROB_FAR = 0.90
   PRIMARY_MODEL_PROB_FAR_DISTANCE = 100.0
   SIDE_INNER_WIDTH = 1.8
+  SIDE_RETENTION_INNER_WIDTH = 0.25
   MAX_DISTANCE = 180.0
 
   def __init__(self) -> None:
     self.tracks: dict[int, _TrackedObject] = {}
-    self.slot_track_ids: dict[str, int] = {"primary": -1, "left": -1, "right": -1}
+    self.slot_track_ids: dict[str, int] = {
+      "primary": -1,
+      "left": -1,
+      "right": -1,
+    }
 
   def clear(self) -> ClusterObjectSlots:
     self.tracks.clear()
@@ -353,36 +361,44 @@ class Ev9DashObjectTracker:
       track.right_entry_hits = track.right_entry_hits + 1 if right_entry else 0
 
     confirmed = [track for track in self.tracks.values() if track.confirmed]
-    left = sorted((track for track in confirmed if track.side_qualified and
-                   self.SIDE_INNER_WIDTH < track.lateral < 4.0 and track.distance < 80.0 and
-                   self._side_motion_valid(track, v_ego, standstill)),
-                  key=lambda track: track.distance)
-
+    previous_primary_track_id = self.slot_track_ids["primary"]
+    current_left_track_id = self.slot_track_ids["left"]
     current_right_track_id = self.slot_track_ids["right"]
+
+    def left_candidate(track: _TrackedObject) -> bool:
+      entered = track.side_qualified and self.SIDE_INNER_WIDTH < track.lateral < 4.0 and \
+        track.distance < 80.0 and self._side_motion_valid(track, v_ego, standstill)
+      promoting = track.track_id == current_left_track_id == preferred_primary_track_id and \
+        track.side_retention_qualified and \
+        self.SIDE_RETENTION_INNER_WIDTH < track.raw_lateral < 4.5 and track.raw_distance < 82.0 and \
+        self._side_motion_valid(track, v_ego, standstill)
+      handoff = track.track_id == previous_primary_track_id and track.side_retention_qualified and \
+        self.SIDE_INNER_WIDTH < track.raw_lateral < 4.5 and track.raw_distance < 82.0 and \
+        self._side_motion_valid(track, v_ego, standstill)
+      return entered or promoting or handoff
+
+    left = sorted((track for track in confirmed if left_candidate(track)), key=lambda track: track.distance)
 
     def right_candidate(track: _TrackedObject) -> bool:
       retained = track.track_id == current_right_track_id and track.side_retention_qualified and \
         -4.5 < track.raw_lateral < -1.5 and track.raw_distance < 62.0 and \
         self._side_motion_valid(track, v_ego, standstill)
+      promoting = track.track_id == current_right_track_id == preferred_primary_track_id and \
+        track.side_retention_qualified and \
+        -4.5 < track.raw_lateral < -self.SIDE_RETENTION_INNER_WIDTH and track.raw_distance < 62.0 and \
+        self._side_motion_valid(track, v_ego, standstill)
+      handoff = track.track_id == previous_primary_track_id and track.side_retention_qualified and \
+        -4.5 < track.raw_lateral < -2.2 and track.raw_distance < 62.0 and \
+        self._side_motion_valid(track, v_ego, standstill)
       entered = track.right_entry_hits >= self.ACQUISITION_SAMPLES and \
         self._side_motion_valid(track, v_ego, standstill)
-      return retained or entered
+      return retained or promoting or handoff or entered
 
     right = sorted((track for track in confirmed if right_candidate(track)), key=lambda track: track.distance)
 
-    def choose(slot: str, candidates: list[_TrackedObject]) -> _TrackedObject | None:
-      chosen = next((track for track in candidates if track.track_id == self.slot_track_ids[slot]), None)
-      # Start a side slot only from an unambiguous radar scene. Once acquired,
-      # retain the same track through short-lived additional candidates so the
-      # rendered car does not jump between adjacent vehicles.
-      if chosen is None and len(candidates) == 1:
-        chosen = candidates[0]
-      self.slot_track_ids[slot] = chosen.track_id if chosen is not None else -1
-      return chosen
-
     # The primary white box must remain the radar-backed fused lead. Raw
     # nearest-track selection created convincing but false center objects.
-    current_primary_track_id = self.slot_track_ids["primary"]
+    current_primary_track_id = previous_primary_track_id
     primary = next((track for track in confirmed if track.track_id == preferred_primary_track_id and
                     track.primary_confident), None) \
       if preferred_primary_track_id >= 0 else None
@@ -396,8 +412,24 @@ class Ev9DashObjectTracker:
       left = [track for track in left if track.track_id != primary.track_id]
       right = [track for track in right if track.track_id != primary.track_id]
 
-    left_object = choose("left", left)
-    right_object = choose("right", right)
+    def choose_side(slot: str, candidates: list[_TrackedObject]) -> _TrackedObject | None:
+      chosen = next((track for track in candidates if track.track_id == self.slot_track_ids[slot]), None)
+      # Stock moves one physical identity atomically between the center and
+      # adjacent slot. Prioritize that handoff even when another side target is
+      # present, otherwise a lane-crossing car can disappear for one scan.
+      handoff = next((track for track in candidates if track.track_id == previous_primary_track_id), None)
+      if primary is None and handoff is not None:
+        chosen = handoff
+      # Outside a known center-to-side handoff, acquire only an unambiguous
+      # scene. The preserved routes do not expose a trustworthy retained source
+      # for the separate fixed rear marker.
+      if chosen is None and len(candidates) == 1:
+        chosen = candidates[0]
+      self.slot_track_ids[slot] = chosen.track_id if chosen is not None else -1
+      return chosen
+
+    left_object = choose_side("left", left)
+    right_object = choose_side("right", right)
     return ClusterObjectSlots(
       primary=self._as_cluster_object(primary) if primary is not None else None,
       left=self._as_cluster_object(left_object) if left_object is not None else None,
@@ -435,4 +467,10 @@ def validate_slots_for_output(slots: ClusterObjectSlots, lead_one: Any, v_ego: f
     relative_speed = obj.raw_relative_speed if obj.raw_relative_speed is not None else obj.relative_speed
     return obj if abs(float(v_ego) + relative_speed) >= SIDE_MOVING_OBJECT_MIN_SPEED else None
 
-  return ClusterObjectSlots(primary, valid_side(slots.left), valid_side(slots.right))
+  return ClusterObjectSlots(
+    primary,
+    valid_side(slots.left),
+    valid_side(slots.right),
+    valid_side(slots.left_rear),
+    valid_side(slots.right_rear),
+  )
