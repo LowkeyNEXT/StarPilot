@@ -6,6 +6,7 @@ from opendbc.can.dbc import DBC as DBCReader
 from opendbc.can.parser import get_raw_value
 from opendbc.car import Bus, structs
 from opendbc.car.interfaces import RadarInterfaceBase
+from opendbc.car.hyundai.ev9_dash import Ev9DashTrackCandidates
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HYUNDAI_MANDO_FRONT_RADAR_DBC, HYUNDAI_MRREVO14F_RADAR_DBC, \
                                        HYUNDAI_MRR30_RADAR_DBC, HYUNDAI_MRR35_RADAR_DBC
 from openpilot.common.swaglog import cloudlog
@@ -19,6 +20,27 @@ MRR30_RADAR_START_ADDR = 0x210
 MRR30_RADAR_MSG_COUNT = 16
 MRR35_RADAR_START_ADDR = 0x3A5
 MRR35_RADAR_MSG_COUNT = 32
+EV9_DASH_DISPLAY_DISCRIMINATOR_SIGNAL = "NEW_SIGNAL_7"
+EV9_DASH_DISPLAY_DISCRIMINATOR_MIN = 200.0
+EV9_DASH_SIDE_DISCRIMINATOR_MIN = 280.0
+
+
+def ev9_dash_display_candidate(values) -> bool:
+  """Route-correlated CCNC object candidate; this field's physical meaning is unknown."""
+  return float(values.get(EV9_DASH_DISPLAY_DISCRIMINATOR_SIGNAL, 0.0)) > EV9_DASH_DISPLAY_DISCRIMINATOR_MIN
+
+
+def ev9_dash_side_candidate(values) -> bool:
+  """Stricter lifecycle observed for CCNC left/right object slots."""
+  return float(values.get(EV9_DASH_DISPLAY_DISCRIMINATOR_SIGNAL, 0.0)) > EV9_DASH_SIDE_DISCRIMINATOR_MIN and \
+         int(values.get("NEW_SIGNAL_3", 0)) == 2 and \
+         int(values.get("NEW_SIGNAL_12", 0)) == 10 and \
+         int(values.get("NEW_SIGNAL_15", 0)) == 2 and \
+         int(values.get("NEW_SIGNAL_17", 0)) == 1
+
+
+def ev9_dash_side_retention_candidate(values) -> bool:
+  return float(values.get(EV9_DASH_DISPLAY_DISCRIMINATOR_SIGNAL, 0.0)) > EV9_DASH_SIDE_DISCRIMINATOR_MIN
 
 
 @dataclass(frozen=True)
@@ -102,6 +124,7 @@ class RadarInterface(RadarInterfaceBase):
     self.ioniq_6_radar_probe = CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and CP.openpilotLongitudinalControl and self.radar_off_can
     self.ioniq_6_radar_probe_logged = False
     self.ioniq_6_radar_probe_updates = 0
+    self.ev9_dash_track_candidates = Ev9DashTrackCandidates()
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
     # Precompute (addr, "RADAR_TRACK_xxx") pairs once. _update runs on the
@@ -130,6 +153,7 @@ class RadarInterface(RadarInterfaceBase):
         self.updated_messages.clear()
 
     if self.radar_off_can or (self.rcp is None):
+      self.ev9_dash_track_candidates = Ev9DashTrackCandidates()
       return super().update(None)
 
     vls = self.rcp.update(can_strings)
@@ -198,6 +222,9 @@ class RadarInterface(RadarInterfaceBase):
 
     radar_type = self.radar_config.radar_type
     vl = self.rcp.vl
+    ev9_display_track_ids: set[int] = set()
+    ev9_side_track_ids: set[int] = set()
+    ev9_side_retention_track_ids: set[int] = set()
 
     for addr, track_name in self.track_addrs:
       msg = vl[track_name]
@@ -261,6 +288,13 @@ class RadarInterface(RadarInterfaceBase):
           pt.vRel = msg["REL_SPEED"]
           pt.aRel = msg["REL_ACCEL"]
           pt.yvRel = float("nan")
+          if self.CP.carFingerprint == CAR.KIA_EV9 and addr in updated_messages:
+            if ev9_dash_display_candidate(msg):
+              ev9_display_track_ids.add(pt.trackId)
+            if ev9_dash_side_candidate(msg):
+              ev9_side_track_ids.add(pt.trackId)
+            if ev9_dash_side_retention_candidate(msg):
+              ev9_side_retention_track_ids.add(pt.trackId)
         elif addr in self.pts:
           del self.pts[addr]
         continue
@@ -282,6 +316,13 @@ class RadarInterface(RadarInterfaceBase):
 
       else:
         del self.pts[addr]
+
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      self.ev9_dash_track_candidates = Ev9DashTrackCandidates(
+        frozenset(ev9_display_track_ids),
+        frozenset(ev9_side_track_ids),
+        frozenset(ev9_side_retention_track_ids),
+      ) if self.rcp.can_valid else Ev9DashTrackCandidates()
 
     ret.points = list(self.pts.values())
     return ret

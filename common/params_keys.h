@@ -79,6 +79,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IsTakingSnapshot", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsTestedBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"JoystickDebugMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
+    {"KiaEv9ClusterLaneChangeAnimationEnabled", {PERSISTENT, BOOL, "0"}},
+    {"KiaEv9ClusterSideObjectsEnabled", {PERSISTENT, BOOL, "0"}},
     {"LanguageSetting", {PERSISTENT, STRING, "main_en"}},
     {"LastAthenaPingTime", {CLEAR_ON_MANAGER_START, INT}},
     {"LastGPSPosition", {PERSISTENT, STRING}},

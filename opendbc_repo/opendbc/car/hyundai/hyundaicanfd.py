@@ -1,9 +1,13 @@
 import copy
+import crcmod
 import numpy as np
 from opendbc.car import CanBusBase, CanData
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import HyundaiFlags, CAR
+
+
+hyundai_crc8 = crcmod.mkCrcFun(0x11D, initCrc=0xFD, rev=False, xorOut=0xDF)
 
 
 def _set_value(msg: bytearray, sig, ival: int) -> None:
@@ -495,6 +499,8 @@ IONIQ_6_CLUSTER_LANE_CHANGE_3C1 = {
   },
 }
 
+EV9_CLUSTER_LANE_CHANGE_CHECKSUM_XOR = 0x6F
+
 # Captured from a stock Ioniq 6 route that shows the cluster lane-change animation
 # on ECAN after the trigger/hold 0x3C1 states above.
 IONIQ_6_CLUSTER_LANE_CHANGE_3B5 = {
@@ -664,6 +670,30 @@ def create_ioniq_6_cluster_lane_change_messages(CAN, frame, side=None):
   return ret
 
 
+def create_ev9_cluster_lane_change_messages(packer, CAN, stock_values, side=None, phase=None, counter_offset=None):
+  """Synthesize one EV9 0x3C1 semantic state from a fresh OEM baseline."""
+  if not stock_values or side not in ("left", "right") or phase not in ("trigger", "steady", "release") or \
+     not isinstance(counter_offset, int) or not 1 <= counter_offset <= 3:
+    return []
+
+  values = copy.copy(stock_values)
+  base_counter = int(values.get("COUNTER_ALT", -1))
+  if not 0 <= base_counter < 15:
+    return []
+  values.update({
+    "CHECKSUM_MAYBE": 0,
+    "COUNTER_ALT": (base_counter + counter_offset) % 15,
+    "LEFT_BLINKER": int(phase != "release" and side == "left"),
+    "RIGHT_BLINKER": int(phase != "release" and side == "right"),
+  })
+  msg = packer.make_can_msg("BLINKER_STALKS", CAN.ECAN, values)
+  dat = bytearray(msg[1])
+  if phase == "trigger":
+    dat[4] |= 0x10 if side == "left" else 0x40
+  dat[0] = hyundai_crc8(bytes(dat[1:])) ^ EV9_CLUSTER_LANE_CHANGE_CHECKSUM_XOR
+  return [(msg[0], bytes(dat), msg[2])]
+
+
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control,
                        main_mode_acc=1, jerk_lower=None, jerk_upper=None, direct_accel=False,
                        lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None):
@@ -799,7 +829,8 @@ def create_ccnc_adrv_messages(packer, CP, CAN, frame, enabled, main_cruise_enabl
                               hba_icon=0,
                               left_escalated=False, right_escalated=False,
                               left_warning_lamp=False, right_warning_lamp=False,
-                              left_sound_active=False, right_sound_active=False):
+                              left_sound_active=False, right_sound_active=False,
+                              dash_scene=None):
   ret = [
     _create_ccnc_adrv_message(CP.carFingerprint, address, CAN.ECAN, frame // period)
     for address, period in _CCNC_ADRV_PERIODS[CP.carFingerprint].items() if frame % period == 0
@@ -807,7 +838,7 @@ def create_ccnc_adrv_messages(packer, CP, CAN, frame, enabled, main_cruise_enabl
   if frame % 5 == 0:
     ret.extend(create_ccnc_angle_long_status_messages(
       packer, CP, CAN, frame // 5, enabled, main_cruise_enabled, hud, out, is_metric,
-      steering_available, steering_active, hba_icon,
+      steering_available, steering_active, hba_icon, dash_scene,
     ))
     ret.extend(create_ccnc_blindspot_status_messages(
       packer, CP, CAN, frame // 5, left_blindspot, right_blindspot, left_escalated, right_escalated,
@@ -955,10 +986,27 @@ def create_ccnc_acc_control(packer, CAN, enabled: bool, accel: float,
 def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enabled: bool = False,
                                          main_cruise_enabled: bool = False, hud=None, out=None,
                                          is_metric: bool = True, steering_available: bool = False,
-                                         steering_active: bool = False, hba_icon: int = 0) -> list[CanData]:
+                                         steering_active: bool = False, hba_icon: int = 0,
+                                         dash_scene=None) -> list[CanData]:
   cruise_speed = round(out.vCruiseCluster * (1 if is_metric else CV.KPH_TO_MPH)) if out is not None else 0
   display_speed = (40 if is_metric else 25) if cruise_speed > (145 if is_metric else 90) else max(cruise_speed, 0)
   main_standby = bool(main_cruise_enabled and not enabled)
+  objects = getattr(dash_scene, "objects", None)
+  primary = getattr(objects, "primary", None)
+  left = getattr(objects, "left", None)
+  right = getattr(objects, "right", None)
+  objects_active = bool(enabled and objects is not None)
+  stop_target_distance = getattr(dash_scene, "stop_target_distance", None)
+  if not enabled:
+    target_distance = 204.6
+  elif stop_target_distance is not None:
+    target_distance = float(np.clip(stop_target_distance, 0.1, 204.7))
+  else:
+    target_distance = float(np.clip(1.626 * max(float(getattr(out, "vEgo", 0.0)), 0.0), 0.0, 204.7))
+
+  def object_distance(obj) -> float:
+    return float(np.clip(float(obj.distance) - 0.2, 0.1, 204.7))
+
   values_161 = {
     "FCA_ICON": 1,       # orange: FCA unavailable
     "FCA_ALT_ICON": 0,
@@ -975,19 +1023,56 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
     "LFA_ICON": (2 if steering_active else 1) if steering_available else 0,
     "HBA_ICON": hba_icon if hba_icon in (1, 2) else 0,
     "HDA_ICON": 2 if enabled else 1 if main_standby else 0,
+    "CENTERLINE": 0,
     "TARGET": 3 if enabled else 0,
+    "TARGET_DISTANCE": target_distance,
+    "LANELINE_LEFT": 0,
+    "LANELINE_RIGHT": 0,
+    # Raw zero is represented as physical 15 by the signed/offset DBC signal.
+    "LANELINE_CURVATURE": 15,
+    "LCA_LEFT_ICON": 1 if enabled or main_standby else 0,
+    "LCA_RIGHT_ICON": 1 if enabled or main_standby else 0,
     "SETSPEED": 3 if enabled else 1 if main_standby else 0,
     "SETSPEED_HUD": 2 if enabled else 1 if main_standby else 0,
     "SETSPEED_SPEED": display_speed if enabled or main_standby else 255,
     "DISTANCE": hud.leadDistanceBars if enabled and hud is not None else 0,
     "DISTANCE_SPACING": 3 if enabled or main_standby else 0,
+    "DISTANCE_LEAD": 2 if objects_active and primary is not None else 0,
     "DISTANCE_CAR": 2 if enabled else 1 if main_standby else 0,
+    "BCA_LEFT": 0,
+    "BCA_RIGHT": 0,
+    "LCA_LEFT_ARROW": 0,
+    "LCA_RIGHT_ARROW": 0,
   }
   values_162 = {fault: 0 for fault in (
     "FAULT_FSS", "FAULT_FCA", "FAULT_LSS", "FAULT_SLA", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW",
     "FAULT_HBA", "FAULT_ESS",
   )}
-  values_162["VIBRATE"] = 0
+  values_162.update({
+    "VIBRATE": 0,
+    "LEAD": 2 if objects_active and primary is not None else 0,
+    "LEAD_DISTANCE": object_distance(primary) if objects_active and primary is not None else 0.0,
+    "LEAD_LATERAL": 0.0,
+    # Stock EV9 routes never populated the alternate slot. leadTwo often
+    # represents the same fused object and must not create a duplicate car.
+    "LEAD_ALT": 0,
+    "LEAD_ALT_DISTANCE": 0.0,
+    "LEAD_ALT_LATERAL": 0.0,
+    "LEAD_LEFT": 1 if objects_active and left is not None else 0,
+    "LEAD_LEFT_DISTANCE": object_distance(left) if objects_active and left is not None else 0.0,
+    "LEAD_LEFT_LATERAL": 3.0 if objects_active and left is not None else 0.0,
+    "LEAD_RIGHT": 1 if objects_active and right is not None else 0,
+    "LEAD_RIGHT_DISTANCE": object_distance(right) if objects_active and right is not None else 0.0,
+    "LEAD_RIGHT_LATERAL": 3.0 if objects_active and right is not None else 0.0,
+    # Rear CCNC slots are not the native mirror-warning decision and carry no
+    # trustworthy retained range, so leave them neutral.
+    "LEAD_LEFT_REAR_STATUS": 0,
+    "LEAD_LEFT_REAR_DISTANCE": 0.0,
+    "LEAD_LEFT_REAR_LATERAL": 0.0,
+    "LEAD_RIGHT_REAR_STATUS": 0,
+    "LEAD_RIGHT_REAR_DISTANCE": 0.0,
+    "LEAD_RIGHT_REAR_LATERAL": 0.0,
+  })
   return [
     _create_ccnc_adrv_message_with_signals(packer, CP, CAN, 0x161, counter, "CCNC_0x161", values_161),
     _create_ccnc_adrv_message_with_signals(packer, CP, CAN, 0x162, counter, "CCNC_0x162", values_162),

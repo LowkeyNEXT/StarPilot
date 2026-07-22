@@ -7,6 +7,8 @@ from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
+from opendbc.car.hyundai.carstate import resolve_canfd_native_blindspot_state
+from opendbc.car.hyundai.ev9_dash import Ev9LaneChangeAnimationState, update_lane_change_animation
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
                                         CANFD_RADAR_LIVE_LONGITUDINAL_CAR, kia_ev6_gt_line_longitudinal_tuning
@@ -126,6 +128,15 @@ class BlindspotWarningOutput:
   sound_active: bool = False
 
 
+@dataclass(frozen=True)
+class EV9BlindspotWarningInputs:
+  source_fresh: bool = False
+  left_detected: bool = False
+  right_detected: bool = False
+  left_stalk_active: bool = False
+  right_stalk_active: bool = False
+
+
 @dataclass
 class BlindspotWarningState:
   flash_phase: int = 0
@@ -218,6 +229,29 @@ def update_blindspot_warning(state: BlindspotWarningState, escalated: bool,
   return BlindspotWarningOutput(
     mirror_lamp_active=state.mirror_warning_active and state.flash_phase < BLINDSPOT_WARNING_FLASH_ON_SAMPLES,
     sound_active=sound_active,
+  )
+
+
+def get_ev9_blindspot_warning_inputs(CS, now_nanos: int) -> EV9BlindspotWarningInputs:
+  left_detected, right_detected, source_fresh = resolve_canfd_native_blindspot_state(
+    getattr(CS, "native_left_blindspot_state", 0), getattr(CS, "native_right_blindspot_state", 0),
+    getattr(CS, "native_blindspot_ts", 0), now_nanos,
+  )
+  if not source_fresh:
+    return EV9BlindspotWarningInputs()
+
+  left_stalk_active = bool(getattr(CS, "left_blinker_stalk", False))
+  right_stalk_active = bool(getattr(CS, "right_blinker_stalk", False))
+  if left_stalk_active and right_stalk_active:
+    left_stalk_active = False
+    right_stalk_active = False
+
+  return EV9BlindspotWarningInputs(
+    source_fresh=True,
+    left_detected=left_detected,
+    right_detected=right_detected,
+    left_stalk_active=left_stalk_active,
+    right_stalk_active=right_stalk_active,
   )
 
 
@@ -411,6 +445,11 @@ class CarController(CarControllerBase):
     self.ecu_disable_failed = False
     self._ecu_disable_checked = False
     self._params = Params()
+    # The OEM 0x3C1 sender remains live and interleaves with overlays. Keep the
+    # route-derived dynamic synthesis opt-in until cluster/fault behavior is
+    # validated on-vehicle.
+    self._ev9_lane_change_animation_enabled = CP.carFingerprint == CAR.KIA_EV9 and \
+      self._params.get_bool("KiaEv9ClusterLaneChangeAnimationEnabled")
     if CP.carFingerprint == CAR.KIA_EV9:
       self._ev9_long_tuning = EV9LongitudinalTuningState()
       self._left_blindspot_warning = BlindspotWarningState()
@@ -418,6 +457,7 @@ class CarController(CarControllerBase):
     self.long_active_ecu = self.CP.openpilotLongitudinalControl
     self._ioniq_6_lane_change_ui_side = None
     self._ioniq_6_lane_change_ui_frames = 0
+    self._ev9_lane_change_animation = Ev9LaneChangeAnimationState()
     self._ioniq_6_long_tuning = Ioniq6LongitudinalTuningState()
     self._genesis_g90_long_tuning = GenesisG90LongitudinalTuningState()
     self._dash_lat_disengage_blink_frame = 0
@@ -837,32 +877,53 @@ class CarController(CarControllerBase):
                                                                                    lane_change_ui_side))
         self._ioniq_6_lane_change_ui_frames += 1
 
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      dash_scene = getattr(CS, "ev9_dash_scene", None)
+      lane_change_direction = getattr(dash_scene, "lane_change_direction", None)
+      physical_stalk_active = bool(getattr(CS, "left_blinker_stalk", False) or
+                                   getattr(CS, "right_blinker_stalk", False))
+      lane_change_command = update_lane_change_animation(
+        self._ev9_lane_change_animation,
+        enabled=bool(self._ev9_lane_change_animation_enabled and ccnc_angle_long and drive_gear),
+        direction=lane_change_direction,
+        physical_stalk_active=physical_stalk_active,
+        live_timestamp_nanos=getattr(CS, "stock_blinker_stalks_ts", 0),
+        now_nanos=now_nanos,
+      )
+      if lane_change_command is not None:
+        can_sends.extend(hyundaicanfd.create_ev9_cluster_lane_change_messages(
+          self.packer, self.CAN, getattr(CS, "stock_blinker_stalks", {}),
+          lane_change_command.side, lane_change_command.phase, lane_change_command.counter_offset,
+        ))
+
     if self.long_active_ecu:
       if lka_steering:
         if ccnc_angle_long:
-          left_escalated = CS.left_blindspot_from_radar and CC.leftBlinker and not CC.rightBlinker
-          right_escalated = CS.right_blindspot_from_radar and CC.rightBlinker and not CC.leftBlinker
+          blindspot_inputs = get_ev9_blindspot_warning_inputs(CS, now_nanos)
+          left_escalated = blindspot_inputs.left_detected and blindspot_inputs.left_stalk_active
+          right_escalated = blindspot_inputs.right_detected and blindspot_inputs.right_stalk_active
           left_warning = BlindspotWarningOutput()
           right_warning = BlindspotWarningOutput()
           if self.frame % 5 == 0:
             left_warning = update_blindspot_warning(
-              self._left_blindspot_warning, left_escalated, CC.leftBlinker,
+              self._left_blindspot_warning, left_escalated, blindspot_inputs.left_stalk_active,
             )
             right_warning = update_blindspot_warning(
-              self._right_blindspot_warning, right_escalated, CC.rightBlinker,
+              self._right_blindspot_warning, right_escalated, blindspot_inputs.right_stalk_active,
             )
           steering_available = CC.latActive or CC.enabled
           steering_active = direct_steering_active and apply_steer_req and not CS.out.steeringPressed
           adrv_messages = hyundaicanfd.create_ccnc_adrv_messages(
             self.packer, self.CP, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
             CS.out, CS.is_metric, steering_available, steering_active,
-            CS.left_blindspot_from_radar, CS.right_blindspot_from_radar,
+            blindspot_inputs.left_detected, blindspot_inputs.right_detected,
             drive_gear=drive_gear,
             hba_icon=CS.hba_icon,
             left_escalated=left_escalated, right_escalated=right_escalated,
             left_warning_lamp=left_warning.mirror_lamp_active,
             right_warning_lamp=right_warning.mirror_lamp_active,
             left_sound_active=left_warning.sound_active, right_sound_active=right_warning.sound_active,
+            dash_scene=getattr(CS, "ev9_dash_scene", None),
           )
         else:
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame)

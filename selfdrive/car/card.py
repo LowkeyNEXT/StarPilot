@@ -18,6 +18,9 @@ from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallabl
 from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
+from opendbc.car.hyundai.ev9_dash import ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
+                                             Ev9DashTrackCandidates, display_context_valid, filter_side_objects, \
+                                             select_lane_change_direction, select_stop_target, validate_slots_for_output
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -180,6 +183,10 @@ class Car:
     self.mock_carstate = MockCarState()
     self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
     self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
+    self.ev9_dash_tracker = Ev9DashObjectTracker()
+    self.ev9_dash_slots = ClusterObjectSlots()
+    self.ev9_dash_scene = Ev9DashScene()
+    self.ev9_dash_side_objects_enabled = self.params.get_bool("KiaEv9ClusterSideObjectsEnabled")
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.safe_mode = self.params.get_bool("SafeMode")
@@ -209,7 +216,10 @@ class Car:
 
     self.starpilot_card = StarPilotCard(self.CP, self.FPCP)
 
-    self.sm = self.sm.extend(['starpilotOnroadEvents', 'starpilotPlan', 'starpilotSelfdriveState', 'liveCalibration', 'selfdriveState'])
+    extra_services = ['starpilotOnroadEvents', 'starpilotPlan', 'starpilotSelfdriveState', 'liveCalibration', 'selfdriveState']
+    if str(self.CP.carFingerprint) == "KIA_EV9":
+      extra_services.append('modelV2')
+    self.sm = self.sm.extend(extra_services)
     self.pm = self.pm.extend(['starpilotCarState'])
 
   def _inject_favorite_virtual_cruise_events(self, CS: car.CarState) -> None:
@@ -249,6 +259,7 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+    self._update_ev9_dash_tracker(CS, RD)
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -311,6 +322,42 @@ class Car:
     FPCS = self.starpilot_card.update(CS, FPCS, self.sm, self.starpilot_toggles)
 
     return CS, RD, FPCS
+
+  def _update_ev9_dash_tracker(self, CS: car.CarState, RD: structs.RadarDataT | None) -> None:
+    if str(self.CP.carFingerprint) != "KIA_EV9":
+      return
+
+    radar_valid = self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']
+    context_valid = display_context_valid(
+      radar_valid,
+      bool(CS.cruiseState.available),
+      CS.gearShifter == structs.CarState.GearShifter.drive,
+    )
+    if not context_valid:
+      self.ev9_dash_slots = self.ev9_dash_tracker.clear()
+      return
+    if RD is None:
+      return
+    if any(RD.errors.to_dict().values()):
+      self.ev9_dash_slots = self.ev9_dash_tracker.clear()
+      return
+
+    fused_lead = self.sm['radarState'].leadOne
+    preferred_primary_track_id = int(fused_lead.radarTrackId) \
+      if fused_lead.status and fused_lead.radar else -1
+    preferred_primary_model_prob = float(fused_lead.modelProb) \
+      if fused_lead.status and fused_lead.radar else 0.0
+    candidates = getattr(self.RI, "ev9_dash_track_candidates", Ev9DashTrackCandidates())
+    self.ev9_dash_slots = self.ev9_dash_tracker.update(
+      list(RD.points),
+      preferred_primary_track_id,
+      preferred_primary_model_prob,
+      set(candidates.display),
+      set(candidates.side),
+      set(candidates.side_retention),
+      float(CS.vEgo),
+      bool(CS.standstill),
+    )
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None, FPCS: custom.StarPilotCarState):
     """carState and carParams publish loop"""
@@ -381,6 +428,7 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self._update_redneck_cruise(CS, CC)
       self._update_openpilot_lead_state(CC)
+      self._update_ev9_dash_scene(CS, CC)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, self.starpilot_toggles)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
@@ -405,6 +453,54 @@ class Car:
     self.CI.CS.openpilot_lead_visible = lead_visible
     self.CI.CS.openpilot_lead_distance = lead_distance
     self.CI.CS.openpilot_lead_rel_speed = lead_rel_speed
+
+  def _update_ev9_dash_scene(self, CS: car.CarState, CC: car.CarControl) -> None:
+    if str(self.CP.carFingerprint) != "KIA_EV9":
+      return
+
+    radar_valid = self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']
+    objects = validate_slots_for_output(
+      self.ev9_dash_slots,
+      self.sm['radarState'].leadOne,
+      float(CS.vEgo),
+      bool(CS.standstill),
+    ) if radar_valid else ClusterObjectSlots()
+    objects = filter_side_objects(objects, self.ev9_dash_side_objects_enabled)
+    starpilot_plan_valid = self.sm.seen['starpilotPlan'] and self.sm.alive['starpilotPlan'] and self.sm.valid['starpilotPlan']
+    longitudinal_plan_valid = self.sm.seen['longitudinalPlan'] and self.sm.alive['longitudinalPlan'] and self.sm.valid['longitudinalPlan']
+    starpilot_plan = self.sm['starpilotPlan']
+    longitudinal_plan = self.sm['longitudinalPlan']
+    stop_target_distance = select_stop_target(
+      bool(CC.longActive),
+      starpilot_plan_valid,
+      longitudinal_plan_valid,
+      bool(starpilot_plan.forcingStop),
+      bool(starpilot_plan.stopSignConfirmed),
+      bool(starpilot_plan.redLight),
+      bool(longitudinal_plan.shouldStop),
+      float(starpilot_plan.forcingStopLength),
+    )
+
+    model_valid = self.sm.seen['modelV2'] and self.sm.alive['modelV2'] and self.sm.valid['modelV2']
+    model_meta = self.sm['modelV2'].meta
+    lane_change_committed = model_meta.laneChangeState in (
+      log.LaneChangeState.laneChangeStarting,
+      log.LaneChangeState.laneChangeFinishing,
+    )
+    direction = {
+      log.LaneChangeDirection.left: "left",
+      log.LaneChangeDirection.right: "right",
+    }.get(model_meta.laneChangeDirection)
+    lane_change_direction = select_lane_change_direction(
+      bool(CC.latActive), model_valid, lane_change_committed, direction,
+    )
+
+    self.ev9_dash_scene = Ev9DashScene(
+      objects=objects,
+      stop_target_distance=stop_target_distance,
+      lane_change_direction=lane_change_direction,
+    )
+    self.CI.CS.ev9_dash_scene = self.ev9_dash_scene
 
   def _update_redneck_cruise(self, CS: car.CarState, CC: car.CarControl) -> None:
     if self.redneck_cruise is None:

@@ -422,6 +422,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
     {0x200, 1,  8, .check_relay = false},  // ADRV_0x200
     {0x345, 1,  8, .check_relay = false},  // ADRV_0x345
     {0x38C, 1, 32, .check_relay = false},  // CCNC support frame
+    {0x3C1, 1,  8, .check_relay = false},  // EV9 cluster lane change overlay
     {0x1DA, 1, 32, .check_relay = false},  // ADRV_0x1da
   };
 

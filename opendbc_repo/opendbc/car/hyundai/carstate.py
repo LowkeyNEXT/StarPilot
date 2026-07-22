@@ -25,6 +25,7 @@ BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: Bu
 
 IONIQ_6_BLINDSPOT_RIGHT_MASK = 0x08
 IONIQ_6_BLINDSPOT_LEFT_MASK = 0x10
+CANFD_NATIVE_BLINDSPOT_STALE_NS = 100_000_000
 CANFD_CAMERA_LEAD_MIN_DISTANCE = 0.1
 ALT_BUS_LDA_BUTTON_BURST_DEBOUNCE_NS = int(1.3e9)
 
@@ -52,6 +53,22 @@ def calculate_canfd_speed_limit(CP, FPCP, cp, cp_cam, speed_factor):
 def decode_ioniq_6_blindspot_radar_state(state: int) -> tuple[bool, bool]:
   state_int = int(state)
   return bool(state_int & IONIQ_6_BLINDSPOT_LEFT_MASK), bool(state_int & IONIQ_6_BLINDSPOT_RIGHT_MASK)
+
+
+def decode_canfd_blinker_stalks(left_stalk: int, right_stalk: int) -> tuple[bool, bool]:
+  return int(left_stalk) == 1, int(right_stalk) == 1
+
+
+def resolve_canfd_native_blindspot_state(left_state: int, right_state: int, timestamp_nanos: int,
+                                          now_nanos: int) -> tuple[bool, bool, bool]:
+  age_nanos = int(now_nanos) - int(timestamp_nanos)
+  fresh = int(timestamp_nanos) > 0 and 0 <= age_nanos <= CANFD_NATIVE_BLINDSPOT_STALE_NS
+  if not fresh:
+    return False, False, False
+
+  # Native 0x1BA state 1 is the steady lamp and state 2 is the escalated warning.
+  # State 0 is neutral and state 3 is not a validated object indication.
+  return int(left_state) in (1, 2), int(right_state) in (1, 2), True
 
 
 def decode_canfd_camera_lead(distance: float, rel_speed: float) -> tuple[bool, float, float]:
@@ -130,6 +147,7 @@ class CarState(CarStateBase):
     self.stock_camera_lead_distance = 0.0
     self.stock_camera_lead_rel_speed = 0.0
     self.stock_camera_lead_ts = 0
+    self.stock_blinker_stalks = {}
     self.stock_blinker_stalks_ts = 0
     self.blindspots_rear_corners = {}
     self.blindspots_front_corner_1 = {}
@@ -137,6 +155,11 @@ class CarState(CarStateBase):
     self.blindspots_front_corner_1_ts = 0
     self.left_blindspot_from_radar = False
     self.right_blindspot_from_radar = False
+    self.left_blinker_stalk = False
+    self.right_blinker_stalk = False
+    self.native_left_blindspot_state = 0
+    self.native_right_blindspot_state = 0
+    self.native_blindspot_ts = 0
     if CP.carFingerprint == CAR.KIA_EV9:
       self.hba_icon = 0
       self.main_cruise_on = False
@@ -477,14 +500,26 @@ class CarState(CarStateBase):
     left_blinker_sig, right_blinker_sig = self.get_canfd_blinker_sig_names(self.CP.carFingerprint, use_alt_lamp)
     ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(50, cp.vl["BLINKERS"][left_blinker_sig],
                                                                       cp.vl["BLINKERS"][right_blinker_sig])
+    self.left_blinker_stalk, self.right_blinker_stalk = decode_canfd_blinker_stalks(
+      cp.vl["BLINKERS"]["LEFT_STALK"], cp.vl["BLINKERS"]["RIGHT_STALK"],
+    )
     self.left_blindspot_from_radar = False
     self.right_blindspot_from_radar = False
-    corner_radar_bsm = self.CP.carFingerprint in CANFD_CORNER_RADAR_BSM_CAR
+    corner_radar_bsm = self.CP.carFingerprint in CANFD_CORNER_RADAR_BSM_CAR and self.CP.carFingerprint != CAR.KIA_EV9
     if corner_radar_bsm:
       self.left_blindspot_from_radar, self.right_blindspot_from_radar = decode_ioniq_6_blindspot_radar_state(
         cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
     if self.CP.enableBsm:
-      if corner_radar_bsm:
+      if self.CP.carFingerprint == CAR.KIA_EV9:
+        self.native_left_blindspot_state = int(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"])
+        self.native_right_blindspot_state = int(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_RtIndSta"])
+        self.native_blindspot_ts = cp.ts_nanos["BLINDSPOTS_REAR_CORNERS"]["CHECKSUM"]
+        now_nanos = max(cp.ts_nanos["WHEEL_SPEEDS"]["CHECKSUM"], self.native_blindspot_ts)
+        ret.leftBlindspot, ret.rightBlindspot, _ = resolve_canfd_native_blindspot_state(
+          self.native_left_blindspot_state, self.native_right_blindspot_state,
+          self.native_blindspot_ts, now_nanos,
+        )
+      elif corner_radar_bsm:
         ret.leftBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"]) or
                              self.left_blindspot_from_radar)
         ret.rightBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_RtIndSta"]) or
@@ -558,6 +593,7 @@ class CarState(CarStateBase):
       hba_icon = int(cp.vl["FR_CMR_01_10ms"]["HBA_IndLmpReq"])
       self.hba_icon = hba_icon if hba_icon in (1, 2) else 0
     if cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"] > 0:
+      self.stock_blinker_stalks = copy.copy(cp.vl["BLINKER_STALKS"])
       self.stock_blinker_stalks_ts = cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"]
 
     ret.buttonEvents = [*self.create_cruise_button_events(self.cruise_buttons[-1], prev_cruise_buttons),
