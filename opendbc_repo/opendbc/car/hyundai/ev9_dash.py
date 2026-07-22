@@ -43,6 +43,64 @@ def select_lane_change_direction(lat_active: bool, model_valid: bool,
 
 
 @dataclass(frozen=True)
+class Ev9LaneOutline:
+  left_visible: bool = False
+  right_visible: bool = False
+  desired_curvature: float = 0.0
+
+
+class Ev9LaneOutlineTracker:
+  """Stabilize model lane visibility and curvature for the display-only CCNC scene."""
+
+  VISIBILITY_ACQUIRE_PROBABILITY = 0.55
+  VISIBILITY_RELEASE_PROBABILITY = 0.45
+  CURVATURE_LIMIT = 0.05
+  CURVATURE_EMA_ALPHA = 0.35
+
+  def __init__(self) -> None:
+    self.outline = Ev9LaneOutline()
+    self._curvature_initialized = False
+
+  def clear(self) -> Ev9LaneOutline:
+    self.outline = Ev9LaneOutline()
+    self._curvature_initialized = False
+    return self.outline
+
+  @classmethod
+  def _visible(cls, probability: float, previous: bool) -> bool:
+    threshold = cls.VISIBILITY_RELEASE_PROBABILITY if previous else cls.VISIBILITY_ACQUIRE_PROBABILITY
+    return probability >= threshold
+
+  def update(self, lat_active: bool, model_valid: bool, model_updated: bool,
+             lane_line_probabilities: list[float], desired_curvature: float) -> Ev9LaneOutline:
+    if not lat_active or not model_valid:
+      return self.clear()
+    if not model_updated:
+      return self.outline
+    if len(lane_line_probabilities) < 3 or not math.isfinite(desired_curvature):
+      return self.clear()
+
+    left_probability = float(lane_line_probabilities[1])
+    right_probability = float(lane_line_probabilities[2])
+    if not math.isfinite(left_probability) or not math.isfinite(right_probability):
+      return self.clear()
+
+    curvature = min(max(float(desired_curvature), -self.CURVATURE_LIMIT), self.CURVATURE_LIMIT)
+    if self._curvature_initialized:
+      curvature = self.CURVATURE_EMA_ALPHA * curvature + \
+                  (1.0 - self.CURVATURE_EMA_ALPHA) * self.outline.desired_curvature
+    else:
+      self._curvature_initialized = True
+
+    self.outline = Ev9LaneOutline(
+      left_visible=self._visible(left_probability, self.outline.left_visible),
+      right_visible=self._visible(right_probability, self.outline.right_visible),
+      desired_curvature=curvature,
+    )
+    return self.outline
+
+
+@dataclass(frozen=True)
 class ClusterObject:
   track_id: int
   distance: float
@@ -118,6 +176,7 @@ def update_ev9_raw_blindspot_gate(state: Ev9RawBlindspotGateState, raw_state: in
 @dataclass(frozen=True)
 class Ev9DashScene:
   objects: ClusterObjectSlots = ClusterObjectSlots()
+  lane_outline: Ev9LaneOutline = Ev9LaneOutline()
   stop_target_distance: float | None = None
   lane_change_direction: str | None = None
   speed_limit_raw: int = 0

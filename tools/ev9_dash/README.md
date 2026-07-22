@@ -10,6 +10,7 @@ without feeding any display-only decision back into planning or control.
 | Center lead car | On while HDA is active | Fused, radar-backed `radarState.leadOne`; three 20 Hz acquisition samples, four-sample dropout/confidence hold, and a 0.35 distance EMA. Vision-only and nearest-raw fallbacks are rejected. |
 | Target/headway line | On while HDA is active | A committed, valid StarPilot stop target overrides the stock EV9 `1.626 * vEgo` headway. Invalid/stale plans fall back to headway. |
 | Speed-limit sign | On | Uses the shared EV6/Hyundai CAN-FD `FR_CMR_02_100ms` path and its existing ECAN/CAM bus selection. Raw values 1–253 pass through, warning maps to normal/red, and valid signs carry stock `COUNTRY=7`; 254/255 fail neutral. |
+| Dynamic lane outlines | On while lateral control is active | Uses `modelV2.laneLineProbs[1:3]` for individual left/right visibility and the model's desired curvature for the shared CCNC curve selector. Visibility uses 0.55/0.45 hysteresis, curvature is bounded to 0.05 1/m and smoothed only on new model frames, and stale/invalid model state fails neutral. Stock positions (15/15) and zoom (1) are preserved. This is model reconstruction, not camera-CAN passthrough. |
 | Mirror/dash BSM warning | On | Fresh native `0x1BA` remains authoritative. When it is stale, retained `0x36A` must coincide with a moving MRR35 track inside the adjacent-lane band; the matching physical `0x413` stalk escalates that detection to the flashing/audible warning. Missing/stale raw or radar input fails neutral. |
 | Left/right scene cars | On while HDA is active | Strict MRR35 lifecycle, motion rejection, unambiguous acquisition, stable track retention, and the same 0.35 distance EMA. A fused track is promoted atomically between center and either adjacent slot so it cannot blink out or duplicate during a lane crossing. `KiaEv9ClusterSideObjectsEnabled=0` remains an emergency kill switch. |
 | Second/rear side slots | Encoded, neutral without truth | Both left/right rear CCNC slots, their 8-bit range, output validation, and the side-object kill switch are implemented. Stock can populate front and rear simultaneously, but the retained buses do not expose a production-safe rear-occupancy decision, so runtime output fails neutral instead of inventing an object. |
@@ -60,6 +61,20 @@ the five differences occurred at asynchronous message transitions. The shared
 camera path selects ECAN for LKA-steering cars such as the EV6/EV9 and CAM for
 the other CAN-FD topology; only the EV9 CCNC encoder consumes the preserved raw
 state, so other platforms keep their existing dashboard-speed behavior.
+
+The 83,980 decoded stock `CCNC_0x161` samples establish the lane-message
+baseline. Every d4-d6 frame kept both lane states neutral, both positions at
+15, curvature at 15, and zoom at 1 even while the camera lane-curvature
+signals changed. A separate stock route-15 configuration rendered white lane
+outlines: across 1,199 samples aligned with `modelV2`, the left outline was
+present in all 1,199 and the right in 1,114. The production visibility
+hysteresis reproduced left presence at 100% precision/recall and right at
+94.71% precision and 99.55% recall, with four output transitions. Because the
+stock curve selector remained 15 throughout all route variants, dynamic
+curvature cannot be claimed as a decoded OEM pass-through; it deliberately
+uses the bounded, smoothed model desired curvature. Route alignment also
+confirmed that model curvature uses the opposite sign from Hyundai steering,
+which the encoder converts before reusing the existing shared CCNC mapping.
 
 The d4-d6 BSM corpus contained 4,821 native left-lamp and 2,238 native right-lamp
 samples. Retained `0x36A` alone measured only 23.8% precision/21.8% recall on

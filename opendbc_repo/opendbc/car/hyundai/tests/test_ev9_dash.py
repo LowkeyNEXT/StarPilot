@@ -8,10 +8,10 @@ from opendbc.car.structs import CarParams
 from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.carstate import get_canfd_speed_limit_state
 from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
-                                             Ev9LaneChangeAnimationState, Ev9RawBlindspotGateState, display_context_valid, \
-                                             filter_side_objects, radar_backed_object, select_lane_change_direction, \
-                                             select_stop_target, update_ev9_raw_blindspot_gate, update_lane_change_animation, \
-                                             validate_slots_for_output
+                                             Ev9LaneChangeAnimationState, Ev9LaneOutline, Ev9LaneOutlineTracker, \
+                                             Ev9RawBlindspotGateState, display_context_valid, filter_side_objects, \
+                                             radar_backed_object, select_lane_change_direction, select_stop_target, \
+                                             update_ev9_raw_blindspot_gate, update_lane_change_animation, validate_slots_for_output
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import ev9_dash_display_candidate, ev9_dash_side_candidate, \
                                                     ev9_dash_side_retention_candidate
@@ -341,6 +341,26 @@ def test_lane_change_direction_requires_active_committed_model_maneuver():
   assert select_lane_change_direction(True, True, True, None) is None
 
 
+def test_lane_outline_tracker_hysteresis_smoothing_and_fail_closed_behavior():
+  tracker = Ev9LaneOutlineTracker()
+  outline = tracker.update(True, True, True, [0.0, 0.6, 0.6, 0.0], 0.02)
+  assert outline.left_visible and outline.right_visible
+  assert outline.desired_curvature == pytest.approx(0.02)
+
+  # The car loop is faster than modeld; repeated control ticks must not apply
+  # the EMA again or update visibility from the same model frame.
+  assert tracker.update(True, True, False, [0.0, 0.0, 0.0, 0.0], -0.05) == outline
+
+  outline = tracker.update(True, True, True, [0.0, 0.44, 0.50, 0.0], -0.1)
+  assert not outline.left_visible
+  assert outline.right_visible
+  assert outline.desired_curvature == pytest.approx(-0.0045)
+
+  assert tracker.update(False, True, True, [0.0, 1.0, 1.0, 0.0], 0.01) == Ev9LaneOutline()
+  assert tracker.update(True, False, True, [0.0, 1.0, 1.0, 0.0], 0.01) == Ev9LaneOutline()
+  assert tracker.update(True, True, True, [], 0.01) == Ev9LaneOutline()
+
+
 @pytest.mark.parametrize("side", ["left", "right"])
 def test_lane_change_animation_uses_route_backed_onset_then_live_phase(side):
   state = Ev9LaneChangeAnimationState()
@@ -593,6 +613,64 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   assert parser.vl["CCNC_0x161"]["TARGET_DISTANCE"] == pytest.approx(42.0)
   assert parser.vl["CCNC_0x162"]["SPEEDLIMIT"] == 253
   assert parser.vl["CCNC_0x162"]["SPEEDLIMIT_FLASH"] == 2
+
+
+@pytest.mark.parametrize(("steering_angle", "expected"), [
+  (-67.5, 13),
+  (-9.0, 0),
+  (-4.5, 31),
+  (0.0, 15),
+  (4.5, 16),
+  (67.5, 30),
+])
+def test_ccnc_lane_curvature_mapping_preserves_existing_ccnc_encoding(steering_angle, expected):
+  assert hyundaicanfd.ccnc_lane_curvature_from_steering_angle(steering_angle) == expected
+
+
+@pytest.mark.parametrize(("desired_curvature", "expected_direction"), [
+  (0.02, "below"),
+  (-0.02, "above"),
+])
+def test_ccnc_status_encodes_model_lane_outline_with_stock_layout(desired_curvature, expected_direction):
+  CP = CarParams.new_message()
+  CP.carFingerprint = CAR.KIA_EV9
+  CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CCNC | HyundaiFlags.CANFD_ANGLE_STEERING |
+                 HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
+  CP.wheelbase = 3.1
+  CP.steerRatio = 16.0
+  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+  can_bus = CanBus(CP)
+  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
+  hud = SimpleNamespace(leadDistanceBars=3, leftLaneDepart=True, rightLaneDepart=False)
+  out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
+  scene = Ev9DashScene(lane_outline=Ev9LaneOutline(True, True, desired_curvature))
+
+  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+    packer, CP, can_bus, 1, enabled=True, main_cruise_enabled=True,
+    hud=hud, out=out, dash_scene=scene,
+  ))])
+  status = parser.vl["CCNC_0x161"]
+  assert status["LANELINE_LEFT"] == 4
+  assert status["LANELINE_RIGHT"] == 2
+  assert status["LANELINE_LEFT_POSITION"] == 15
+  assert status["LANELINE_RIGHT_POSITION"] == 15
+  assert status["LANE_ZOOM"] == 1
+  if expected_direction == "below":
+    assert status["LANELINE_CURVATURE"] < 15
+  else:
+    assert 15 < status["LANELINE_CURVATURE"] < 31
+
+  parser.update([(2, hyundaicanfd.create_ccnc_angle_long_status_messages(
+    packer, CP, can_bus, 2, enabled=False, main_cruise_enabled=True,
+    hud=hud, out=out, dash_scene=scene,
+  ))])
+  status = parser.vl["CCNC_0x161"]
+  assert status["LANELINE_LEFT"] == 0
+  assert status["LANELINE_RIGHT"] == 0
+  assert status["LANELINE_CURVATURE"] == 15
+  assert status["LANELINE_LEFT_POSITION"] == 15
+  assert status["LANELINE_RIGHT_POSITION"] == 15
+  assert status["LANE_ZOOM"] == 1
 
 
 def test_ccnc_side_kill_switch_suppresses_all_radar_side_slots():

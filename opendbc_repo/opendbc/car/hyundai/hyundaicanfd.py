@@ -301,6 +301,13 @@ def create_lfahda_cluster(packer, CAN, enabled, base_values=None, lfa_icon=None)
   return packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)
 
 
+def ccnc_lane_curvature_from_steering_angle(steering_angle_deg: float) -> int:
+  curvature_index = max(-15, min(int(steering_angle_deg / 4.5), 15))
+  if curvature_index >= 0:
+    return 15 + curvature_index
+  return 31 if curvature_index == -1 else 13 - abs(curvature_index + 15)
+
+
 def create_ccnc(packer, CAN, openpilot_longitudinal, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
                 is_metric, out, main_cruise_enabled, lfa_icon):
   for fault in ("FAULT_LSS", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW", "FAULT_ESS"):
@@ -317,14 +324,13 @@ def create_ccnc(packer, CAN, openpilot_longitudinal, enabled, hud, left_blinker,
 
   lane_change_speed_min = 8.9408
   any_blinker = left_blinker or right_blinker
-  curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
   msg_161.update({
     "DAW_ICON": 0,
     "LKA_ICON": 0,
     "LFA_ICON": 2 if lfa_icon else 0,
     "CENTERLINE": 1 if lfa_icon else 0,
-    "LANELINE_CURVATURE": curvature.get(max(-15, min(int(out.steeringAngleDeg / 4.5), 15)), 14) if lfa_icon and not any_blinker else 15,
+    "LANELINE_CURVATURE": ccnc_lane_curvature_from_steering_angle(out.steeringAngleDeg) if lfa_icon and not any_blinker else 15,
     "LANELINE_LEFT": 0 if not lfa_icon else 1 if not hud.leftLaneVisible else 4 if hud.leftLaneDepart else 6 if any_blinker else 2,
     "LANELINE_RIGHT": 0 if not lfa_icon else 1 if not hud.rightLaneVisible else 4 if hud.rightLaneDepart else 6 if any_blinker else 2,
     "LCA_LEFT_ICON": 0 if not lfa_icon or out.vEgo < lane_change_speed_min else 1 if out.leftBlindspot else 2 if any_blinker else 4,
@@ -1003,6 +1009,16 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
   speed_limit_raw = int(getattr(dash_scene, "speed_limit_raw", 0))
   speed_limit_raw = speed_limit_raw if 1 <= speed_limit_raw <= 253 else 0
   speed_limit_warning = bool(getattr(dash_scene, "speed_limit_warning", False))
+  lane_outline = getattr(dash_scene, "lane_outline", None)
+  desired_curvature = float(getattr(lane_outline, "desired_curvature", 0.0))
+  lane_geometry_valid = bool(np.isfinite(desired_curvature) and np.isfinite(CP.wheelbase) and np.isfinite(CP.steerRatio))
+  left_lane_visible = bool(enabled and lane_geometry_valid and getattr(lane_outline, "left_visible", False))
+  right_lane_visible = bool(enabled and lane_geometry_valid and getattr(lane_outline, "right_visible", False))
+  lane_curvature = 15
+  if left_lane_visible or right_lane_visible:
+    # modelV2 curvature is positive right, opposite Hyundai's steering-angle sign.
+    steering_angle_deg = -np.degrees(np.arctan(desired_curvature * CP.wheelbase)) * CP.steerRatio
+    lane_curvature = ccnc_lane_curvature_from_steering_angle(steering_angle_deg)
   if not enabled:
     target_distance = 204.6
   elif stop_target_distance is not None:
@@ -1035,10 +1051,12 @@ def create_ccnc_angle_long_status_messages(packer, CP, CAN, counter: int, enable
     "CENTERLINE": 0,
     "TARGET": 3 if enabled else 0,
     "TARGET_DISTANCE": target_distance,
-    "LANELINE_LEFT": 0,
-    "LANELINE_RIGHT": 0,
-    # Raw zero is represented as physical 15 by the signed/offset DBC signal.
-    "LANELINE_CURVATURE": 15,
+    "LANELINE_LEFT": 4 if left_lane_visible and bool(getattr(hud, "leftLaneDepart", False)) else 2 if left_lane_visible else 0,
+    "LANELINE_LEFT_POSITION": 15,
+    "LANELINE_RIGHT": 4 if right_lane_visible and bool(getattr(hud, "rightLaneDepart", False)) else 2 if right_lane_visible else 0,
+    "LANELINE_RIGHT_POSITION": 15,
+    "LANELINE_CURVATURE": lane_curvature,
+    "LANE_ZOOM": 1,
     "LCA_LEFT_ICON": 1 if enabled or main_standby else 0,
     "LCA_RIGHT_ICON": 1 if enabled or main_standby else 0,
     "SETSPEED": 3 if enabled else 1 if main_standby else 0,

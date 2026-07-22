@@ -19,9 +19,9 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.hyundai.ev9_dash import ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
-                                             Ev9DashTrackCandidates, Ev9RawBlindspotGateState, display_context_valid, \
-                                             filter_side_objects, select_lane_change_direction, select_stop_target, \
-                                             update_ev9_raw_blindspot_gate, validate_slots_for_output
+                                             Ev9DashTrackCandidates, Ev9LaneOutlineTracker, Ev9RawBlindspotGateState, \
+                                             display_context_valid, filter_side_objects, select_lane_change_direction, \
+                                             select_stop_target, update_ev9_raw_blindspot_gate, validate_slots_for_output
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -185,6 +185,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
     self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
     self.ev9_dash_tracker = Ev9DashObjectTracker()
+    self.ev9_lane_outline_tracker = Ev9LaneOutlineTracker()
     self.ev9_raw_blindspot_gate = Ev9RawBlindspotGateState()
     self.ev9_dash_slots = ClusterObjectSlots()
     self.ev9_dash_scene = Ev9DashScene()
@@ -523,9 +524,15 @@ class Car:
     lane_change_direction = select_lane_change_direction(
       bool(CC.latActive), model_valid, lane_change_committed, direction,
     )
+    model = self.sm['modelV2']
+    lane_outline = self.ev9_lane_outline_tracker.update(
+      bool(CC.latActive), model_valid, bool(self.sm.updated['modelV2']),
+      list(model.laneLineProbs), float(model.action.desiredCurvature),
+    )
 
     self.ev9_dash_scene = Ev9DashScene(
       objects=objects,
+      lane_outline=lane_outline,
       stop_target_distance=stop_target_distance,
       lane_change_direction=lane_change_direction,
       speed_limit_raw=int(getattr(self.CI.CS, "dashboard_speed_limit_raw", 0)),
