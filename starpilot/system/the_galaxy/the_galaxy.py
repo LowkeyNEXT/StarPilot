@@ -29,7 +29,6 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from cereal import car, custom, log, messaging
 from opendbc.can.parser import CANParser
 from opendbc.car.gm.values import GMFlags
-from opendbc.car.hyundai.values import CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_TELEMETRY_CAR
 from opendbc.car.toyota.carcontroller import LOCK_CMD, UNLOCK_CMD
 from opendbc.car.toyota.values import ToyotaStarPilotFlags
 from openpilot.common.constants import CV
@@ -51,6 +50,7 @@ from openpilot.starpilot.system.vehicle_telemetry import (
   load_vehicle_telemetry_status,
   public_vehicle_telemetry_config,
   save_vehicle_telemetry_config,
+  starpilot_vehicle_telemetry_identity,
   telemetry_response,
 )
 from openpilot.starpilot.system.external_app_pairing import create_pairing, complete_pairing
@@ -724,16 +724,8 @@ def _merge_vehicle_telemetry_config(current, update):
 
 
 def _vehicle_telemetry_identity():
-  try:
-    cp_bytes = params.get("CarParamsPersistent")
-    if not cp_bytes:
-      return False, ""
-    with car.CarParams.from_bytes(cp_bytes) as cp:
-      supported = cp.carFingerprint in (CAN_EV_CLUSTER_DTE_CAR | CANFD_EV_TELEMETRY_CAR)
-      vin = str(cp.carVin or "").strip().upper()
-      return supported, vin if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) else ""
-  except Exception:
-    return False, ""
+  supported, vin = starpilot_vehicle_telemetry_identity(params)
+  return supported, vin if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) else ""
 
 
 def _vehicle_telemetry_connection(config, galaxy_base_url):

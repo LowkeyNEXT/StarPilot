@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from cereal import custom
+from cereal import car, custom
+from opendbc.car.hyundai.values import CAR
 from openpilot.starpilot.system import vehicle_telemetry, vehicle_telemetryd
 from openpilot.system.vehicle_telemetry import daemon as core_vehicle_telemetryd
 
@@ -38,6 +39,39 @@ def test_default_zero_car_state_is_not_valid_telemetry():
 def test_daemon_uses_starpilot_vehicle_state_without_another_car_state_reader():
   assert "starpilotCarState" in vehicle_telemetryd.VEHICLE_TELEMETRY_SERVICES
   assert "carState" not in vehicle_telemetryd.VEHICLE_TELEMETRY_SERVICES
+
+
+def test_telemetry_support_bootstraps_from_persistent_car_params():
+  cp = car.CarParams.new_message()
+  cp.carFingerprint = CAR.KIA_EV9
+  cp.carVin = "5xyaefs52tg015616"
+  supported, vin = vehicle_telemetry.starpilot_vehicle_telemetry_identity(
+    SimpleNamespace(get=lambda key: cp.to_bytes() if key == "CarParamsPersistent" else None),
+  )
+  assert supported
+  assert vin == "5XYAEFS52TG015616"
+
+
+def test_offroad_car_state_does_not_clear_persistent_telemetry_support():
+  cp = car.CarParams.new_message()
+  cp.carFingerprint = CAR.KIA_EV9
+  values = {}
+  params = SimpleNamespace(
+    get=lambda key: cp.to_bytes() if key == "CarParamsPersistent" else None,
+    put_bool=lambda key, value: values.__setitem__(key, value),
+  )
+  assert vehicle_telemetryd._set_vehicle_telemetry_supported(params, telemetry_available=False)
+  assert values["VehicleTelemetrySupported"]
+
+
+def test_telemetry_support_rejects_non_ev_platform():
+  cp = car.CarParams.new_message()
+  cp.carFingerprint = CAR.HYUNDAI_SANTA_FE_2022
+  supported, vin = vehicle_telemetry.starpilot_vehicle_telemetry_identity(
+    SimpleNamespace(get=lambda key: cp.to_bytes() if key == "CarParamsPersistent" else None),
+  )
+  assert not supported
+  assert vin == ""
 
 
 def test_starpilot_vehicle_state_carries_normalized_telemetry_fields():

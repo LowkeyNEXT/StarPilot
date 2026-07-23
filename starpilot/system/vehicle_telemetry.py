@@ -6,6 +6,8 @@ import os
 
 from pathlib import Path
 
+from cereal import car
+from opendbc.car.hyundai.values import CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_TELEMETRY_CAR
 from openpilot.system.hardware import PC
 from openpilot.system.hardware.hw import Paths
 from openpilot.system.vehicle_telemetry.core import (  # noqa: F401
@@ -52,6 +54,18 @@ def configure_starpilot_vehicle_telemetry():
     legacy_fetch_mode="galaxy",
     source_name="StarPilot carState",
   )
+
+
+def starpilot_vehicle_telemetry_identity(params) -> tuple[bool, str]:
+  try:
+    cp_bytes = params.get("CarParamsPersistent")
+    if not cp_bytes:
+      return False, ""
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+      supported = cp.carFingerprint in (CAN_EV_CLUSTER_DTE_CAR | CANFD_EV_TELEMETRY_CAR)
+      return supported, str(cp.carVin or "").strip().upper()
+  except Exception:
+    return False, ""
 
 
 # Galaxy and the StarPilot daemon each run in their own process, so configuring
