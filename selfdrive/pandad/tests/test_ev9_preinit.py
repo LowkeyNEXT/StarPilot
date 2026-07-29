@@ -122,7 +122,7 @@ def ev9_preinit_params(**overrides):
                             carFw=[CarParams.CarFw(ecu=CarParams.Ecu.adas, address=0x730,
                                                   fwVersion=b"ev9-adas", brand="hyundai")])
   safety_configs = persistent_cp.init("safetyConfigs", 1)
-  safety_configs[0].safetyModel = CarParams.SafetyModel.hyundaiCanfdEv9
+  safety_configs[0].safetyModel = CarParams.SafetyModel.hyundaiCanfd
   safety_configs[0].safetyParam = 0x8495
   values = {
     "EV9LongPreinitPanda": True,
@@ -264,7 +264,7 @@ def test_ev9_long_preinit_requires_all_persistent_gates():
 
   with CarParams.from_bytes(ev9_preinit_params().get("CarParamsPersistent")) as reader:
     wrong_model = reader.as_builder()
-    wrong_model.safetyConfigs[0].safetyModel = CarParams.SafetyModel.hyundaiCanfd
+    wrong_model.safetyConfigs[0].safetyModel = CarParams.SafetyModel.hyundai
     wrong_model_bytes = wrong_model.to_bytes()
   assert not get_ev9_long_preinit_panda(ev9_preinit_params(CarParamsPersistent=wrong_model_bytes))
 
