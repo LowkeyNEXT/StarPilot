@@ -169,7 +169,7 @@ def get_ev9_long_preinit_panda(params: Params) -> bool:
                         HyundaiFlags.CANFD_LKA_STEERING_ALT | HyundaiFlags.CANFD_ANGLE_STEERING)
       return (CP.brand == "hyundai" and str(CP.carFingerprint) == "KIA_EV9" and
               CP.openpilotLongitudinalControl and not CP.pcmCruise and
-              safety.safetyModel == CarParams.SafetyModel.hyundaiCanfdEv9 and
+              safety.safetyModel == CarParams.SafetyModel.hyundaiCanfd and
               (safety.safetyParam & ~EV9_LONG_PREINIT_OPTIONAL_SAFETY_PARAM) == EV9_LONG_PREINIT_SAFETY_PARAM and
               (CP.flags & int(required_flags)) == int(required_flags) and
               any(fw.ecu == CarParams.Ecu.adas and fw.address == 0x730 for fw in CP.carFw))
