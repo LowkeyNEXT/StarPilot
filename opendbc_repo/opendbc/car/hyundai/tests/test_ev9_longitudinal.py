@@ -57,6 +57,7 @@ def test_direct_angle_command_requires_drive_and_lateral_request():
   assert not should_send_ev9_direct_angle_command(False, True, True)
   assert not should_send_ev9_direct_angle_command(True, False, True)
   assert not should_send_ev9_direct_angle_command(True, True, False)
+  assert should_send_ev9_direct_angle_command(True, True, False, steer_at_standstill=True)
 
 
 def test_scc_command_clamps_and_fails_closed():

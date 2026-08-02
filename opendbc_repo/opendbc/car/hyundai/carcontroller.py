@@ -675,7 +675,7 @@ class CarController(CarControllerBase):
       ev9_direct_path_required = self.CP.carFingerprint == CAR.KIA_EV9 and self.long_active_ecu
       ev9_direct_path_available = not ev9_direct_path_required or should_send_ev9_direct_angle_command(
         CS.out.gearShifter == structs.CarState.GearShifter.drive, CC.latActive,
-        not bool(getattr(CS.out, "standstill", False)),
+        not bool(getattr(CS.out, "standstill", False)), self.CP.steerAtStandstill,
       ) and not getattr(CS, "mdps_lka_angle_fault", False)
       lka_icon, lfa_icon, ev9_ccnc_steering_active = ev9_dynamic_steering_icons(
         self.CP, CC.latActive, apply_steer_req and not CS.out.steeringPressed,
@@ -958,7 +958,7 @@ class CarController(CarControllerBase):
       can_sends.append(inactive_steering[0])
       if drive_gear:
         direct_active = should_send_ev9_direct_angle_command(
-          drive_gear, CC.latActive, not bool(getattr(CS.out, "standstill", False)),
+          drive_gear, CC.latActive, not bool(getattr(CS.out, "standstill", False)), self.CP.steerAtStandstill,
         ) and ev9_actuation_permitted and not getattr(CS, "mdps_lka_angle_fault", False)
         can_sends.append(hyundaicanfd.create_ev9_direct_angle_command(
           self.packer, self.CAN, apply_angle if direct_active else measured_angle,

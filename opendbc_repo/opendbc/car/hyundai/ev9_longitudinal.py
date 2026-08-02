@@ -82,9 +82,10 @@ def update_ev9_longitudinal_stop_state(state: EV9LongitudinalStopState, enabled:
   return EV9LongitudinalStopState()
 
 
-def should_send_ev9_direct_angle_command(drive_gear: bool, lat_active: bool, vehicle_moving: bool) -> bool:
+def should_send_ev9_direct_angle_command(drive_gear: bool, lat_active: bool, vehicle_moving: bool,
+                                         steer_at_standstill: bool = False) -> bool:
   """Match the CCNC angle-long safety gate for an active 0xCB request."""
-  return drive_gear and lat_active and vehicle_moving
+  return drive_gear and lat_active and (vehicle_moving or steer_at_standstill)
 
 
 def filter_ev9_adrv_replay_messages(messages: list[CanData]) -> list[CanData]:

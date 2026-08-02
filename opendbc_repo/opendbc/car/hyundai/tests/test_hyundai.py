@@ -855,12 +855,12 @@ class TestHyundaiFingerprint:
 
     assert controller.angle_filter.x == pytest.approx(expected_filter.x)
 
-  def test_angle_platforms_disable_standstill_steering(self):
-    ev9_cp = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], False, False, False, None)
-    ioniq_5_pe_cp = CarInterface.get_params(CAR.HYUNDAI_IONIQ_5_PE, gen_empty_fingerprint(), [], False, False, False, None)
-    sportage_cp = CarInterface.get_params(CAR.KIA_SPORTAGE_HEV_2026, gen_empty_fingerprint(), [], False, False, False, None)
+  def test_only_ev9_angle_long_enables_standstill_steering(self):
+    ev9_cp = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], True, False, False, None)
+    ioniq_5_pe_cp = CarInterface.get_params(CAR.HYUNDAI_IONIQ_5_PE, gen_empty_fingerprint(), [], True, False, False, None)
+    sportage_cp = CarInterface.get_params(CAR.KIA_SPORTAGE_HEV_2026, gen_empty_fingerprint(), [], True, False, False, None)
 
-    assert not ev9_cp.steerAtStandstill
+    assert ev9_cp.steerAtStandstill
     assert not ioniq_5_pe_cp.steerAtStandstill
     assert not sportage_cp.steerAtStandstill
 
@@ -2327,6 +2327,7 @@ class TestHyundaiFingerprint:
     assert not should_send_ev9_direct_angle_command(False, True, True)
     assert not should_send_ev9_direct_angle_command(True, False, True)
     assert not should_send_ev9_direct_angle_command(True, True, False)
+    assert should_send_ev9_direct_angle_command(True, True, False, steer_at_standstill=True)
 
   @pytest.mark.parametrize(("gain", "expected_gain"), [(0.44, 0.44), (0.0, 0.0)])
   def test_ev9_direct_angle_command_is_active_with_safety_limited_values(self, gain, expected_gain):
@@ -2350,12 +2351,13 @@ class TestHyundaiFingerprint:
     assert parser.vl["ADAS_CMD_35_10ms"]["ADAS_ACIAnglTqRedcGainVal"] == pytest.approx(expected_gain)
 
   @pytest.mark.parametrize("panda_faulted", (False, True))
-  def test_ev9_long_production_always_uses_direct_angle_and_panda_fault_is_inactive(self, panda_faulted):
+  def test_ev9_long_standstill_uses_direct_angle_and_panda_fault_is_inactive(self, panda_faulted):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_ANGLE_STEERING |
                    HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.CANFD_LKA_STEERING_ALT)
     CP.openpilotLongitudinalControl = True
+    CP.steerAtStandstill = True
     controller = CarController(DBC[CP.carFingerprint], CP)
     controller.frame = 1
     cc = SimpleNamespace(
@@ -2369,7 +2371,7 @@ class TestHyundaiFingerprint:
       openpilot_radar_valid=True, left_blindspot_from_radar=False, right_blindspot_from_radar=False, is_metric=True,
       out=SimpleNamespace(steeringAngleDeg=3.0, gearShifter=structs.CarState.GearShifter.drive,
                           cruiseState=SimpleNamespace(available=True), accFaulted=False,
-                          brakePressed=False, gasPressed=False, canValid=True, vEgo=12.0),
+                          brakePressed=False, gasPressed=False, canValid=True, standstill=True, vEgo=0.0),
     )
     packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
     can_bus = CanBus(CP)
