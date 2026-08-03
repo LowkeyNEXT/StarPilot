@@ -89,7 +89,9 @@ static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
 }
 
 static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
-  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving;
+  // The CCNC angle-long profile is currently EV9-only and explicitly opts in
+  // through CarParams.steerAtStandstill. Preserve the moving gate elsewhere.
+  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving || hyundai_canfd_ccnc_angle_long;
   return (aol_allowed || controls_allowed) && angle_steering_allowed &&
          (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
 }
