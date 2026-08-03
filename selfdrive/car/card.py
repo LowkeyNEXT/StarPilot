@@ -239,6 +239,7 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
     self.params.put_nonblocking("StarPilotCarParamsPersistent", fpcp_bytes)
 
     self.start_early_control(ev9_panda_handoff)
+    self.compose_startup_ownership()
 
     update_starpilot_toggles()
 
