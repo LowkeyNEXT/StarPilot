@@ -2,8 +2,35 @@ from __future__ import annotations
 
 import time
 
+from cereal import car
+
 
 VASM_STATE_TIMEOUT_SECONDS = 3.0
+EV9_FINGERPRINT = "KIA_EV9"
+EV9_BSM_MASTER_PARAM = "KiaEv9ClusterSideObjectsEnabled"
+EV9_ENHANCED_BSM_PARAM = "KiaEv9ClusterEnhancedBsmEnabled"
+
+
+def _persistent_car_fingerprint(params) -> str:
+  try:
+    raw = params.get("CarParamsPersistent")
+    if raw:
+      with car.CarParams.from_bytes(raw) as CP:
+        return str(CP.carFingerprint or "")
+  except Exception:
+    pass
+  return ""
+
+
+def ev9_enhanced_bsm_requested(params, car_fingerprint: str | None = None) -> bool:
+  """Enable the EV9-only V-ASM consumer only for its selected Enhanced BSM mode."""
+  fingerprint = _persistent_car_fingerprint(params) if car_fingerprint is None else str(car_fingerprint)
+  return fingerprint == EV9_FINGERPRINT and params.get_bool(EV9_BSM_MASTER_PARAM) and \
+    params.get_bool(EV9_ENHANCED_BSM_PARAM)
+
+
+def vasm_requested(params, car_fingerprint: str | None = None) -> bool:
+  return params.get_bool("VASMEnabled") or ev9_enhanced_bsm_requested(params, car_fingerprint)
 
 
 def get_fresh_vasm_state(params_memory, now: float | None = None) -> tuple[bool, bool]:

@@ -15,6 +15,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity, Ratekeeper
 from openpilot.system.hardware import PC
 from openpilot.starpilot.common.cpu_throttle import device_cpu_throttle_factor
+from openpilot.starpilot.common.vision_bsm import vasm_requested
 from openpilot.starpilot.system.adj_spot_monitor_vision_inference import VASMInference, V_ASM_MODEL_PATH
 
 V_ASM_AFFINITY_CORES = [2]
@@ -76,7 +77,7 @@ class VASMDaemon:
     print(f"[VASM] Started (model_valid={self.inference.valid})")
 
   def _cache_params(self):
-    self._enabled = self.params.get_bool("VASMEnabled")
+    self._enabled = vasm_requested(self.params)
     self._slv_enabled = self.params.get_bool("VisionSpeedLimitDetection")
     confidence_threshold = self.params.get_float("VASMConfidenceThreshold") or 0.85
     smooth_seconds = self.params.get_float("VASMSmoothSeconds") or 0.2

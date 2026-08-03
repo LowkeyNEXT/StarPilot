@@ -99,6 +99,10 @@ def _params_client(monkeypatch, values, device_type):
 
 EV9_SCOPED_PARAM_KEYS = {
   "EV9LongPreinitPanda",
+  "KiaEv9ClusterSideObjectsEnabled",
+  "KiaEv9ClusterEnhancedBsmEnabled",
+  "KiaEv9ClusterHeadwayEnabled",
+  "KiaEv9ClusterObjectsEnabled",
 }
 
 
@@ -132,6 +136,7 @@ def test_ev9_controls_are_visible_only_for_exact_fingerprint(monkeypatch):
   ev9_controls = {control["key"]: control for control in client.get("/api/galaxy/session").get_json()["controls"]}
   assert EV9_SCOPED_PARAM_KEYS <= set(ev9_controls)
   assert ev9_controls["EV9LongPreinitPanda"]["confirmation"]["field"] == the_galaxy.PANDA_FIRMWARE_CONFIRMATION_FIELD
+  assert ev9_controls["KiaEv9ClusterEnhancedBsmEnabled"]["parentKey"] == "KiaEv9ClusterSideObjectsEnabled"
 
   monkeypatch.setattr(the_galaxy, "_persistent_car_fingerprint", lambda: "KIA_EV6")
   ev6_keys = {control["key"] for control in client.get("/api/galaxy/session").get_json()["controls"]}
