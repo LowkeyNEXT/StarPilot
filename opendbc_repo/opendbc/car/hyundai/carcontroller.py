@@ -7,6 +7,8 @@ from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
+from opendbc.car.hyundai.ev9_bsm import get_ev9_blindspot_warning_inputs
+from opendbc.car.hyundai.ev9_dash_controller import EV9DashController, ev9_dynamic_steering_icons
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.ev9_preinit_controller import EV9PreinitController
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
@@ -417,6 +419,7 @@ class CarController(CarControllerBase):
       self._left_blindspot_warning = BlindspotWarningState()
       self._right_blindspot_warning = BlindspotWarningState()
     self.ev9_preinit = EV9PreinitController(CP, self.packer, self.CAN)
+    self.ev9_dash = EV9DashController(CP, self.packer, self.CAN)
     self.long_active_ecu = self.CP.openpilotLongitudinalControl
     self._ioniq_6_lane_change_ui_side = None
     self._ioniq_6_lane_change_ui_frames = 0
@@ -753,6 +756,7 @@ class CarController(CarControllerBase):
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not lka_steering
     ev9_preinit_active = self.ev9_preinit.active(self.long_active_ecu, CS)
     ev9_main_mode = self.ev9_preinit.main_mode(CS)
+    ev9_dash_active = self.ev9_dash.active(self.long_active_ecu)
     use_egmp_dynamic_long_tuning = egmp_dynamic_longitudinal_tuning(self.CP) and self.long_active_ecu and \
                                    CC.actuators.longControlState in (LongCtrlState.starting, LongCtrlState.pid, LongCtrlState.stopping)
     use_egmp_smoothed_accel = use_egmp_dynamic_long_tuning and (
@@ -793,6 +797,11 @@ class CarController(CarControllerBase):
                                                              lka_icon=lka_icon))
     direct_steering_active = ccnc_angle_long and drive_gear and CC.latActive and self.direct_angle_request_allowed and \
       not CS.angle_steering_fault and ev9_actuation_permitted
+    _, _, ev9_ccnc_steering_active = ev9_dynamic_steering_icons(
+      self.CP, CC.latActive,
+      direct_steering_active and apply_steer_req and not CS.out.steeringPressed,
+      lka_icon, lfa_icon,
+    )
     inactive_steering_angle = float(np.clip(CS.angle_steering_angle,
                                             -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
                                             self.params.ANGLE_LIMITS.STEER_ANGLE_MAX)) if ccnc_angle_long else 0.0
@@ -836,6 +845,10 @@ class CarController(CarControllerBase):
       else:
         can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, CS.stock_lfahda_cluster_msg,
                                                             lfa_icon=lfa_icon))
+    elif self.frame % 5 == 0 and ev9_dash_active:
+      can_sends.extend(self.ev9_dash.create_status_messages(
+        self.frame, CC, CS, self.ev9_dash.main_mode(CS), ev9_ccnc_steering_active,
+      ))
     elif self.frame % 5 == 0 and ev9_preinit_active:
       ev9_preinit_steering_active = direct_steering_active and apply_steer_req and not CS.out.steeringPressed
       can_sends.extend(self.ev9_preinit.create_status_messages(
@@ -874,7 +887,7 @@ class CarController(CarControllerBase):
           right_escalated = CS.right_blindspot_from_radar and CC.rightBlinker and not CC.leftBlinker
           left_warning = BlindspotWarningOutput()
           right_warning = BlindspotWarningOutput()
-          if self.frame % 5 == 0 and not ev9_preinit_active:
+          if self.frame % 5 == 0 and not (ev9_dash_active or ev9_preinit_active):
             left_warning = update_blindspot_warning(
               self._left_blindspot_warning, left_escalated, CC.leftBlinker,
             )
@@ -883,7 +896,23 @@ class CarController(CarControllerBase):
             )
           steering_available = CC.latActive or CC.enabled
           steering_active = direct_steering_active and apply_steer_req and not CS.out.steeringPressed
-          if ev9_preinit_active:
+          if ev9_dash_active:
+            blindspot_inputs = get_ev9_blindspot_warning_inputs(CS, now_nanos)
+            if self.frame % 5 == 0:
+              left_warning = update_blindspot_warning(
+                self._left_blindspot_warning,
+                blindspot_inputs.left_detected and blindspot_inputs.left_stalk_active,
+                blindspot_inputs.left_stalk_active,
+              )
+              right_warning = update_blindspot_warning(
+                self._right_blindspot_warning,
+                blindspot_inputs.right_detected and blindspot_inputs.right_stalk_active,
+                blindspot_inputs.right_stalk_active,
+              )
+            adrv_messages = self.ev9_dash.create_adrv_messages(
+              self.frame, CS, blindspot_inputs, left_warning, right_warning,
+            )
+          elif ev9_preinit_active:
             adrv_messages = self.ev9_preinit.create_adrv_messages(self.frame, CS)
           else:
             adrv_messages = hyundaicanfd.create_ccnc_adrv_messages(
@@ -903,7 +932,7 @@ class CarController(CarControllerBase):
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.
         radar_heartbeat_step = 1 if ccnc_angle_long else 4
-        if not ev9_preinit_active and self.CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR and \
+        if not (ev9_dash_active or ev9_preinit_active) and self.CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR and \
             self.frame % radar_heartbeat_step == 0:
           can_sends.append(hyundaicanfd.create_accelerator_brake_alt_spoof(
             0, self.frame // radar_heartbeat_step, CS.out.brakePressed, CS.out.gasPressed,
