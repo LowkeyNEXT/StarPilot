@@ -42,6 +42,13 @@ const VEHICLE_SETTING_MAKES = {
   SNGHack: ["Lexus", "Toyota"],
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
+const VEHICLE_SETTING_FINGERPRINTS = {
+  EV9LongPreinitPanda: ["KIA_EV9"],
+  KiaEv9ClusterSideObjectsEnabled: ["KIA_EV9"],
+  KiaEv9ClusterEnhancedBsmEnabled: ["KIA_EV9"],
+  KiaEv9ClusterHeadwayEnabled: ["KIA_EV9"],
+  KiaEv9ClusterObjectsEnabled: ["KIA_EV9"],
+}
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
 
 // Plain variables — scheduling/routing flags that must NOT be reactive
@@ -52,7 +59,7 @@ let lastFlmWorkspaceFetch = 0
 let favoritePollInflight = null
 let favoritePollTimer = null
 const DYNAMIC_DEFAULT_DEP_KEYS = new Set(["AccelerationProfile", "EVTuning", "TruckTuning"])
-const PANDA_FIRMWARE_TOGGLE_KEYS = new Set(["IgnoreIgnitionLine", "RemoteStartBootsComma", "HKGRemoteStartBootsComma"])
+const PANDA_FIRMWARE_TOGGLE_KEYS = new Set(["IgnoreIgnitionLine", "RemoteStartBootsComma", "HKGRemoteStartBootsComma", "EV9LongPreinitPanda"])
 const FLM_ADVANCED_LATERAL_KEYS = new Set([
   "AdvancedLateralTune", "ForceAutoTune", "ForceAutoTuneOff", "UseAutoSteerDelay", "SteerDelay",
   "SteerFriction", "SteerKP", "SteerLatAccel", "SteerRatio",
@@ -95,6 +102,10 @@ function normalizeVehicleMake(value) {
 
 function isVehicleSettingVisible(section, param) {
   if (section.name !== "Vehicle") return true
+  const allowedFingerprints = VEHICLE_SETTING_FINGERPRINTS[param.key]
+  if (allowedFingerprints) {
+    return allowedFingerprints.includes(String(state.values.CarFingerprint || "").trim())
+  }
   const allowedMakes = VEHICLE_SETTING_MAKES[param.key]
   if (!allowedMakes) return true
   const selectedMake = normalizeVehicleMake(state.values.CarMake)

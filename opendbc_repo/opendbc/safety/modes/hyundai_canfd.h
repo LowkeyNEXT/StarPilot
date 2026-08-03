@@ -89,7 +89,10 @@ static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
 }
 
 static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
-  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving;
+  // The CCNC angle-long profile is currently EV9-only and explicitly opts in
+  // through CarParams.steerAtStandstill. Preserve the moving gate for every
+  // other Hyundai CAN-FD angle-steering profile.
+  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving || hyundai_canfd_ccnc_angle_long;
   return (aol_allowed || controls_allowed) && angle_steering_allowed &&
          (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
 }
@@ -223,6 +226,14 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     .angle_deg_to_can = 10,
     .frequency = 100U,
   };
+  // An inactive CCNC angle-long 0xCB mirrors the physical 14-bit angle sensor.
+  // Keep the measured-angle check over the full signal range while retaining
+  // the strict 360-degree ceiling for active commands.
+  const AngleSteeringLimits HYUNDAI_CANFD_CCNC_ANGLE_LONG_INACTIVE_LIMITS = {
+    .max_angle = 8192,
+    .angle_deg_to_can = 10,
+    .frequency = 100U,
+  };
   const AngleSteeringParams HYUNDAI_CANFD_ANGLE_STEERING_PARAMS = {
     .slip_factor = -0.0006085930193026732,
     .steer_ratio = 13.7,
@@ -239,6 +250,17 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     if (!hyundai_canfd_angle_steering) {
       tx = false;
     } else {
+      // CCNC angle-long uses 0xCB only for direct steering-angle ownership.
+      // Keep the independent emergency-steering/torque-boost channel inactive.
+      if (hyundai_canfd_ccnc_angle_long) {
+        const int aci_active = msg->data[3] & 0xFU;
+        const int fca_esa_active = msg->data[7] & 0x3U;
+        const int fca_esa_gain = msg->data[8];
+        if ((aci_active != 0) || (fca_esa_active != 0) || (fca_esa_gain != 0)) {
+          tx = false;
+        }
+      }
+
       const int lfa_angle_active = (msg->data[3] >> 4U) & 0xFU;
       const bool steer_angle_req = lfa_angle_active == 2;
 
@@ -249,8 +271,15 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
       int desired_angle = (((uint32_t)(msg->data[5] & 0x3FU)) << 8) | (uint32_t)msg->data[4];
       desired_angle = to_signed(desired_angle, 14);
 
-      if (steer_angle_cmd_checks_vm(desired_angle, steer_angle_req,
-                                    HYUNDAI_CANFD_ANGLE_STEERING_LIMITS,
+      const AngleSteeringLimits angle_limits = (hyundai_canfd_ccnc_angle_long && !steer_angle_req) ?
+                                                HYUNDAI_CANFD_CCNC_ANGLE_LONG_INACTIVE_LIMITS :
+                                                HYUNDAI_CANFD_ANGLE_STEERING_LIMITS;
+      const bool ccnc_angle_long_active_angle_violation = hyundai_canfd_ccnc_angle_long && steer_angle_req &&
+                                                          safety_max_limit_check(desired_angle,
+                                                                                 HYUNDAI_CANFD_ANGLE_STEERING_LIMITS.max_angle,
+                                                                                 -HYUNDAI_CANFD_ANGLE_STEERING_LIMITS.max_angle);
+      if (ccnc_angle_long_active_angle_violation ||
+          steer_angle_cmd_checks_vm(desired_angle, steer_angle_req, angle_limits,
                                     HYUNDAI_CANFD_ANGLE_STEERING_PARAMS)) {
         tx = false;
       }
@@ -287,6 +316,18 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
       if (steer_torque_cmd_checks(desired_torque, steer_req, HYUNDAI_CANFD_STEERING_LIMITS)) {
         tx = false;
       }
+    }
+  }
+
+  // Angle steering is validated on 0x110 above. The parallel 0x12A LFA
+  // reconstruction frame must not carry a second torque/assist request.
+  if (hyundai_canfd_ccnc_angle_long && (msg->addr == 0x12AU)) {
+    const int desired_torque = (((msg->data[6] & 0xFU) << 7U) | (msg->data[5] >> 1U)) - 1024U;
+    const bool steer_req = GET_BIT(msg, 52U);
+    const bool lka_assist = GET_BIT(msg, 62U);
+    const int steer_mode = (msg->data[8] >> 1U) & 0x7U;
+    if ((desired_torque != 0) || steer_req || lka_assist || (steer_mode != 0)) {
+      tx = false;
     }
   }
 
@@ -468,6 +509,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   hyundai_ccnc = GET_FLAG(param, HYUNDAI_PARAM_CCNC);
   hyundai_canfd_ccnc_angle_long = hyundai_longitudinal && hyundai_canfd_lka_steering &&
                                   hyundai_canfd_lka_steering_alt && hyundai_canfd_angle_steering && hyundai_ccnc;
+  hyundai_cancel_button_resume_requires_set = hyundai_canfd_ccnc_angle_long;
   hyundai_canfd_lka_alt_drive_gear = false;
   hyundai_canfd_inactive_accel_tx_count = 0U;
 

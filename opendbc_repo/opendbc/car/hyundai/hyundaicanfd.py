@@ -101,6 +101,8 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   if lka_icon is None:
     lka_icon = 2 if enabled else 1
   angle_lkas_alt = CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
+  if CP.carFingerprint == CAR.KIA_EV9 and angle_lkas_alt and not lat_active:
+    lka_icon = 1
 
   control_values = {
     "LKA_MODE": 2,
@@ -154,6 +156,9 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
           "ADAS_StrAnglReqVal": apply_angle,
           "ADAS_ACIAnglTqRedcGainVal": apply_torque,
         }
+      elif CP.carFingerprint == CAR.KIA_EV9 and lkas_base_values:
+        # Preserve the camera's inactive UI/status template while the host owns the bus.
+        lkas_values["ADAS_StrAnglReqVal"] = lkas_base_values.get("ADAS_StrAnglReqVal", apply_angle)
       else:
         lkas_values.update({
           "LKA_OptUsmSta": 0,
