@@ -42,6 +42,12 @@ const VEHICLE_SETTING_MAKES = {
   SNGHack: ["Lexus", "Toyota"],
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
+const VEHICLE_SETTING_FINGERPRINTS = {
+  KiaEv9ClusterSideObjectsEnabled: ["KIA_EV9"],
+  KiaEv9ClusterEnhancedBsmEnabled: ["KIA_EV9"],
+  KiaEv9ClusterHeadwayEnabled: ["KIA_EV9"],
+  KiaEv9ClusterObjectsEnabled: ["KIA_EV9"],
+}
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
 
 // Plain variables — scheduling/routing flags that must NOT be reactive
@@ -95,6 +101,10 @@ function normalizeVehicleMake(value) {
 
 function isVehicleSettingVisible(section, param) {
   if (section.name !== "Vehicle") return true
+  const allowedFingerprints = VEHICLE_SETTING_FINGERPRINTS[param.key]
+  if (allowedFingerprints) {
+    return allowedFingerprints.includes(String(state.values.CarFingerprint || "").trim())
+  }
   const allowedMakes = VEHICLE_SETTING_MAKES[param.key]
   if (!allowedMakes) return true
   const selectedMake = normalizeVehicleMake(state.values.CarMake)

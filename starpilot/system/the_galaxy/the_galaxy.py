@@ -128,6 +128,23 @@ _TESTING_GROUND_CUSTOM_RESERVED_LAST_PUBLISH_MONO = 0.0
 PANDA_FIRMWARE_TOGGLE_KEYS = {"IgnoreIgnitionLine", "RemoteStartBootsComma", "HKGRemoteStartBootsComma"}
 PANDA_FIRMWARE_CONFIRMATION_FIELD = "confirmedPandaFirmwareFlash"
 _PANDA_FLASH_REBOOT_LOCK = threading.Lock()
+EV9_SCOPED_PARAM_KEYS = {
+  "KiaEv9ClusterSideObjectsEnabled",
+  "KiaEv9ClusterEnhancedBsmEnabled",
+  "KiaEv9ClusterHeadwayEnabled",
+  "KiaEv9ClusterObjectsEnabled",
+}
+
+
+def _persistent_car_fingerprint() -> str:
+  try:
+    cp_bytes = params.get("CarParamsPersistent")
+    if cp_bytes:
+      with car.CarParams.from_bytes(cp_bytes) as cp:
+        return str(cp.carFingerprint or "")
+  except Exception:
+    pass
+  return ""
 
 
 def _flash_panda_then_reboot() -> None:
@@ -2440,6 +2457,70 @@ def _configured_favorite_slot_values(slots):
     if slot.get("key") and not is_favorite_action_key(slot.get("key"))
   }
 
+EV9_GALAXY_CONTROLS = (
+  (
+    "KiaEv9ClusterSideObjectsEnabled",
+    "Reconstruct Blind-Spot Alerts",
+    "Experimental reconstructed alerts. Both modes can miss vehicles or report false detections. Always check mirrors and surroundings.",
+    None,
+  ),
+  (
+    "KiaEv9ClusterEnhancedBsmEnabled",
+    "Enhanced Blind-Spot Mode",
+    "On: use radar heuristics and configured Vision Adjacent Spot Monitor (V-ASM) for fewer false detections but potentially more misses. Off: use raw side detection for faster but less selective alerts. Experimental—always pay attention.",
+    "KiaEv9ClusterSideObjectsEnabled",
+  ),
+  (
+    "KiaEv9ClusterHeadwayEnabled",
+    "Show Reconstructed Headway Line",
+    "Show the stock-style speed-based following-distance line.",
+    None,
+  ),
+  (
+    "KiaEv9ClusterObjectsEnabled",
+    "Show Reconstructed Vehicle Objects",
+    "Show qualified primary and adjacent vehicles on the cluster.",
+    None,
+  ),
+)
+
+
+def _build_ev9_galaxy_control_catalog():
+  controls = []
+  if _persistent_car_fingerprint() == "KIA_EV9":
+    for key, title, subtitle, parent_key in EV9_GALAXY_CONTROLS:
+      control = {
+        "id": key,
+        "key": key,
+        "title": title,
+        "subtitle": subtitle,
+        "kind": "toggle",
+        "value": params.get_bool(key),
+        "options": [],
+        "path": ["params", key],
+        "endpoint": "/api/params",
+        "method": "PUT",
+        "isWritable": True,
+        "sectionID": "ev9",
+        "sectionTitle": "Kia EV9",
+      }
+      if parent_key is not None:
+        control["parentKey"] = parent_key
+      controls.append(control)
+
+  sections = [{
+    "id": "ev9",
+    "title": "Kia EV9",
+    "controls": controls,
+    "metrics": [],
+  }] if controls else []
+  return {
+    "version": 1,
+    "updatedAt": time.monotonic(),
+    "controls": controls,
+    "sections": sections,
+  }
+
 _cached_allowed_keys = None
 _cached_param_types = None
 _cached_default_values = None
@@ -4407,6 +4488,8 @@ def setup(app):
       allowed_keys, _ = _get_param_type_info()
       if key not in allowed_keys:
         return jsonify({"error": f"Parameter '{key}' is not editable."}), 403
+      if key in EV9_SCOPED_PARAM_KEYS and _persistent_car_fingerprint() != "KIA_EV9":
+        return jsonify({"error": f"Parameter '{key}' is only available for KIA_EV9."}), 403
 
       if key in {"UseOldUI", "TryRaylibUI"}:
         enabled = str_val.strip() in ("1", "true", "True")
@@ -4791,6 +4874,7 @@ def setup(app):
         result[key] = None
 
     result["HasRadar"] = _get_has_radar()
+    result["CarFingerprint"] = _persistent_car_fingerprint()
 
     return jsonify(_sanitize_json_value(result)), 200
 
@@ -6367,11 +6451,16 @@ def setup(app):
     slug = _read_galaxy_text(GALAXY_SLUG_FILE)
     token = _read_galaxy_text(GALAXY_SESSION_FILE)
     paired = len(_read_galaxy_text(GALAXY_AUTH_FILE)) == 64 and bool(slug and token)
+    control_catalog = _build_ev9_galaxy_control_catalog()
     return jsonify({
       "appUrl": GALAXY_PLAY_STORE_URL,
       "cookieName": GALAXY_COOKIE_NAME,
       "paired": paired,
       "sessionToken": _build_galaxy_session_value(slug, token),
+      "controls": control_catalog["controls"],
+      "sections": control_catalog["sections"],
+      "controlCatalogVersion": control_catalog["version"],
+      "controlCatalogUpdatedAt": control_catalog["updatedAt"],
     })
 
   @app.route("/api/galaxy/pair", methods=["POST"])
