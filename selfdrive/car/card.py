@@ -19,6 +19,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.hyundai.values import CAR
+from opendbc.car.hyundai import ev9_canfd
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -229,6 +230,10 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
     self.params.put_nonblocking("StarPilotCarParamsPersistent", fpcp_bytes)
 
     self.start_early_control(ev9_panda_handoff)
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      # The features are independent, but when both are installed the dash
+      # writer must continue the live counters captured by the preinit owner.
+      ev9_canfd.set_adrv_baselines(list(self.ev9_preinit_claim_templates.values()))
 
     update_starpilot_toggles()
 
