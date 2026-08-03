@@ -16,6 +16,7 @@
 #include "common/swaglog.h"
 #include "common/timing.h"
 #include "common/util.h"
+#include "selfdrive/pandad/ev9_preinit.h"
 #include "system/hardware/hw.h"
 
 // -- Multi-panda conventions --
@@ -233,10 +234,14 @@ std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> 
   std::vector<std::array<can_health_t, PANDA_CAN_CNT>> pandaCanStates;
   pandaCanStates.reserve(pandas_cnt);
 
+  std::vector<std::optional<PandaEv9LongPreinitStatus>> ev9PreinitStatuses;
+  ev9PreinitStatuses.reserve(pandas_cnt);
+  std::vector<bool> ev9PreinitResident;
+  ev9PreinitResident.reserve(pandas_cnt);
+
   const bool red_panda_comma_three = (pandas.size() == 2) &&
                                      (pandas[0]->hw_type == cereal::PandaState::PandaType::DOS) &&
                                      (pandas[1]->hw_type == cereal::PandaState::PandaType::RED_PANDA);
-
   for (const auto& panda : pandas){
     auto health_opt = panda->get_state();
     if (!health_opt) {
@@ -254,6 +259,10 @@ std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> 
       can_health[i] = *can_health_opt;
     }
     pandaCanStates.push_back(can_health);
+
+    const bool preinit_resident = ev9_preinit_status_enabled(panda);
+    ev9PreinitResident.push_back(preinit_resident);
+    ev9PreinitStatuses.push_back(preinit_resident ? panda->get_ev9_long_preinit_status() : std::nullopt);
 
     if (spoofing_started) {
       health.ignition_line_pkt = 1;
@@ -303,6 +312,8 @@ std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> 
 
     auto ps = pss[i];
     fill_panda_state(ps, panda->hw_type, health);
+    auto preinit_status = ps.initEv9LongPreinitStatus();
+    fill_ev9_long_preinit_status(preinit_status, ev9PreinitStatuses[i], ev9PreinitResident[i]);
 
     auto cs = std::array{ps.initCanState0(), ps.initCanState1(), ps.initCanState2()};
     for (uint32_t j = 0; j < PANDA_CAN_CNT; j++) {
@@ -471,7 +482,6 @@ void pandad_run(std::vector<Panda *> &pandas) {
   const bool no_fan_control = getenv("NO_FAN_CONTROL") != nullptr;
   const bool spoofing_started = getenv("STARTED") != nullptr;
   const bool fake_send = getenv("FAKESEND") != nullptr;
-
   // Start the CAN send thread
   std::thread send_thread(can_send_thread, pandas, fake_send);
 

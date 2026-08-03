@@ -41,6 +41,8 @@ static bool panda_ignition_line(void) {
   #endif
 }
 
+#include "board/ev9_long_preinit_main.h"
+
 
 // ********************* Serial debugging *********************
 
@@ -64,6 +66,7 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
     // TERMINAL ERROR: we can't continue if SILENT safety mode isn't succesfully set
     assert_fatal(err == 0, "Error: Failed setting SILENT mode. Hanging\n");
   }
+  const bool preserve_preinit_can = ev9_long_preinit_preserve_safety_transition(mode_copy, param);
   safety_tx_blocked = 0;
   safety_rx_invalid = 0;
 
@@ -101,7 +104,9 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
       can_silent = false;
       break;
   }
-  can_init_all();
+  if (!preserve_preinit_can) {
+    can_init_all();
+  }
 }
 
 bool is_car_safety_mode(uint16_t mode) {
@@ -127,12 +132,17 @@ static void __attribute__ ((noinline)) enable_fpu(void) {
 // go into SILENT when heartbeat isn't received for this amount of seconds.
 #define HEARTBEAT_IGNITION_CNT_ON 5U
 #define HEARTBEAT_IGNITION_CNT_OFF 2U
+#ifdef PANDA_EV9_LONG_PREINIT
+static uint8_t prev_harness_status = HARNESS_STATUS_NC;
+#endif
 
 // called at 8Hz
 static void tick_handler(void) {
   static uint32_t siren_countdown = 0; // siren plays while countdown > 0
   static uint32_t controls_allowed_countdown = 0;
+  #ifndef PANDA_EV9_LONG_PREINIT
   static uint8_t prev_harness_status = HARNESS_STATUS_NC;
+  #endif
   static uint8_t loop_counter = 0U;
   static bool relay_malfunction_prev = false;
 
@@ -246,12 +256,13 @@ static void tick_handler(void) {
           // clear heartbeat engaged state
           heartbeat_engaged = false;
 
-          if (current_safety_mode != SAFETY_SILENT) {
-            set_safety_mode(SAFETY_SILENT, 0U);
-          }
-
-          if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
-            set_power_save_state(POWER_SAVE_STATUS_ENABLED);
+          if (!ev9_long_preinit_handle_heartbeat_loss(started)) {
+            if (current_safety_mode != SAFETY_SILENT) {
+              set_safety_mode(SAFETY_SILENT, 0U);
+            }
+            if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
+              set_power_save_state(POWER_SAVE_STATUS_ENABLED);
+            }
           }
 
           // Also disable IR when the heartbeat goes missing
@@ -324,6 +335,9 @@ int main(void) {
   current_board->init();
   current_board->set_can_mode(CAN_MODE_NORMAL);
   harness_init();
+  #ifdef PANDA_EV9_LONG_PREINIT
+  ev9_long_preinit_harness_initialized(&prev_harness_status);
+  #endif
 
   // panda has an FPU, let's use it!
   enable_fpu();
@@ -335,11 +349,12 @@ int main(void) {
     fan_init();
   }
 
-  // init to SILENT and can silent
-  set_safety_mode(SAFETY_SILENT, 0U);
+  set_safety_mode(ev9_long_preinit_initial_safety_mode(), 0U);
 
   // enable CAN TXs
   enable_can_transceivers(true);
+
+  ev9_long_preinit_main_init();
 
   // init watchdog for heartbeat loop, fed at 8Hz
   simple_watchdog_init(FAULT_HEARTBEAT_LOOP_WATCHDOG, (3U * 1000000U / 8U));
@@ -368,12 +383,14 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
+    ev9_long_preinit_main_tick();
     if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {
       #endif
         // useful for debugging, fade breaks = panda is overloaded
         for (uint32_t fade = 0U; fade < MAX_LED_FADE; fade += 1U) {
+          ev9_long_preinit_main_service_tx_cancel();
           led_set(LED_RED, true);
           delay(fade >> 4);
           led_set(LED_RED, false);
@@ -381,6 +398,7 @@ int main(void) {
         }
 
         for (uint32_t fade = MAX_LED_FADE; fade > 0U; fade -= 1U) {
+          ev9_long_preinit_main_service_tx_cancel();
           led_set(LED_RED, true);
           delay(fade >> 4);
           led_set(LED_RED, false);

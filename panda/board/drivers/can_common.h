@@ -1,5 +1,7 @@
 #include "can_common_declarations.h"
 
+#include "board/firmware_features.h"
+
 uint32_t safety_tx_blocked = 0;
 uint32_t safety_rx_invalid = 0;
 uint32_t tx_buffer_overflow = 0;
@@ -47,6 +49,8 @@ can_buffer(tx3_q, CAN_TX_BUFFER_SIZE)
 // FIXME:
 // cppcheck-suppress misra-c2012-9.3
 can_ring *can_queues[PANDA_CAN_CNT] = {&can_tx1_q, &can_tx2_q, &can_tx3_q};
+
+#include "board/firmware_feature_can.h"
 
 // ********************* interrupt safe queue *********************
 bool can_pop(can_ring *q, CANPacket_t *elem) {
@@ -122,6 +126,7 @@ void can_clear(can_ring *q) {
   q->w_ptr = 0;
   q->r_ptr = 0;
   EXIT_CRITICAL();
+  firmware_feature_can_queue_cleared(q);
   // handle TX buffer full with zero ECUs awake on the bus
   refresh_can_tx_slots_available();
 }
@@ -276,14 +281,25 @@ bool can_check_checksum(CANPacket_t *packet) {
   return (calculate_checksum((uint8_t *) packet, CANPACKET_HEAD_SIZE + GET_LEN(packet)) == 0U);
 }
 
-void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
-  if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
+static bool can_send_with_feature_result(CANPacket_t *to_push, uint8_t bus_number,
+                                         bool skip_tx_hook, bool internal) {
+  bool queued = false;
+  firmware_feature_can_enter();
+  const firmware_feature_can_tx_action_t action =
+    firmware_feature_can_tx_action(to_push, bus_number, skip_tx_hook, internal);
+
+  if ((action == FIRMWARE_FEATURE_CAN_TX_SEND) && (skip_tx_hook || safety_tx_hook(to_push) != 0)) {
     if (bus_number < PANDA_CAN_CNT) {
       // add CAN packet to send queue
-      tx_buffer_overflow += can_push(can_queues[bus_number], to_push) ? 0U : 1U;
+      queued = can_push(can_queues[bus_number], to_push);
+      tx_buffer_overflow += queued ? 0U : 1U;
+      if (queued) {
+        firmware_feature_can_tx_queued(to_push, skip_tx_hook);
+      }
       process_can(CAN_NUM_FROM_BUS_NUM(bus_number));
     }
-  } else {
+  } else if ((action == FIRMWARE_FEATURE_CAN_TX_REJECT) ||
+             ((action == FIRMWARE_FEATURE_CAN_TX_SEND) && !skip_tx_hook)) {
     safety_tx_blocked += 1U;
     to_push->returned = 0U;
     to_push->rejected = 1U;
@@ -292,7 +308,23 @@ void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
     can_set_checksum(to_push);
     rx_buffer_overflow += can_push(&can_rx_q, to_push) ? 0U : 1U;
   }
+  firmware_feature_can_exit();
+  return queued;
 }
+
+void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
+  (void)can_send_with_feature_result(to_push, bus_number, skip_tx_hook, false);
+}
+
+#ifdef PANDA_EV9_LONG_PREINIT
+bool can_send_with_result(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
+  return can_send_with_feature_result(to_push, bus_number, skip_tx_hook, false);
+}
+
+bool can_send_ev9_preinit_with_result(CANPacket_t *to_push, uint8_t bus_number) {
+  return can_send_with_feature_result(to_push, bus_number, true, true);
+}
+#endif
 
 bool is_speed_valid(uint32_t speed, const uint32_t *all_speeds, uint8_t len) {
   bool ret = false;

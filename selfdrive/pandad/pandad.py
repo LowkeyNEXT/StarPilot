@@ -10,14 +10,17 @@ from panda import Panda, PandaDFU, PandaProtocolMismatch, FW_PATH
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.system.hardware import HARDWARE
+from openpilot.selfdrive.pandad import ev9_preinit
 from openpilot.common.swaglog import cloudlog
 
-
-def get_selected_firmware_name(app_fn: str, remote_start: bool, hkg_remote_start: bool, ignore_ignition_line: bool) -> str:
+def get_selected_firmware_name(app_fn: str, remote_start: bool, hkg_remote_start: bool,
+                               ignore_ignition_line: bool, ev9_long_preinit: bool = False) -> str:
+  h7 = app_fn == "panda_h7.bin.signed"
+  if ev9_long_preinit and h7:
+    return ev9_preinit.firmware_name(hkg_remote_start)
   if not remote_start and not hkg_remote_start and not ignore_ignition_line:
     return app_fn
 
-  h7 = app_fn == "panda_h7.bin.signed"
   name_parts = ["panda_h7" if h7 else "panda"]
   if hkg_remote_start:
     name_parts.extend(["hkg", "remote"])
@@ -28,20 +31,28 @@ def get_selected_firmware_name(app_fn: str, remote_start: bool, hkg_remote_start
   return "_".join(name_parts) + ".bin.signed"
 
 
-def get_expected_firmware_path(panda: Panda, remote_start: bool, hkg_remote_start: bool, ignore_ignition_line: bool) -> str:
+def get_expected_firmware_path(panda: Panda, remote_start: bool, hkg_remote_start: bool,
+                               ignore_ignition_line: bool, ev9_long_preinit: bool = False) -> str:
   app_fn = panda.get_mcu_type().config.app_fn
-  selected_fn = get_selected_firmware_name(app_fn, remote_start, hkg_remote_start, ignore_ignition_line)
+  selected_fn = get_selected_firmware_name(
+    app_fn, remote_start, hkg_remote_start, ignore_ignition_line, ev9_long_preinit,
+  )
   if selected_fn != app_fn:
     selected_path = os.path.join(FW_PATH, selected_fn)
     if os.path.isfile(selected_path):
       return selected_path
+    if ev9_long_preinit and app_fn == ev9_preinit.H7_APP:
+      raise FileNotFoundError(f"Selected EV9 Panda preinit firmware not found: {selected_path}")
     cloudlog.warning(f"Selected panda firmware not found: {selected_path}, falling back to default")
   return os.path.join(FW_PATH, app_fn)
 
 
-def get_expected_signature(panda: Panda, remote_start: bool, hkg_remote_start: bool, ignore_ignition_line: bool) -> bytes:
+def get_expected_signature(panda: Panda, remote_start: bool, hkg_remote_start: bool,
+                           ignore_ignition_line: bool, ev9_long_preinit: bool = False) -> bytes:
   try:
-    fn = get_expected_firmware_path(panda, remote_start, hkg_remote_start, ignore_ignition_line)
+    fn = get_expected_firmware_path(
+      panda, remote_start, hkg_remote_start, ignore_ignition_line, ev9_long_preinit,
+    )
     return Panda.get_signature_from_firmware(fn)
   except Exception:
     cloudlog.exception("Error computing expected signature")
@@ -69,23 +80,56 @@ def get_ignore_ignition_line(params: Params) -> bool:
     return False
 
 
-def flash_panda(panda_serial: str, remote_start: bool, hkg_remote_start: bool, ignore_ignition_line: bool) -> Panda:
+def flash_panda(panda_serial: str, remote_start: bool, hkg_remote_start: bool,
+                ignore_ignition_line: bool, ev9_long_preinit: bool = False,
+                preinit_recovery_blocked: bool = False) -> Panda:
   try:
     panda = Panda(panda_serial)
   except PandaProtocolMismatch:
-    cloudlog.warning("detected protocol mismatch, reflashing panda")
-    HARDWARE.recover_internal_panda()
+    if ev9_long_preinit or preinit_recovery_blocked:
+      cloudlog.error("Panda protocol mismatch with EV9 preinit armed/latched; refusing hardware recovery")
+    else:
+      cloudlog.warning("detected protocol mismatch, reflashing panda")
+      HARDWARE.recover_internal_panda()
     raise
 
-  fw_path = get_expected_firmware_path(panda, remote_start, hkg_remote_start, ignore_ignition_line)
-  fw_signature = get_expected_signature(panda, remote_start, hkg_remote_start, ignore_ignition_line)
   internal_panda = panda.is_internal()
+  preinit_status = None if panda.bootstub or not internal_panda else ev9_preinit.get_status(panda)
+  if ev9_preinit.must_preserve(preinit_status):
+    cloudlog.warning(f"Preserving in-flight EV9 Panda preinit firmware on {panda_serial}: {preinit_status}")
+    return panda
+
+  preinit_firmware_selected = ev9_preinit.firmware_selected(panda, ev9_long_preinit)
+  if preinit_firmware_selected:
+    fw_path = ev9_preinit.firmware_path(panda, hkg_remote_start)
+    fw_signature = ev9_preinit.expected_signature(panda, hkg_remote_start)
+  else:
+    fw_path = get_expected_firmware_path(panda, remote_start, hkg_remote_start, ignore_ignition_line)
+    fw_signature = get_expected_signature(panda, remote_start, hkg_remote_start, ignore_ignition_line)
 
   panda_version = "bootstub" if panda.bootstub else panda.get_version()
   panda_signature = b"" if panda.bootstub else panda.get_signature()
+  resident_preinit_firmware = ev9_preinit.resident_signature(panda_signature)
   cloudlog.warning(f"Panda {panda_serial} connected, version: {panda_version}, signature {panda_signature.hex()[:16]}, expected {fw_signature.hex()[:16]}")
 
   if panda.bootstub or panda_signature != fw_signature:
+    # Status can advance while signatures are read from disk. Recheck at the
+    # last possible point before a firmware mutation.
+    status_before_health = None if panda.bootstub or not (internal_panda or resident_preinit_firmware) else \
+      ev9_preinit.get_status(panda)
+    preinit_sensitive = (preinit_firmware_selected or resident_preinit_firmware or
+                         ev9_preinit.status_valid(status_before_health))
+    ignition_on = ev9_preinit.ignition_on(panda) if preinit_sensitive and not panda.bootstub else False
+    status_after_health = ev9_preinit.get_status(panda) if preinit_sensitive and not panda.bootstub else status_before_health
+    status_stable = ev9_preinit.status_stable(status_before_health, status_after_health)
+    preinit_status = status_after_health if ev9_preinit.status_valid(status_after_health) else status_before_health
+    if ev9_preinit.flash_blocked(preinit_status, preinit_firmware_selected, ignition_on,
+                                 resident_preinit_firmware, status_stable):
+      if preinit_sensitive and ignition_on and not ev9_preinit.must_preserve(preinit_status):
+        cloudlog.error(f"Refusing to change resident EV9 Panda preinit firmware while ignition is on: {panda_serial}")
+        return panda
+      cloudlog.warning(f"Preserving in-flight EV9 Panda preinit firmware on {panda_serial}: {preinit_status}")
+      return panda
     cloudlog.info("Panda firmware out of date, update required")
     panda.flash(fn=fw_path)
     cloudlog.info("Done flashing")
@@ -127,16 +171,21 @@ def main() -> None:
   first_run = True
   params = Params()
   no_internal_panda_count = 0
+  preinit_resident_latched = False
 
   while not do_exit:
     try:
       count += 1
       cloudlog.event("pandad.flash_and_connect", count=count)
       params.remove("PandaSignatures")
+      ev9_long_preinit = ev9_preinit.enabled_from_params(params)
+      preinit_resident_latched |= ev9_long_preinit
 
       # Handle missing internal panda
       if no_internal_panda_count > 0:
-        if no_internal_panda_count == 3:
+        if preinit_resident_latched:
+          cloudlog.error("Panda missing with resident EV9 preinit latched; refusing hardware reset/recovery")
+        elif no_internal_panda_count == 3:
           cloudlog.info("No pandas found, putting internal panda into DFU")
           HARDWARE.recover_internal_panda()
         else:
@@ -146,7 +195,10 @@ def main() -> None:
 
       # Flash all Pandas in DFU mode
       dfu_serials = PandaDFU.list()
-      if len(dfu_serials) > 0:
+      if len(dfu_serials) > 0 and preinit_resident_latched:
+        cloudlog.error("Panda in DFU with resident EV9 preinit latched; refusing automatic recovery")
+        time.sleep(1)
+      elif len(dfu_serials) > 0:
         for serial in dfu_serials:
           cloudlog.info(f"Panda in DFU mode found, flashing recovery {serial}")
           PandaDFU(serial).recover()
@@ -165,7 +217,8 @@ def main() -> None:
       hkg_remote_start = get_hkg_remote_start_boots_comma(params)
       ignore_ignition_line = get_ignore_ignition_line(params)
       for serial in panda_serials:
-        pandas.append(flash_panda(serial, remote_start, hkg_remote_start, ignore_ignition_line))
+        pandas.append(flash_panda(serial, remote_start, hkg_remote_start, ignore_ignition_line,
+                                  ev9_long_preinit, preinit_resident_latched))
 
       # Ensure internal panda is present if expected
       internal_pandas = [panda for panda in pandas if panda.is_internal()]
@@ -185,6 +238,8 @@ def main() -> None:
       # log panda fw versions
       params.put("PandaSignatures", b','.join(p.get_signature() for p in pandas))
 
+      resident_ev9_long_preinit = False
+      ev9_preinit_serials = []
       for panda in pandas:
         # check health for lost heartbeat
         health = panda.health()
@@ -195,10 +250,33 @@ def main() -> None:
           params.put_bool("PandaSomResetTriggered", True)
           cloudlog.event("panda.som_reset_triggered", health=health, serial=panda.get_usb_serial())
 
-        if first_run:
+        preinit_firmware_selected = ev9_preinit.firmware_selected(panda, ev9_long_preinit)
+        resident_preinit_firmware = ev9_preinit.resident_signature(panda.get_signature())
+        preinit_status = ev9_preinit.get_status(panda) if panda.is_internal() or resident_preinit_firmware else None
+        resident_status = ev9_preinit.status_valid(preinit_status)
+        resident_ev9_long_preinit |= resident_status or resident_preinit_firmware
+        if resident_status or resident_preinit_firmware:
+          ev9_preinit_serials.append(panda.get_usb_serial())
+
+        preinit_sensitive = resident_status or resident_preinit_firmware or preinit_firmware_selected
+        verified_status = ev9_preinit.get_status(panda) if first_run and preinit_sensitive else preinit_status
+        status_stable = ev9_preinit.status_stable(preinit_status, verified_status)
+        preinit_status = verified_status if ev9_preinit.status_valid(verified_status) else preinit_status
+        verified_ignition_on = ev9_preinit.ignition_on(panda) if first_run and preinit_sensitive else bool(
+          health["ignition_line"] or health["ignition_can"]
+        )
+        preserve_preinit = ev9_preinit.reset_blocked(
+          preinit_status, preinit_firmware_selected, resident_preinit_firmware,
+          verified_ignition_on, status_stable,
+        )
+        if first_run and preserve_preinit:
+          cloudlog.warning(f"Preserving EV9 Panda preinit state on {panda.get_usb_serial()}: {preinit_status}")
+        elif first_run:
           # reset panda to ensure we're in a good state
           cloudlog.info(f"Resetting panda {panda.get_usb_serial()}")
           panda.reset(reconnect=True)
+
+      preinit_resident_latched |= bool(ev9_preinit_serials)
 
       for p in pandas:
         p.close()
@@ -217,10 +295,16 @@ def main() -> None:
     first_run = False
 
     # run pandad with all connected serials as arguments
-    if get_remote_start_boots_comma(params) or get_hkg_remote_start_boots_comma(params) or get_ignore_ignition_line(params):
+    run_ev9_long_preinit = ev9_long_preinit or resident_ev9_long_preinit
+    if (get_remote_start_boots_comma(params) or get_hkg_remote_start_boots_comma(params) or
+        get_ignore_ignition_line(params) or run_ev9_long_preinit):
       os.environ["BOARDD_SKIP_FW_CHECK"] = "1"
     else:
       os.environ.pop("BOARDD_SKIP_FW_CHECK", None)
+    if ev9_preinit_serials:
+      os.environ["BOARDD_EV9_LONG_PREINIT_SERIALS"] = ",".join(ev9_preinit_serials)
+    else:
+      os.environ.pop("BOARDD_EV9_LONG_PREINIT_SERIALS", None)
     os.environ['MANAGER_DAEMON'] = 'pandad'
     process = subprocess.Popen(["./pandad", *panda_serials], cwd=os.path.join(BASEDIR, "selfdrive/pandad"))
     process.wait()
