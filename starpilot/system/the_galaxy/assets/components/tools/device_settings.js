@@ -44,6 +44,10 @@ const VEHICLE_SETTING_MAKES = {
 }
 const VEHICLE_SETTING_FINGERPRINTS = {
   EV9LongPreinitPanda: ["KIA_EV9"],
+  KiaEv9ClusterSideObjectsEnabled: ["KIA_EV9"],
+  KiaEv9ClusterEnhancedBsmEnabled: ["KIA_EV9"],
+  KiaEv9ClusterHeadwayEnabled: ["KIA_EV9"],
+  KiaEv9ClusterObjectsEnabled: ["KIA_EV9"],
 }
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
 

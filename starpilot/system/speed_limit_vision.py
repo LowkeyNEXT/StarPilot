@@ -16,6 +16,7 @@ import numpy as np
 from openpilot.common.constants import CV
 from openpilot.common.realtime import set_core_affinity
 from openpilot.starpilot.common.cpu_throttle import device_cpu_throttle_factor
+from openpilot.starpilot.common.vision_bsm import vasm_requested
 from openpilot.system.hardware import PC
 
 RUNTIME_LOOP_HZ = 20
@@ -857,7 +858,7 @@ class SpeedLimitVisionDaemon:
       return
     self.last_coexistence_param_refresh_at = now
 
-    coexistence_mode = self.params.get_bool("VASMEnabled")
+    coexistence_mode = vasm_requested(self.params)
     if coexistence_mode == self.coexistence_mode:
       return
 

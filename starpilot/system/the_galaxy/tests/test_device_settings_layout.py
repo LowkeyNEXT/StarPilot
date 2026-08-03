@@ -142,3 +142,13 @@ def test_vasm_is_default_off_and_configured_only_in_galaxy():
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/lateral.py",
   )
   assert all("VASM" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_ev9_enhanced_bsm_is_nested_under_experimental_master():
+  vehicle = _params_by_section(_layout())["Vehicle"]
+  master = vehicle["KiaEv9ClusterSideObjectsEnabled"]
+  enhanced = vehicle["KiaEv9ClusterEnhancedBsmEnabled"]
+
+  assert master["is_parent_toggle"]
+  assert enhanced["parent_key"] == "KiaEv9ClusterSideObjectsEnabled"
+  assert _declared_default("KiaEv9ClusterEnhancedBsmEnabled") == "1"
