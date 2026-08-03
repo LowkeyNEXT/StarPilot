@@ -87,6 +87,9 @@ selfdrive/modeld/models/*.pkl
 
 build/
 
+# Local design notes generated while iterating on repository changes
+/docs/superpowers/specs/
+
 !**/.gitkeep
 
 poetry.toml
