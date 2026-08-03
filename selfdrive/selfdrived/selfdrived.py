@@ -508,7 +508,11 @@ class SelfdriveD:
     # Handle lane change - combine OEM BSM with fresh V-ASM state.
     blindspot_alert_added = False
     vasm_left, vasm_right = (False, False)
-    if getattr(self.starpilot_toggles, "v_asm_enabled", False):
+    # The EV9 coordinator owns V-ASM selection whenever reconstructed BSM is
+    # enabled, so Basic mode remains a genuinely raw side-state path.
+    direct_vasm_enabled = getattr(self.starpilot_toggles, "v_asm_enabled", False) and \
+      not getattr(self.starpilot_toggles, "ev9_bsm_reconstruction_enabled", False)
+    if direct_vasm_enabled:
       vasm_left, vasm_right = get_fresh_vasm_state(self.params_memory)
     combined_left_bsm = CS.leftBlindspot or vasm_left
     combined_right_bsm = CS.rightBlindspot or vasm_right

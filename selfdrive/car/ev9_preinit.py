@@ -6,10 +6,11 @@ from cereal import car, custom
 
 from opendbc.car import CanData, make_tester_present_msg
 from opendbc.car.hyundai import hyundaicanfd
-from opendbc.car.hyundai.interface import EV9_OPTIONAL_SAFETY_PARAM, EV9_PANDA_PREINIT_STATUS_VERSION, \
-                                            EV9_PRODUCTION_SAFETY_PARAM, EV9PandaPreinitOwner, EV9PandaPreinitState, \
-                                            invalidate_ev9_panda_preinit_handoff, \
-                                            update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai.ev9_preinit import EV9_OPTIONAL_SAFETY_PARAM, EV9_PANDA_PREINIT_STATUS_VERSION, \
+                                              EV9_PRODUCTION_SAFETY_PARAM, EV9PandaPreinitOwner, EV9PandaPreinitState, \
+                                              invalidate_ev9_panda_preinit_handoff, \
+                                              update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai.values import CAR
 from openpilot.common.swaglog import cloudlog
 
 
@@ -265,6 +266,30 @@ def ev9_preinit_panda_fault_recovered(panda_state) -> bool:
           _ev9_preinit_bus_healthy(can3))
 
 
+def ev9_panda_faulted_for_actuation(panda_states, seen: bool,
+                                    recovered_fault_authorized: bool = False) -> bool:
+  """Return the strict Panda-fault interlock used by EV9 actuation."""
+  def fault_status_active(panda_state) -> bool:
+    # pycapnp dynamic enums intentionally do not implement int(); their stable
+    # string representation matches the schema enumerant. Keep integer zero
+    # compatibility for lightweight unit-test/fake objects.
+    return str(getattr(panda_state, "faultStatus", "none")) in ("faultPerm", "2")
+
+  if not seen or len(panda_states) == 0:
+    return True
+  recovered_faults = 0
+  for panda_state in panda_states:
+    faulted = len(getattr(panda_state, "faults", ())) > 0 or fault_status_active(panda_state)
+    if faulted:
+      status = getattr(panda_state, "ev9LongPreinitStatus", None)
+      recovered = recovered_fault_authorized and bool(getattr(status, "resident", False)) and \
+        ev9_preinit_panda_fault_recovered(panda_state)
+      if not recovered:
+        return True
+      recovered_faults += 1
+  return recovered_faults > 1
+
+
 def ev9_preinit_panda_fault_acceptable(panda_state) -> bool:
   faults = tuple(getattr(panda_state, "faults", ()))
   # Panda's temporary faultStatus is historical for the entire MCU boot; only
@@ -450,7 +475,7 @@ def load_cached_starpilot_car_params(params):
 def normalize_ev9_cached_starpilot_safety(cached_params, cached_starpilot_params):
   """Strip stale cross-model safety flags before adopting a cached EV9 interface."""
   if cached_params is None or cached_starpilot_params is None or \
-      str(getattr(cached_params, "carFingerprint", "")) != "KIA_EV9":
+      getattr(cached_params, "carFingerprint", "") != CAR.KIA_EV9:
     return cached_starpilot_params
 
   safety_configs = list(getattr(cached_params, "safetyConfigs", ()))

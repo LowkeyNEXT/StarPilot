@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 
+#include "cereal/gen/cpp/log.capnp.h"
+
 // These match the route-derived Python CarState limits. All four inputs run at
 // 10 Hz. Normal route gaps were below 126 ms, one common transport interruption
 // reached 404 ms, and redundant sources stayed within 92 ms.
@@ -131,3 +133,25 @@ private:
   uint64_t charge_status_ts = 0ULL;
   uint64_t energy_status_ts = 0ULL;
 };
+
+
+inline void fill_ev9_vehicle_telemetry(cereal::PandaState::Ev9VehicleTelemetry::Builder &state,
+                                       const Ev9VehicleTelemetrySnapshot &telemetry, bool enabled) {
+  if (!enabled) {
+    return;
+  }
+
+  state.setVehicleTelemetryAvailable(telemetry.available);
+  state.setVehicleTelemetrySocValid(telemetry.soc_valid);
+  state.setVehicleTelemetryDteValid(telemetry.dte_valid);
+  state.setVehicleTelemetryChargingValid(telemetry.charging_valid);
+  state.setVehicleTelemetryChargePortValid(telemetry.charge_port_valid);
+  state.setFuelGauge(telemetry.fuel_gauge);
+  state.setDistanceToEmpty(telemetry.distance_to_empty);
+  state.setCharging(telemetry.charging);
+  state.setChargingPortConnected(telemetry.charging_port_connected);
+  state.setChargingTimeRemaining(telemetry.charging_time_remaining);
+  state.setVehicleTelemetrySourceMonoTime(telemetry.source_mono_time);
+  state.setVEgo(0.0F);
+  state.setStandstill(true);
+}

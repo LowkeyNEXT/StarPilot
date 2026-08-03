@@ -27,6 +27,14 @@ def resolve_ev9_blindspot_state(native_left: bool, native_right: bool, native_fr
   return False, False
 
 
+def resolve_ev9_raw_blindspot_state(raw_state: int, raw_fresh: bool) -> tuple[bool, bool]:
+  """Decode the unqualified EV9 side-object state used by Basic BSM mode."""
+  state = int(raw_state)
+  if not raw_fresh or not (state & EV9_RAW_BLINDSPOT_BASE_MASK):
+    return False, False
+  return bool(state & EV9_RAW_BLINDSPOT_LEFT_MASK), bool(state & EV9_RAW_BLINDSPOT_RIGHT_MASK)
+
+
 def select_target_line_distance(display_active: bool, starpilot_plan_valid: bool, longitudinal_plan_valid: bool,
                                 model_valid: bool, forcing_stop: bool, stop_sign_confirmed: bool,
                                 red_light: bool, should_stop: bool, model_should_stop: bool,
@@ -349,7 +357,12 @@ class Ev9DashObjectTracker:
   DROPOUT_HOLD_SAMPLES = 4
   EMA_ALPHA = 0.35
   PRIMARY_ENTRY_HALF_WIDTH = 2.5
-  PRIMARY_RETENTION_HALF_WIDTH = 2.5
+  # A fused lead can move well outside a fixed sensor-frame lane envelope on a
+  # curve while remaining the same high-confidence in-path object. Keep the
+  # strict entry gate, but retain an already-acquired fused identity through
+  # the route-observed +/-4.2 m curve offset instead of moving it into a side
+  # slot. Model confidence still releases a lead that actually leaves the path.
+  PRIMARY_RETENTION_HALF_WIDTH = 4.5
   # The held-out route's multi-second false display leads had materially lower
   # fused model confidence. Apply this only to the display path; radarState and
   # planning remain untouched. Distant leads use the stricter route-backed bar.

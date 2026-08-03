@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import time
+
 from cereal import car, log
 from opendbc.car import structs
 from opendbc.car.hyundai.ev9_dash import (
@@ -13,11 +15,14 @@ from opendbc.car.hyundai.ev9_dash import (
   Ev9TargetLineTracker,
   display_context_valid,
   resolve_ev9_blindspot_state,
+  resolve_ev9_raw_blindspot_state,
   select_lane_change_direction,
   select_ev9_lane_boundaries,
   update_ev9_raw_blindspot_gate,
   validate_slots_for_output,
 )
+from opendbc.car.hyundai.values import CAR
+from openpilot.starpilot.common.vision_bsm import get_fresh_vasm_state
 
 
 class EV9DashCoordinator:
@@ -25,6 +30,8 @@ class EV9DashCoordinator:
 
   @staticmethod
   def initialize(card_process) -> None:
+    if card_process.CP.carFingerprint != CAR.KIA_EV9:
+      return
     card_process.ev9_dash_tracker = Ev9DashObjectTracker()
     card_process.ev9_lane_outline_tracker = Ev9LaneOutlineTracker()
     card_process.ev9_target_line_tracker = Ev9TargetLineTracker()
@@ -35,12 +42,15 @@ class EV9DashCoordinator:
 
   @staticmethod
   def refresh_settings(card_process) -> None:
+    if card_process.CP.carFingerprint != CAR.KIA_EV9:
+      return
     card_process.ev9_bsm_reconstruction_enabled = card_process.params.get_bool("KiaEv9ClusterSideObjectsEnabled")
+    card_process.ev9_enhanced_bsm_enabled = card_process.params.get_bool("KiaEv9ClusterEnhancedBsmEnabled")
     card_process.ev9_dash_headway_enabled = card_process.params.get_bool("KiaEv9ClusterHeadwayEnabled")
     card_process.ev9_dash_objects_enabled = card_process.params.get_bool("KiaEv9ClusterObjectsEnabled")
 
   def _update_ev9_dash_tracker(self, CS: car.CarState, RD: structs.RadarDataT | None) -> None:
-    if str(self.CP.carFingerprint) != "KIA_EV9":
+    if self.CP.carFingerprint != CAR.KIA_EV9:
       return
 
     radar_valid = self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']
@@ -76,38 +86,72 @@ class EV9DashCoordinator:
     )
 
   def _update_ev9_raw_blindspot_gate(self, CS: car.CarState, RD: structs.RadarDataT | None) -> None:
-    if str(self.CP.carFingerprint) != "KIA_EV9":
+    if self.CP.carFingerprint != CAR.KIA_EV9:
       return
 
     native_left = bool(CS.leftBlindspot)
     native_right = bool(CS.rightBlindspot)
     native_fresh = bool(getattr(self.CI.CS, "native_blindspot_fresh", False))
+    vision_left, vision_right = (False, False)
+    if self.ev9_bsm_reconstruction_enabled and self.ev9_enhanced_bsm_enabled:
+      vision_left, vision_right = get_fresh_vasm_state(self.params_memory)
 
-    if not self.ev9_bsm_reconstruction_enabled or RD is None or any(RD.errors.to_dict().values()):
+    if not self.ev9_bsm_reconstruction_enabled:
       self.ev9_raw_blindspot_gate.clear()
       self.CI.CS.ev9_reconstructed_left_blindspot = False
       self.CI.CS.ev9_reconstructed_right_blindspot = False
       self.CI.CS.ev9_reconstructed_blindspot_ts = 0
       CS.leftBlindspot, CS.rightBlindspot = resolve_ev9_blindspot_state(
-        native_left, native_right, native_fresh, False, False, self.ev9_bsm_reconstruction_enabled,
+        native_left, native_right, native_fresh, False, False, False,
+      )
+      return
+
+    raw_state = int(getattr(self.CI.CS, "ev9_raw_blindspot_state", 0))
+    raw_fresh = bool(getattr(self.CI.CS, "ev9_raw_blindspot_fresh", False))
+    raw_timestamp = int(getattr(self.CI.CS, "ev9_raw_blindspot_ts", 0)) if raw_fresh else 0
+    raw_left, raw_right = resolve_ev9_raw_blindspot_state(raw_state, raw_fresh)
+
+    if not self.ev9_enhanced_bsm_enabled:
+      self.ev9_raw_blindspot_gate.clear()
+      left, right = raw_left, raw_right
+      self.CI.CS.ev9_reconstructed_left_blindspot = left
+      self.CI.CS.ev9_reconstructed_right_blindspot = right
+      self.CI.CS.ev9_reconstructed_blindspot_ts = raw_timestamp
+      CS.leftBlindspot, CS.rightBlindspot = resolve_ev9_blindspot_state(
+        native_left, native_right, native_fresh, left, right, True,
+      )
+      return
+
+    if RD is None or any(RD.errors.to_dict().values()):
+      self.ev9_raw_blindspot_gate.clear()
+      left = raw_left and vision_left
+      right = raw_right and vision_right
+      self.CI.CS.ev9_reconstructed_left_blindspot = left
+      self.CI.CS.ev9_reconstructed_right_blindspot = right
+      vision_timestamp = time.monotonic_ns() if left or right else 0
+      self.CI.CS.ev9_reconstructed_blindspot_ts = max(raw_timestamp, vision_timestamp)
+      CS.leftBlindspot, CS.rightBlindspot = resolve_ev9_blindspot_state(
+        native_left, native_right, native_fresh, left, right, True,
       )
       return
 
     candidates = getattr(self.RI, "ev9_dash_track_candidates", Ev9DashTrackCandidates())
-    left, right = update_ev9_raw_blindspot_gate(
+    radar_left, radar_right = update_ev9_raw_blindspot_gate(
       self.ev9_raw_blindspot_gate,
-      int(getattr(self.CI.CS, "ev9_raw_blindspot_state", 0)),
-      bool(getattr(self.CI.CS, "ev9_raw_blindspot_fresh", False)),
+      raw_state,
+      raw_fresh,
       CS.gearShifter == structs.CarState.GearShifter.drive,
       list(RD.points),
       set(candidates.display),
       set(candidates.side),
       float(CS.vEgo),
     )
+    left = radar_left or (raw_left and vision_left)
+    right = radar_right or (raw_right and vision_right)
     self.CI.CS.ev9_reconstructed_left_blindspot = left
     self.CI.CS.ev9_reconstructed_right_blindspot = right
-    self.CI.CS.ev9_reconstructed_blindspot_ts = int(getattr(self.CI.CS, "ev9_raw_blindspot_ts", 0)) \
-      if bool(getattr(self.CI.CS, "ev9_raw_blindspot_fresh", False)) else 0
+    vision_timestamp = time.monotonic_ns() if (raw_left and vision_left) or (raw_right and vision_right) else 0
+    self.CI.CS.ev9_reconstructed_blindspot_ts = max(raw_timestamp, vision_timestamp)
     # Publish the same qualified fallback to openpilot. This restores normal
     # lane-change blocking and blindspot alerts after ADAS suppression removes
     # the native 0x1BA source; the controller also uses it for reconstructed
@@ -117,7 +161,7 @@ class EV9DashCoordinator:
     )
 
   def _update_ev9_dash_scene(self, CS: car.CarState, CC: car.CarControl) -> None:
-    if str(self.CP.carFingerprint) != "KIA_EV9":
+    if self.CP.carFingerprint != CAR.KIA_EV9:
       return
 
     radar_valid = self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']

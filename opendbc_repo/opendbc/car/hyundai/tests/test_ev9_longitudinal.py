@@ -45,6 +45,43 @@ def test_production_module_has_no_stage_probe_or_dtc_runtime_surface():
     assert forbidden not in source
 
 
+def test_legacy_carcontroller_helper_exports_remain_compatible():
+  from opendbc.car.hyundai import carcontroller, carstate, ev9_canfd, ev9_controller, ev9_longitudinal, hyundaicanfd, interface, radar_interface
+
+  assert carcontroller.EV9LongitudinalTuningState is ev9_longitudinal.EV9LongitudinalStopState
+  assert carcontroller.update_ev9_longitudinal_tuning is ev9_longitudinal.update_ev9_longitudinal_stop_state
+  assert carcontroller.BlindspotWarningState is ev9_controller.BlindspotWarningState
+  assert carcontroller.get_ev9_blindspot_warning_inputs is ev9_controller.get_blindspot_warning_inputs
+  assert callable(carstate.populate_starpilot_vehicle_telemetry)
+  assert carstate.EV_ENERGY_MAX_AGE_NS > carstate.EV_ENERGY_MAX_SOURCE_SKEW_NS
+  for name in (
+    "create_ev9_direct_angle_command", "create_ev9_inactive_steering_messages",
+    "create_ev9_acc_control", "create_ev9_adrv_message", "set_ev9_adrv_baselines",
+  ):
+    assert callable(getattr(hyundaicanfd, name))
+  hyundaicanfd.set_ev9_adrv_baselines([])
+  assert hyundaicanfd.create_ev9_adrv_160(1, 7) == ev9_canfd.create_adrv_160(1, 7)
+  for name in (
+    "EV9PandaPreinitHandoff", "EV9_PANDA_PREINIT_HANDOFF",
+    "attempt_ev9_pre_fingerprint_suppression", "update_ev9_panda_preinit_handoff",
+  ):
+    assert getattr(interface, name) is not None
+  for name in (
+    "ev9_dash_display_candidate", "ev9_dash_side_candidate",
+    "ev9_mrr35_cluster_display_candidate",
+  ):
+    assert callable(getattr(radar_interface, name))
+
+
+def test_ev9_periodic_adrv_schedule_is_owned_and_stable():
+  from opendbc.car.hyundai import ev9_canfd
+
+  ev9_canfd.set_adrv_baselines([])
+  messages = ev9_canfd.create_periodic_adrv_messages(1, 100)
+  assert [msg.address for msg in messages] == [0x160, 0x1EA, 0x200, 0x345, 0x1DA, 0x1E0, 0x38C]
+  assert [msg.dat[2] for msg in messages] == [50, 20, 20, 5, 1, 20, 5]
+
+
 def test_adrv_replay_is_fixed_and_drops_0x51_and_physical_0x57a():
   messages = [(addr, b"", 1) for addr in (0x51, 0x57A, 0x160, 0x1DA, 0x1EA, 0x200, 0x345)]
   filtered = filter_ev9_adrv_replay_messages(messages)

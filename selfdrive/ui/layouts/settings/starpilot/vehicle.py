@@ -433,9 +433,19 @@ class VehicleSettingsManagerView(PanelManagerView):
       }, {
         "key": "KiaEv9ClusterSideObjectsEnabled",
         "title": tr("Reconstruct Blind-Spot Alerts"),
-        "subtitle": tr("Use qualified corner-radar data only when native blind-spot data is unavailable."),
+        "subtitle": tr("Experimental reconstructed alerts. Both modes can miss vehicles or report false detections. Always check mirrors and surroundings."),
         "get_state": lambda: self._controller._params.get_bool("KiaEv9ClusterSideObjectsEnabled"),
         "set_state": lambda s: self._controller._on_toggle("KiaEv9ClusterSideObjectsEnabled"),
+      }, {
+        "key": "KiaEv9ClusterEnhancedBsmEnabled",
+        "title": tr("Enhanced Blind-Spot Mode"),
+        "subtitle": tr(
+          "On: filter raw side detections with radar heuristics and configured Vision Adjacent Spot Monitor (V-ASM); "
+          "fewer false detections, but potentially more missed vehicles. Off: use raw side detection directly; more responsive, "
+          "but more prone to false detections. Experimental—always pay attention."
+        ),
+        "get_state": lambda: self._controller._params.get_bool("KiaEv9ClusterEnhancedBsmEnabled"),
+        "set_state": lambda s: self._controller._on_toggle("KiaEv9ClusterEnhancedBsmEnabled"),
       }, {
         "key": "KiaEv9ClusterHeadwayEnabled",
         "title": tr("Show Reconstructed Headway Line"),

@@ -82,6 +82,12 @@ def update_ev9_longitudinal_stop_state(state: EV9LongitudinalStopState, enabled:
   return EV9LongitudinalStopState()
 
 
+# Preserve the original carcontroller API while keeping the implementation in
+# this EV9-owned module. New code can use the more precise stop-state names.
+EV9LongitudinalTuningState = EV9LongitudinalStopState
+update_ev9_longitudinal_tuning = update_ev9_longitudinal_stop_state
+
+
 def should_send_ev9_direct_angle_command(drive_gear: bool, lat_active: bool, vehicle_moving: bool,
                                          steer_at_standstill: bool = False) -> bool:
   """Match the CCNC angle-long safety gate for an active 0xCB request."""

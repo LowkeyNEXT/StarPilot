@@ -136,6 +136,7 @@ class TestParams:
       "EV9LongPreinitPanda": False,
       "KiaEv9ClusterLaneChangeAnimationEnabled": False,
       "KiaEv9ClusterSideObjectsEnabled": True,
+      "KiaEv9ClusterEnhancedBsmEnabled": True,
       "KiaEv9ClusterHeadwayEnabled": False,
       "KiaEv9ClusterObjectsEnabled": False,
     }

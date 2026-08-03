@@ -5,9 +5,10 @@ from cereal import car, custom, log
 
 from opendbc.car import CanData
 from opendbc.car.hyundai import hyundaicanfd
-from opendbc.car.hyundai.interface import EV9PandaPreinitFlags, EV9PandaPreinitHandoff, EV9PandaPreinitOwner, EV9PandaPreinitState, \
-                                            attempt_ev9_pre_fingerprint_suppression, \
-                                            update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai.ev9_preinit import EV9PandaPreinitFlags, EV9PandaPreinitHandoff, EV9PandaPreinitOwner, \
+                                              EV9PandaPreinitState, attempt_ev9_pre_fingerprint_suppression, \
+                                              update_ev9_panda_preinit_handoff
+from openpilot.selfdrive.car import ev9_preinit_coordinator as coordinator_module
 from openpilot.selfdrive.car.ev9_preinit import EV9_PREINIT_MANAGED_FRAMES, EV9PreinitFaultHistory, EV9PreinitOffSample, \
                                                 EV9PreinitTakeoverState, \
                                                 collect_ev9_preinit_baselines, \
@@ -525,7 +526,6 @@ def test_runtime_torn_high_terminal_then_second_coherent_high_faults():
 
 
 def test_confirmed_handoff_does_not_add_runtime_transaction_faults(monkeypatch):
-  from openpilot.selfdrive.car import card as card_module
   from openpilot.selfdrive.car.card import Car
 
   class FakeSubMaster:
@@ -553,8 +553,8 @@ def test_confirmed_handoff_does_not_add_runtime_transaction_faults(monkeypatch):
     panda_state, _ = _panda_preinit_status(
       EV9PandaPreinitState.HANDOFF, ignition=True, flags=handoff_flags, cycle_started_us=100,
     )
-    monkeypatch.setattr(card_module, "ev9_preinit_safety_ready", lambda *_args, ready=safety_ready: ready)
-    monkeypatch.setattr(card_module, "ev9_preinit_health_unchanged", lambda *_args, unchanged=health_unchanged: unchanged)
+    monkeypatch.setattr(coordinator_module, "ev9_preinit_safety_ready", lambda *_args, ready=safety_ready: ready)
+    monkeypatch.setattr(coordinator_module, "ev9_preinit_health_unchanged", lambda *_args, unchanged=health_unchanged: unchanged)
 
     card_instance = Car.__new__(Car)
     card_instance.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
@@ -576,7 +576,6 @@ def test_confirmed_handoff_does_not_add_runtime_transaction_faults(monkeypatch):
 
 
 def test_confirmed_handoff_leaves_safety_rejections_to_normal_panda_handling(monkeypatch):
-  from openpilot.selfdrive.car import card as card_module
   from openpilot.selfdrive.car.card import Car
 
   class FakeSubMaster:
@@ -612,7 +611,7 @@ def test_confirmed_handoff_leaves_safety_rejections_to_normal_panda_handling(mon
   panda_state.canState2 = can_state
   baseline = ev9_preinit_health_snapshot([panda_state])
   panda_state.safetyTxBlocked = 1
-  monkeypatch.setattr(card_module, "ev9_preinit_safety_ready", lambda *_args: True)
+  monkeypatch.setattr(coordinator_module, "ev9_preinit_safety_ready", lambda *_args: True)
 
   card_instance = Car.__new__(Car)
   card_instance.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
@@ -655,7 +654,6 @@ def test_confirmed_handoff_leaves_safety_rejections_to_normal_panda_handling(mon
 
 
 def test_confirmed_handoff_does_not_reclaim_on_runtime_lease_sample(monkeypatch):
-  from openpilot.selfdrive.car import card as card_module
   from openpilot.selfdrive.car.card import Car
 
   class FakeSubMaster:
@@ -675,8 +673,8 @@ def test_confirmed_handoff_does_not_reclaim_on_runtime_lease_sample(monkeypatch)
     EV9PandaPreinitState.ACTIVE, ignition=True, flags=active_flags, cycle_started_us=100,
   )
   panda_state.ev9LongPreinitStatus.lastHostTxUs = 77
-  monkeypatch.setattr(card_module, "ev9_preinit_safety_ready", lambda *_args: True)
-  monkeypatch.setattr(card_module, "ev9_preinit_health_unchanged", lambda *_args: True)
+  monkeypatch.setattr(coordinator_module, "ev9_preinit_safety_ready", lambda *_args: True)
+  monkeypatch.setattr(coordinator_module, "ev9_preinit_health_unchanged", lambda *_args: True)
 
   card_instance = Car.__new__(Car)
   card_instance.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
@@ -741,7 +739,7 @@ def test_step_sends_nothing_before_fresh_claim(monkeypatch):
 
 
 def test_ev9_actuation_interlock_rejects_current_and_latched_panda_faults():
-  from openpilot.selfdrive.car.card import ev9_panda_faulted_for_actuation
+  from openpilot.selfdrive.car.ev9_preinit import ev9_panda_faulted_for_actuation
 
   healthy = SimpleNamespace(faults=[], faultStatus=0)
   current_fault = SimpleNamespace(faults=[1], faultStatus=0)
@@ -756,7 +754,7 @@ def test_ev9_actuation_interlock_rejects_current_and_latched_panda_faults():
 
 
 def test_ev9_actuation_interlock_accepts_real_capnp_fault_status_enum():
-  from openpilot.selfdrive.car.card import ev9_panda_faulted_for_actuation
+  from openpilot.selfdrive.car.ev9_preinit import ev9_panda_faulted_for_actuation
 
   panda_state = log.PandaState.new_message()
   assert str(panda_state.faultStatus) == "none"
@@ -769,23 +767,33 @@ def test_ev9_actuation_interlock_accepts_real_capnp_fault_status_enum():
   assert ev9_panda_faulted_for_actuation([panda_state], True)
 
 
-def test_ev9_actuation_interlock_rejects_even_authorized_recovered_can3_fault():
-  from openpilot.selfdrive.car.card import ev9_panda_faulted_for_actuation
+def test_ev9_actuation_interlock_accepts_only_authorized_live_recovered_can3_fault():
+  from openpilot.selfdrive.car.ev9_preinit import ev9_panda_faulted_for_actuation
 
+  healthy_can = SimpleNamespace(
+    irq0CallRate=955, irq1CallRate=0, busOff=False, errorWarning=False,
+    errorPassive=False, receiveErrorCnt=0, transmitErrorCnt=0,
+  )
   recovered = SimpleNamespace(
     faults=["interruptRateCan3"], faultStatus="faultTemp",
+    interruptLoad=0.04, canState2=healthy_can,
     ev9LongPreinitStatus=SimpleNamespace(resident=True),
   )
 
   assert ev9_panda_faulted_for_actuation([], True)
   assert ev9_panda_faulted_for_actuation([recovered], True)
+  assert not ev9_panda_faulted_for_actuation([recovered], True, True)
+
+  healthy_can.irq0CallRate = 8000
+  assert ev9_panda_faulted_for_actuation([recovered], True, True)
+  healthy_can.irq0CallRate = 955
+  recovered.faults.append("interruptRateCan2")
+  assert ev9_panda_faulted_for_actuation([recovered], True, True)
 
 
 def test_claim_scheduler_uses_bounded_three_ms_retry_and_one_ms_status_poll():
-  from openpilot.selfdrive.car import card as card_module
-
-  assert card_module.EV9_PANDA_PREINIT_CLAIM_RETRY_S == 0.003
-  assert card_module.EV9_PANDA_PREINIT_CLAIM_POLL_MS == 1
+  assert coordinator_module.EV9_PANDA_PREINIT_CLAIM_RETRY_S == 0.003
+  assert coordinator_module.EV9_PANDA_PREINIT_CLAIM_POLL_MS == 1
   # A 3 ms phase walk reaches the final 10% admission window for every
   # managed cadence; a 10 ms walk does not for the 10/20/50 ms classes.
   for period_ms in (10, 20, 50, 200):
@@ -794,7 +802,6 @@ def test_claim_scheduler_uses_bounded_three_ms_retry_and_one_ms_status_poll():
 
 
 def test_shared_claim_primes_controller_once_then_uses_frozen_three_ms_retries(monkeypatch):
-  from openpilot.selfdrive.car import card as card_module
   from openpilot.selfdrive.car.card import Car
 
   class FakeTime:
@@ -818,7 +825,7 @@ def test_shared_claim_primes_controller_once_then_uses_frozen_three_ms_retries(m
       self.fake_time.now += timeout_ms / 1000.0
 
   fake_time = FakeTime()
-  monkeypatch.setattr(card_module, "time", fake_time)
+  monkeypatch.setattr(coordinator_module, "time", fake_time)
   card_instance = Car.__new__(Car)
   card_instance.ev9_preinit_claim_receipts = set()
   card_instance.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED

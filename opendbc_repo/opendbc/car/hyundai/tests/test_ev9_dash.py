@@ -5,17 +5,18 @@ import pytest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus
 from opendbc.car.structs import CarParams
-from opendbc.car.hyundai import ev9_dash, hyundaicanfd
+from opendbc.car.hyundai import ev9_canfd, ev9_dash
 from opendbc.car.hyundai.carstate import calculate_canfd_speed_limit, get_canfd_speed_limit_state
 from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9DashObjectTracker, Ev9DashScene, \
                                              Ev9LaneBoundary, Ev9LaneOutline, Ev9LaneOutlineTracker, \
                                              Ev9RawBlindspotGateState, Ev9TargetLineTracker, display_context_valid, filter_side_objects, \
                                              radar_backed_object, select_ev9_lane_boundaries, select_lane_change_direction, \
-                                             select_target_line_distance, update_ev9_raw_blindspot_gate, \
+                                             resolve_ev9_raw_blindspot_state, select_target_line_distance, update_ev9_raw_blindspot_gate, \
                                              validate_slots_for_output
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.radar_interface import ev9_dash_display_candidate, ev9_dash_side_candidate, \
-                                                    ev9_dash_side_retention_candidate
+from opendbc.car.hyundai.ev9_radar import dash_display_candidate as ev9_dash_display_candidate, \
+                                            dash_side_candidate as ev9_dash_side_candidate, \
+                                            dash_side_retention_candidate as ev9_dash_side_retention_candidate
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HyundaiStarPilotFlags
 
 
@@ -89,6 +90,17 @@ def test_blindspot_reconstruction_never_overrides_native(native, native_fresh, r
     *reconstructed,
     enabled,
   ) == expected
+
+
+@pytest.mark.parametrize(("raw_state", "raw_fresh", "expected"), [
+  (0x12, True, (True, False)),
+  (0x0A, True, (False, True)),
+  (0x1A, True, (True, True)),
+  (0x10, True, (False, False)),
+  (0x12, False, (False, False)),
+])
+def test_basic_blindspot_mode_uses_unqualified_raw_side_state(raw_state, raw_fresh, expected):
+  assert resolve_ev9_raw_blindspot_state(raw_state, raw_fresh) == expected
 
 
 def test_raw_blindspot_left_requires_strict_adjacent_moving_track():
@@ -176,6 +188,29 @@ def test_fused_primary_does_not_depend_on_route_variant_display_score():
   assert slots.primary.track_id == 7
 
 
+@pytest.mark.parametrize("lateral", (-4.2, 4.2))
+def test_acquired_fused_primary_stays_centered_through_curve_offset(lateral):
+  tracker = Ev9DashObjectTracker()
+  assert acquire(tracker, [point(track_id=7)], preferred=7).primary is not None
+
+  curved = point(track_id=7, lateral=lateral, relative_speed=0.0)
+  slots = update(tracker, [curved], preferred=7, side={7}, retention={7}, model_prob=0.99)
+
+  assert slots.primary is not None and slots.primary.track_id == 7
+  assert slots.left is None
+  assert slots.right is None
+
+
+@pytest.mark.parametrize("lateral", (-4.2, 4.2))
+def test_new_fused_primary_still_requires_center_entry_envelope(lateral):
+  tracker = Ev9DashObjectTracker()
+  curved = point(track_id=7, lateral=lateral, relative_speed=0.0)
+
+  slots = acquire(tracker, [curved], preferred=7, side={7}, retention={7}, model_prob=0.99)
+
+  assert slots.primary is None
+
+
 def test_firmware_variant_side_track_does_not_require_display_candidate():
   tracker = Ev9DashObjectTracker()
   adjacent = point(track_id=7, lateral=3.0, relative_speed=0.0)
@@ -195,11 +230,13 @@ def test_primary_requires_the_fused_radar_track():
   assert slots.primary is None
 
 
-def test_primary_accepts_route_observed_lateral_without_old_2_2_cutoff():
+def test_primary_entry_accepts_route_observed_lateral_without_old_2_2_cutoff():
   tracker = Ev9DashObjectTracker()
   slots = acquire(tracker, [point(lateral=2.4)], preferred=1, display=set())
   assert slots.primary is not None
-  assert update(tracker, [point(lateral=2.6)], preferred=1, display=set()).primary is None
+
+  new_tracker = Ev9DashObjectTracker()
+  assert acquire(new_tracker, [point(lateral=2.6)], preferred=1, display=set()).primary is None
 
 
 def test_primary_confidence_is_stricter_beyond_100_metres():
@@ -540,7 +577,7 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
   hud = SimpleNamespace(leadDistanceBars=3, leftLaneDepart=False, rightLaneDepart=False)
 
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=True, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=scene,
   ))])
@@ -568,7 +605,7 @@ def test_ccnc_status_encodes_stable_stock_object_slots():
   assert status["SPEEDLIMIT_FLASH"] == 4
   assert status["SPEEDLIMIT_WEATHER"] == 0
 
-  parser.update([(2, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(2, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 2, enabled=True, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=Ev9DashScene(target_line_distance=42.0, speed_limit_raw=253),
   ))])
@@ -602,7 +639,7 @@ def test_disabled_optional_reconstruction_keeps_mandatory_handoff_status():
   hud = SimpleNamespace(leadDistanceBars=3, leftLaneDepart=False, rightLaneDepart=False)
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
 
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=False, main_cruise_enabled=True,
     hud=hud, out=out, steering_available=True, steering_active=False,
     dash_scene=scene,
@@ -625,7 +662,7 @@ def test_disabled_optional_reconstruction_keeps_mandatory_handoff_status():
     lane_outline=Ev9LaneOutline(True, True, 0.01),
     target_line_distance=42.0,
   )
-  parser.update([(3, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(3, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 3, enabled=False, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=standby_scene,
   ))])
@@ -640,7 +677,7 @@ def test_disabled_optional_reconstruction_keeps_mandatory_handoff_status():
   assert standby_162["LEAD_LEFT"] == 1
   assert standby_162["LEAD_RIGHT"] == 1
 
-  parser.update([(4, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(4, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 4, enabled=False, main_cruise_enabled=False,
     hud=hud, out=out, dash_scene=standby_scene,
   ))])
@@ -650,7 +687,7 @@ def test_disabled_optional_reconstruction_keeps_mandatory_handoff_status():
   assert parser.vl["CCNC_0x162"]["LEAD"] == 0
   assert parser.vl["CCNC_0x162"]["LEAD_LEFT"] == 0
 
-  neutral_messages = hyundaicanfd.create_ccnc_angle_long_status_messages(
+  neutral_messages = ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 5, enabled=True, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=Ev9DashScene(),
   )
@@ -683,7 +720,7 @@ def test_ccnc_lane_change_uses_existing_lane_arrow_and_icon_states(side, left_ar
   hud = SimpleNamespace(leadDistanceBars=3, leftLaneDepart=False, rightLaneDepart=False)
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
 
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=False, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=scene,
   ))])
@@ -705,7 +742,7 @@ def test_ccnc_lane_change_uses_existing_lane_arrow_and_icon_states(side, left_ar
   (67.5, 30),
 ])
 def test_ccnc_lane_curvature_mapping_preserves_existing_ccnc_encoding(steering_angle, expected):
-  assert hyundaicanfd.ccnc_lane_curvature_from_steering_angle(steering_angle) == expected
+  assert ev9_canfd.lane_curvature_from_steering_angle(steering_angle) == expected
 
 
 @pytest.mark.parametrize(("desired_curvature", "expected_direction"), [
@@ -726,7 +763,7 @@ def test_ccnc_status_encodes_model_lane_outline_with_stock_layout(desired_curvat
   out = SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0)
   scene = Ev9DashScene(lane_outline=Ev9LaneOutline(True, True, desired_curvature))
 
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=True, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=scene,
   ))])
@@ -741,7 +778,7 @@ def test_ccnc_status_encodes_model_lane_outline_with_stock_layout(desired_curvat
   else:
     assert 15 < status["LANELINE_CURVATURE"] < 31
 
-  parser.update([(2, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(2, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 2, enabled=False, main_cruise_enabled=True,
     hud=hud, out=out, dash_scene=scene,
   ))])
@@ -771,7 +808,7 @@ def test_ccnc_side_kill_switch_suppresses_all_radar_side_slots():
     ),
     side_objects_enabled=False,
   )
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=True,
     hud=SimpleNamespace(leadDistanceBars=3), out=SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0),
     dash_scene=scene,
@@ -791,7 +828,7 @@ def test_ccnc_status_uses_standby_objects_until_main_is_off():
   parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0), ("CCNC_0x162", 0)], can_bus.ECAN)
   scene = Ev9DashScene(objects=ClusterObjectSlots(primary=ClusterObject(1, 30.0, 0.0, 0.0)))
 
-  parser.update([(1, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(1, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 1, enabled=False, main_cruise_enabled=True,
     hud=SimpleNamespace(leadDistanceBars=3), out=SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0),
     dash_scene=scene,
@@ -799,7 +836,7 @@ def test_ccnc_status_uses_standby_objects_until_main_is_off():
   assert parser.vl["CCNC_0x161"]["DISTANCE_LEAD"] == 1
   assert parser.vl["CCNC_0x162"]["LEAD"] == 1
 
-  parser.update([(2, hyundaicanfd.create_ccnc_angle_long_status_messages(
+  parser.update([(2, ev9_canfd.create_angle_long_status_messages(
     packer, CP, can_bus, 2, enabled=False, main_cruise_enabled=False,
     hud=SimpleNamespace(leadDistanceBars=3), out=SimpleNamespace(vCruiseCluster=100.0, vEgo=10.0),
     dash_scene=scene,

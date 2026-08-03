@@ -2958,7 +2958,9 @@ def test_led_fast_service_completes_off_reset_before_next_outer_loop():
 
 def test_production_led_fades_service_only_pending_tx_cancel():
   main = (Path(__file__).parents[1] / "board" / "main.c").read_text()
-  assert main.count("ev9_long_preinit_service_tx_cancel(microsecond_timer_get())") == 2
+  integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_main.h").read_text()
+  assert main.count("ev9_long_preinit_main_service_tx_cancel();") == 2
+  assert integration.count("ev9_long_preinit_service_tx_cancel(microsecond_timer_get())") == 1
 
 
 def test_ready_missing_adas_after_panda_reset_runs_restore_only_recovery():
@@ -3030,21 +3032,23 @@ def test_initial_harness_orientation_maps_first_rx_and_tx(flipped, expected):
 
 def test_main_applies_detected_orientation_before_first_can_init():
   main = (Path(__file__).parents[1] / "board" / "main.c").read_text()
+  integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_main.h").read_text()
   tick = main.index("static void tick_handler(void)")
   assert main.index("static uint8_t prev_harness_status = HARNESS_STATUS_NC;") < tick
 
   harness_init = main.index("  harness_init();")
-  initial_orientation = main.index(
-    "  can_set_orientation(harness.status == HARNESS_STATUS_FLIPPED);", harness_init,
-  )
-  seed_tick_cache = main.index("  prev_harness_status = harness.status;", initial_orientation)
-  first_safety_init = main.index("  set_safety_mode(SAFETY_NOOUTPUT, 0U);", seed_tick_cache)
-  assert harness_init < initial_orientation < seed_tick_cache < first_safety_init
+  hook = main.index("  ev9_long_preinit_harness_initialized(&prev_harness_status);", harness_init)
+  first_safety_init = main.index("  set_safety_mode(ev9_long_preinit_initial_safety_mode(), 0U);", hook)
+  assert harness_init < hook < first_safety_init
+  initial_orientation = integration.index("can_set_orientation(harness.status == HARNESS_STATUS_FLIPPED);")
+  seed_tick_cache = integration.index("*previous_status = harness.status;", initial_orientation)
+  assert initial_orientation < seed_tick_cache
 
 
 def test_preinit_can_reinit_guards_preserve_generic_panda_semantics():
   main = (Path(__file__).parents[1] / "board" / "main.c").read_text()
   comms = (Path(__file__).parents[1] / "board" / "main_comms.h").read_text()
+  comms_integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_comms.h").read_text()
 
   # Initial orientation/cache seeding is needed only by the firmware which
   # begins listening before pandad starts. Generic Panda keeps its original
@@ -3053,8 +3057,8 @@ def test_preinit_can_reinit_guards_preserve_generic_panda_semantics():
   local_cache = main.index("  static uint8_t prev_harness_status = HARNESS_STATUS_NC;", tick)
   assert "#ifndef PANDA_EV9_LONG_PREINIT" in main[tick:local_cache]
   harness_init = main.index("  harness_init();")
-  orientation = main.index("  can_set_orientation(harness.status == HARNESS_STATUS_FLIPPED);", harness_init)
-  assert "#ifdef PANDA_EV9_LONG_PREINIT" in main[harness_init:orientation]
+  orientation_hook = main.index("ev9_long_preinit_harness_initialized(&prev_harness_status)", harness_init)
+  assert "#ifdef PANDA_EV9_LONG_PREINIT" in main[harness_init:orientation_hook]
 
   # Repeated pandad configuration must not reset EV9's resident CAN state, but
   # normal firmware retains the established set-and-reinitialize semantics.
@@ -3068,20 +3072,22 @@ def test_preinit_can_reinit_guards_preserve_generic_panda_semantics():
     start = comms.index(request)
     end = comms.index("      break;", start)
     handler = comms[start:end]
-    assert "#ifdef PANDA_EV9_LONG_PREINIT" in handler
-    assert "#else" in handler
-    assert original_action in handler[handler.index("#else"):]
+    assert "PANDA_EV9_LONG_PREINIT" not in handler
+    assert original_action in handler
+  assert "Pandad writes its complete configuration on every connection" in comms_integration
+  for request in ("case 0xDCU:", "case 0xDEU:", "case 0xE5U:", "case 0xF9U:", "case 0xFCU:"):
+    assert request in comms_integration
 
 
 def test_heartbeat_loss_keeps_power_save_off_for_resident_bridge():
   main = (Path(__file__).parents[1] / "board" / "main.c").read_text()
+  integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_main.h").read_text()
   heartbeat = main.index("if (heartbeat_counter >=")
-  watchdog = main.index("ev9_long_preinit_host_watchdog_lost", heartbeat)
-  power_save = main.index("if (ev9_long_preinit_must_preserve())", watchdog)
-  generic = main.index("#else", power_save)
-  guarded = main[power_save:generic]
-  assert "set_power_save_state(POWER_SAVE_STATUS_DISABLED);" in guarded
-  assert "set_power_save_state(POWER_SAVE_STATUS_ENABLED);" in guarded
+  hook = main.index("ev9_long_preinit_handle_heartbeat_loss(started)", heartbeat)
+  assert "set_power_save_state(POWER_SAVE_STATUS_ENABLED);" in main[hook:]
+  watchdog = integration.index("ev9_long_preinit_host_watchdog_lost")
+  power_save = integration.index("set_power_save_state(POWER_SAVE_STATUS_DISABLED);", watchdog)
+  assert watchdog < power_save
 
 
 def test_profile_crc_init_is_one_time_and_rx_uses_proven_direct_scheduler():
@@ -3153,31 +3159,32 @@ def test_unmatched_direct_diagnostic_responses_do_not_mutate_ownership():
 
 def test_fdcan_restore_drain_checks_and_cancels_hardware_pending():
   fdcan = (Path(__file__).parents[1] / "board" / "drivers" / "fdcan.h").read_text()
-  idle = fdcan.index("bool ev9_preinit_can_tx_idle(uint8_t bus_number)")
-  request = fdcan.index("void ev9_preinit_can_request_tx_reset(uint32_t now_us)")
-  service = fdcan.index("ev9_preinit_can_service_tx_reset(uint32_t now_us)")
-  reset_end = fdcan.index("#endif", service)
-  assert "FDCANx->TXBRP == 0U" in fdcan[idle:request]
-  assert "while (" not in fdcan[request:reset_end]
-  assert "delay(" not in fdcan[request:reset_end]
-  assert "llcan_clear_send" not in fdcan[request:reset_end]
-  radar_init = fdcan.index("radar->CCCR |= FDCAN_CCCR_INIT", service)
-  ecan_init = fdcan.index("ecan->CCCR |= FDCAN_CCCR_INIT", radar_init)
-  final_rx_check = fdcan.index("radar->RXF0S & FDCAN_RXF0S_F0FL", ecan_init)
-  radar_clear = fdcan.index("can_clear(can_queues[EV9_PREINIT_BUS_RADAR])", final_rx_check)
-  ecan_clear = fdcan.index("can_clear(can_queues[EV9_PREINIT_BUS_ECAN])", radar_clear)
-  radar_reset = fdcan.index("fdcan_configure_in_init(radar)", ecan_clear)
-  ecan_reset = fdcan.index("fdcan_configure_in_init(ecan)", radar_reset)
-  running = fdcan.index("radar->CCCR &= ~FDCAN_CCCR_INIT", ecan_reset)
+  integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_fdcan.h").read_text()
+  idle = integration.index("bool ev9_preinit_can_tx_idle(uint8_t bus_number)")
+  request = integration.index("void ev9_preinit_can_request_tx_reset(uint32_t now_us)")
+  service = integration.index("ev9_preinit_can_service_tx_reset(uint32_t now_us)")
+  reset_end = len(integration)
+  assert "FDCANx->TXBRP == 0U" in integration[idle:request]
+  assert "while (" not in integration[request:reset_end]
+  assert "delay(" not in integration[request:reset_end]
+  assert "llcan_clear_send" not in integration[request:reset_end]
+  radar_init = integration.index("radar->CCCR |= FDCAN_CCCR_INIT", service)
+  ecan_init = integration.index("ecan->CCCR |= FDCAN_CCCR_INIT", radar_init)
+  final_rx_check = integration.index("radar->RXF0S & FDCAN_RXF0S_F0FL", ecan_init)
+  radar_clear = integration.index("can_clear(can_queues[EV9_PREINIT_BUS_RADAR])", final_rx_check)
+  ecan_clear = integration.index("can_clear(can_queues[EV9_PREINIT_BUS_ECAN])", radar_clear)
+  radar_reset = integration.index("ev9_fdcan_configure_in_init(radar)", ecan_clear)
+  ecan_reset = integration.index("ev9_fdcan_configure_in_init(ecan)", radar_reset)
+  running = integration.index("radar->CCCR &= ~FDCAN_CCCR_INIT", ecan_reset)
   assert service < radar_init < ecan_init < final_rx_check < radar_clear < ecan_clear < radar_reset < ecan_reset < running
-  assert "FDCANx->TXBCR" not in fdcan[service:reset_end]
+  assert "FDCANx->TXBCR" not in integration[service:reset_end]
   process = fdcan.index("void process_can(uint8_t can_number)")
   drain_gate = fdcan.index("ev9_long_preinit_tx_drain_allowed(bus_number)", process)
   tx_pop = fdcan.index("can_pop(can_queues[bus_number]", drain_gate)
   assert "FDCANx->IR |= FDCAN_IR_TFE" in fdcan[process:drain_gate]
   assert drain_gate < tx_pop
 
-  can_common = (Path(__file__).parents[1] / "board" / "drivers" / "can_common.h").read_text()
+  can_common = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_can.h").read_text()
   gate = can_common.index("ev9_long_preinit_internal_tx_allowed(to_push, bus_number)")
   enqueue = can_common.index("queued = can_push(can_queues[bus_number], to_push)", gate)
   assert gate < enqueue

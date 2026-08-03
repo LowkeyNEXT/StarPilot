@@ -1,14 +1,23 @@
 from collections import deque
 import copy
-from dataclasses import dataclass
 import math
 
 from cereal import custom
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.hyundai.ev9_bsm import CANFD_NATIVE_BLINDSPOT_STALE_NS as CANFD_NATIVE_BLINDSPOT_STALE_NS, \
+                                          EV9_RAW_BLINDSPOT_STALE_NS as EV9_RAW_BLINDSPOT_STALE_NS, \
+                                          decode_canfd_blinker_stalks as decode_canfd_blinker_stalks, \
+                                          initialize_ev9_blindspot_state, \
+                                          update_ev9_canfd_blindspot_state, \
+                                          resolve_canfd_native_blindspot_state as resolve_canfd_native_blindspot_state
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, CAR, DBC, Buttons, CarControllerParams, \
+from opendbc.car.hyundai.hkg_telemetry import ENERGY_MAX_AGE_NS, ENERGY_MAX_SOURCE_SKEW_NS, \
+                                                 HKGEnergyTelemetry, get_can_ev_cluster_dte, \
+                                                 get_canfd_ev_energy_telemetry, \
+                                                 populate_vehicle_telemetry
+from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, CAR, DBC, Buttons, CarControllerParams, \
                                        CANFD_ANGLE_LONGITUDINAL_CAR, CANFD_CORNER_RADAR_BSM_CAR, \
                                        hyundai_cancel_button_enables_cruise, hyundai_cancel_button_resume_requires_set, \
                                        ALT_BUS_LDA_BUTTON_CARS, ALT_BUS_LDA_BUTTON_SWL_STAT_CARS, \
@@ -29,27 +38,13 @@ BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: Bu
 
 IONIQ_6_BLINDSPOT_RIGHT_MASK = 0x08
 IONIQ_6_BLINDSPOT_LEFT_MASK = 0x10
-CANFD_NATIVE_BLINDSPOT_STALE_NS = 100_000_000
-EV9_RAW_BLINDSPOT_STALE_NS = 150_000_000
 CANFD_CAMERA_LEAD_MIN_DISTANCE = 0.1
 ALT_BUS_LDA_BUTTON_BURST_DEBOUNCE_NS = int(1.3e9)
-EV_ENERGY_MAX_AGE_NS = 500_000_000
-EV_ENERGY_MAX_SOURCE_SKEW_NS = 150_000_000
 
-
-@dataclass(frozen=True)
-class HKGEnergyTelemetry:
-  available: bool = False
-  soc_valid: bool = False
-  dte_valid: bool = False
-  charging_valid: bool = False
-  charge_port_valid: bool = False
-  fuel_gauge: float = 0.0
-  distance_to_empty: float = 0.0
-  charging: bool = False
-  charging_port_connected: bool = False
-  charging_time_remaining: float = 0.0
-  source_mono_time: int = 0
+# Original telemetry names retained for callers of carstate.py.
+EV_ENERGY_MAX_AGE_NS = ENERGY_MAX_AGE_NS
+EV_ENERGY_MAX_SOURCE_SKEW_NS = ENERGY_MAX_SOURCE_SKEW_NS
+populate_starpilot_vehicle_telemetry = populate_vehicle_telemetry
 
 def get_non_scc_cruise_signals(CP) -> tuple[str, str, str, str, str, str]:
   if CP.flags & HyundaiFlags.EV:
@@ -90,129 +85,12 @@ def decode_ioniq_6_blindspot_radar_state(state: int) -> tuple[bool, bool]:
   return bool(state_int & IONIQ_6_BLINDSPOT_LEFT_MASK), bool(state_int & IONIQ_6_BLINDSPOT_RIGHT_MASK)
 
 
-def decode_canfd_blinker_stalks(left_stalk: int, right_stalk: int) -> tuple[bool, bool]:
-  return int(left_stalk) == 1, int(right_stalk) == 1
-
-
-def resolve_canfd_native_blindspot_state(left_state: int, right_state: int, timestamp_nanos: int,
-                                          now_nanos: int) -> tuple[bool, bool, bool]:
-  age_nanos = int(now_nanos) - int(timestamp_nanos)
-  fresh = int(timestamp_nanos) > 0 and 0 <= age_nanos <= CANFD_NATIVE_BLINDSPOT_STALE_NS
-  if not fresh:
-    return False, False, False
-
-  # Native 0x1BA state 1 is the steady lamp and state 2 is the escalated warning.
-  # State 0 is neutral and state 3 is not a validated object indication.
-  return int(left_state) in (1, 2), int(right_state) in (1, 2), True
-
-
 def decode_canfd_camera_lead(distance: float, rel_speed: float) -> tuple[bool, float, float]:
   lead_distance = float(distance)
   lead_visible = lead_distance > CANFD_CAMERA_LEAD_MIN_DISTANCE
   if not lead_visible:
     return False, 0.0, 0.0
   return True, lead_distance, float(rel_speed)
-
-
-def get_canfd_ev_energy_telemetry(cp: CANParser, *, require_redundant_soc: bool = False,
-                                  enable_charging: bool = False,
-                                  now_nanos: int | None = None) -> HKGEnergyTelemetry:
-  if now_nanos is None:
-    now_nanos = int(cp._last_update_nanos)
-
-  def fresh(timestamp_nanos: int) -> bool:
-    age_nanos = now_nanos - int(timestamp_nanos)
-    return int(timestamp_nanos) > 0 and 0 <= age_nanos <= EV_ENERGY_MAX_AGE_NS
-
-  def aligned(first_timestamp_nanos: int, second_timestamp_nanos: int) -> bool:
-    return abs(int(first_timestamp_nanos) - int(second_timestamp_nanos)) <= EV_ENERGY_MAX_SOURCE_SKEW_NS
-
-  display_soc = cp.vl["EV_ENERGY_STATUS_REDUNDANT"]["BATTERY_SOC_REDUNDANT"]
-  display_soc_ts = cp.ts_nanos["EV_ENERGY_STATUS_REDUNDANT"]["BATTERY_SOC_REDUNDANT"]
-  soc_valid = fresh(display_soc_ts) and 0.0 <= display_soc <= 100.0
-  fuel_gauge = display_soc / 100.0 if soc_valid else 0.0
-  soc_timestamps = [display_soc_ts] if soc_valid else []
-
-  if require_redundant_soc:
-    primary_soc = cp.vl["EV_ENERGY_STATUS"]["BATTERY_SOC"]
-    primary_soc_ts = cp.ts_nanos["EV_ENERGY_STATUS"]["BATTERY_SOC"]
-    soc_valid = (soc_valid and fresh(primary_soc_ts) and aligned(display_soc_ts, primary_soc_ts) and
-                 0.0 <= primary_soc <= 100.0 and abs(display_soc - primary_soc) <= 1.0)
-    fuel_gauge = (display_soc + primary_soc) / 200.0 if soc_valid else 0.0
-    soc_timestamps = [display_soc_ts, primary_soc_ts] if soc_valid else []
-
-  dte_km = cp.vl["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"]
-  dte_ts = cp.ts_nanos["EV_RANGE_STATUS"]["DISTANCE_TO_EMPTY"]
-  dte_valid = fresh(dte_ts) and 0.0 < dte_km < 900.0
-  distance_to_empty = dte_km * 1000.0 if dte_valid else 0.0
-
-  charging_valid = False
-  charge_port_valid = False
-  charging = False
-  charging_port_connected = False
-  charging_timestamps = []
-  if enable_charging:
-    plug_connected = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"] == 1
-    plug_connected_redundant = cp.vl["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"] == 1
-    plug_ts = cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED"]
-    redundant_plug_ts = cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGE_PORT_CONNECTED_REDUNDANT"]
-    charge_port_valid = (fresh(plug_ts) and fresh(redundant_plug_ts) and aligned(plug_ts, redundant_plug_ts) and
-                         plug_connected == plug_connected_redundant)
-    charging_port_connected = charge_port_valid and plug_connected
-
-    primary_charging = cp.vl["EV_ENERGY_STATUS"]["CHARGING_ACTIVE"] == 1
-    redundant_charging = cp.vl["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"] == 1
-    primary_charging_ts = cp.ts_nanos["EV_ENERGY_STATUS"]["CHARGING_ACTIVE"]
-    redundant_charging_ts = cp.ts_nanos["EV_CHARGE_STATUS"]["CHARGING_ACTIVE_REDUNDANT"]
-    charging_valid = (charge_port_valid and fresh(primary_charging_ts) and fresh(redundant_charging_ts) and
-                      aligned(primary_charging_ts, redundant_charging_ts) and
-                      primary_charging == redundant_charging and
-                      (not primary_charging or charging_port_connected))
-    charging = charging_valid and primary_charging
-    if charge_port_valid:
-      charging_timestamps += [plug_ts, redundant_plug_ts]
-    if charging_valid:
-      charging_timestamps += [primary_charging_ts, redundant_charging_ts]
-
-  source_timestamps = [*soc_timestamps, *charging_timestamps]
-  if dte_valid:
-    source_timestamps.append(dte_ts)
-
-  return HKGEnergyTelemetry(
-    available=soc_valid or dte_valid,
-    soc_valid=soc_valid,
-    dte_valid=dte_valid,
-    charging_valid=charging_valid,
-    charge_port_valid=charge_port_valid,
-    fuel_gauge=fuel_gauge,
-    distance_to_empty=distance_to_empty,
-    charging=charging,
-    charging_port_connected=charging_port_connected,
-    source_mono_time=max(source_timestamps, default=0),
-  )
-
-
-def get_can_ev_cluster_dte(cp: CANParser) -> float:
-  dte_km = cp.vl["CLU13"]["CF_Clu_DTE"]
-  if cp.ts_nanos["CLU13"]["CF_Clu_DTE"] > 0 and 0.0 < dte_km < 900.0:
-    return dte_km * 1000.0
-  return 0.0
-
-
-def populate_starpilot_vehicle_telemetry(fp_ret, ret: structs.CarState, telemetry: HKGEnergyTelemetry) -> None:
-  fp_ret.vehicleTelemetryAvailable = telemetry.available
-  fp_ret.fuelGauge = ret.fuelGauge
-  fp_ret.distanceToEmpty = ret.distanceToEmpty
-  fp_ret.charging = ret.charging
-  fp_ret.chargingPortConnected = ret.chargingPortConnected
-  fp_ret.chargingTimeRemaining = ret.chargingTimeRemaining
-  fp_ret.vehicleTelemetrySourceMonoTime = telemetry.source_mono_time
-  fp_ret.vehicleTelemetrySocValid = telemetry.soc_valid
-  fp_ret.vehicleTelemetryDteValid = telemetry.dte_valid
-  fp_ret.vehicleTelemetryChargingValid = telemetry.charging_valid
-  fp_ret.vehicleTelemetryChargePortValid = telemetry.charge_port_valid
-  fp_ret.vEgo = ret.vEgo
-  fp_ret.standstill = ret.standstill
 
 
 class CarState(CarStateBase):
@@ -312,17 +190,8 @@ class CarState(CarStateBase):
     self.right_blindspot_from_radar = False
     self.left_blinker_stalk = False
     self.right_blinker_stalk = False
-    self.native_left_blindspot_state = 0
-    self.native_right_blindspot_state = 0
-    self.native_blindspot_ts = 0
-    self.native_blindspot_fresh = False
     if CP.carFingerprint == CAR.KIA_EV9:
-      self.ev9_raw_blindspot_state = 0
-      self.ev9_raw_blindspot_ts = 0
-      self.ev9_raw_blindspot_fresh = False
-      self.ev9_reconstructed_left_blindspot = False
-      self.ev9_reconstructed_right_blindspot = False
-      self.ev9_reconstructed_blindspot_ts = 0
+      initialize_ev9_blindspot_state(self)
       self.hba_icon = 0
       self.main_cruise_on = False
       self.angle_steering_angle = 0.0
@@ -619,7 +488,7 @@ class CarState(CarStateBase):
     if self.CP.carFingerprint in CAN_EV_CLUSTER_DTE_CAR:
       ret.distanceToEmpty = get_can_ev_cluster_dte(cp)
       dte_timestamp = cp.ts_nanos["CLU13"]["CF_Clu_DTE"] if ret.distanceToEmpty > 0.0 else 0
-      populate_starpilot_vehicle_telemetry(fp_ret, ret, HKGEnergyTelemetry(
+      populate_vehicle_telemetry(fp_ret, ret, HKGEnergyTelemetry(
         available=ret.distanceToEmpty > 0.0,
         dte_valid=ret.distanceToEmpty > 0.0,
         distance_to_empty=ret.distanceToEmpty,
@@ -706,22 +575,9 @@ class CarState(CarStateBase):
       self.left_blindspot_from_radar, self.right_blindspot_from_radar = decode_ioniq_6_blindspot_radar_state(
         cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
     if self.CP.carFingerprint == CAR.KIA_EV9:
-      self.ev9_raw_blindspot_state = int(cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"])
-      self.ev9_raw_blindspot_ts = cp.ts_nanos["BLINDSPOTS_FRONT_CORNER_2"]["CHECKSUM"]
-      raw_age_nanos = max(cp.ts_nanos["WHEEL_SPEEDS"]["CHECKSUM"], self.ev9_raw_blindspot_ts) - self.ev9_raw_blindspot_ts
-      self.ev9_raw_blindspot_fresh = self.ev9_raw_blindspot_ts > 0 and \
-        0 <= raw_age_nanos <= EV9_RAW_BLINDSPOT_STALE_NS
-    if self.CP.enableBsm:
-      if self.CP.carFingerprint == CAR.KIA_EV9:
-        self.native_left_blindspot_state = int(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"])
-        self.native_right_blindspot_state = int(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_RtIndSta"])
-        self.native_blindspot_ts = cp.ts_nanos["BLINDSPOTS_REAR_CORNERS"]["CHECKSUM"]
-        now_nanos = max(cp.ts_nanos["WHEEL_SPEEDS"]["CHECKSUM"], self.native_blindspot_ts)
-        ret.leftBlindspot, ret.rightBlindspot, self.native_blindspot_fresh = resolve_canfd_native_blindspot_state(
-          self.native_left_blindspot_state, self.native_right_blindspot_state,
-          self.native_blindspot_ts, now_nanos,
-        )
-      elif corner_radar_bsm:
+      update_ev9_canfd_blindspot_state(self, cp, ret, self.CP.enableBsm)
+    elif self.CP.enableBsm:
+      if corner_radar_bsm:
         ret.leftBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_LtIndSta"]) or
                              self.left_blindspot_from_radar)
         ret.rightBlindspot = (bool(cp.vl["BLINDSPOTS_REAR_CORNERS"]["BCW_RtIndSta"]) or
@@ -813,7 +669,7 @@ class CarState(CarStateBase):
     )
     fp_ret.dashboardSpeedLimit = calculate_canfd_speed_limit(self.CP, self.FPCP, cp, cp_cam, speed_factor)
     if self.CP.carFingerprint in CANFD_EV_TELEMETRY_CAR:
-      populate_starpilot_vehicle_telemetry(fp_ret, ret, energy_telemetry)
+      populate_vehicle_telemetry(fp_ret, ret, energy_telemetry)
     if self.CP.flags & HyundaiFlags.EV:
       drive_mode = cp.vl["DRIVE_MODE_EV"]["DRIVE_MODE"]
       fp_ret.ecoGear = (drive_mode == 4)

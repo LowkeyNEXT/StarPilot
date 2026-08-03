@@ -9,6 +9,7 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.starpilot.common.vision_bsm import vasm_requested
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 UI_WATCHDOG_MAX_DT = int(os.getenv("UI_WATCHDOG_MAX_DT", "10"))
@@ -86,7 +87,7 @@ def run_navigationd(started: bool, params: Params, CP: car.CarParams, starpilot_
 
 
 def run_v_asm(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return started and getattr(starpilot_toggles, "v_asm_enabled", False)
+  return started and vasm_requested(params, CP.carFingerprint)
 
 
 class BigDeviceUIProcess:

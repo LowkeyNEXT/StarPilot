@@ -3,31 +3,30 @@ from cereal import custom
 from opendbc.car.structs import CarParams
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiSafetyFlags
 from panda import Panda
-from openpilot.selfdrive.pandad import pandad as pandad_module
-from openpilot.selfdrive.pandad.pandad import (
-  EV9_LONG_PREINIT_H7_APP,
-  EV9_LONG_PREINIT_FIRMWARE_NAMES,
-  EV9_LONG_PREINIT_LEGACY_STATUS_STRUCT,
-  EV9_LONG_PREINIT_STATUS_STRUCT,
-  EV9_LONG_PREINIT_STATUS_VERSION,
-  EV9_LONG_PREINIT_TIMING_STRUCT,
-  EV9_PREINIT_FLAG_BRIDGE_ACTIVE,
-  EV9_PREINIT_IN_FLIGHT_STATES,
-  EV9_PREINIT_STATE_ABORTED,
-  EV9_PREINIT_STATE_ACTIVE,
-  EV9_PREINIT_STATE_COLLECTING,
-  ev9_long_preinit_active,
-  ev9_long_preinit_flash_blocked,
-  ev9_long_preinit_firmware_selected,
-  ev9_long_preinit_must_preserve,
-  ev9_long_preinit_reset_blocked,
-  ev9_long_preinit_resident_signature,
-  ev9_long_preinit_status_stable,
-  get_ev9_long_preinit_status,
-  get_ev9_long_preinit_panda,
-  get_ignore_ignition_line,
-  get_selected_firmware_name,
+from openpilot.selfdrive.pandad import ev9_preinit as ev9_module
+from openpilot.selfdrive.pandad.ev9_preinit import (
+  H7_APP as EV9_LONG_PREINIT_H7_APP,
+  FIRMWARE_NAMES as EV9_LONG_PREINIT_FIRMWARE_NAMES,
+  LEGACY_STATUS_STRUCT as EV9_LONG_PREINIT_LEGACY_STATUS_STRUCT,
+  STATUS_STRUCT as EV9_LONG_PREINIT_STATUS_STRUCT,
+  STATUS_VERSION as EV9_LONG_PREINIT_STATUS_VERSION,
+  TIMING_STRUCT as EV9_LONG_PREINIT_TIMING_STRUCT,
+  FLAG_BRIDGE_ACTIVE as EV9_PREINIT_FLAG_BRIDGE_ACTIVE,
+  IN_FLIGHT_STATES as EV9_PREINIT_IN_FLIGHT_STATES,
+  STATE_ABORTED as EV9_PREINIT_STATE_ABORTED,
+  STATE_ACTIVE as EV9_PREINIT_STATE_ACTIVE,
+  STATE_COLLECTING as EV9_PREINIT_STATE_COLLECTING,
+  active as ev9_long_preinit_active,
+  flash_blocked as ev9_long_preinit_flash_blocked,
+  firmware_selected as ev9_long_preinit_firmware_selected,
+  must_preserve as ev9_long_preinit_must_preserve,
+  reset_blocked as ev9_long_preinit_reset_blocked,
+  resident_signature as ev9_long_preinit_resident_signature,
+  status_stable as ev9_long_preinit_status_stable,
+  get_status as get_ev9_long_preinit_status,
+  enabled_from_params as get_ev9_long_preinit_panda,
 )
+from openpilot.selfdrive.pandad.pandad import get_ignore_ignition_line
 
 
 class FakeParams:
@@ -45,6 +44,18 @@ class FakeParams:
     if encoding is not None and isinstance(value, bytes):
       return value.decode(encoding)
     return value
+
+
+def test_legacy_pandad_preinit_exports_remain_compatible():
+  from openpilot.selfdrive.pandad import pandad as legacy
+
+  assert legacy.EV9_LONG_PREINIT_STATUS_VERSION == EV9_LONG_PREINIT_STATUS_VERSION
+  assert legacy.EV9_PREINIT_STATE_ACTIVE == EV9_PREINIT_STATE_ACTIVE
+  assert legacy.ev9_long_preinit_active is ev9_long_preinit_active
+  assert legacy.get_ev9_long_preinit_status is get_ev9_long_preinit_status
+  assert legacy.get_selected_firmware_name(
+    EV9_LONG_PREINIT_H7_APP, False, False, False, True,
+  ) == EV9_LONG_PREINIT_FIRMWARE_NAMES[0]
 
 
 class FakePandaHandle:
@@ -140,17 +151,8 @@ def test_ev9_long_preinit_firmware_selection():
     "panda_h7_ev9_long_preinit.bin.signed",
     "panda_h7_ev9_long_preinit_hkg_remote.bin.signed",
   )
-  assert get_selected_firmware_name(EV9_LONG_PREINIT_H7_APP, False, False, False, True) == \
-    "panda_h7_ev9_long_preinit.bin.signed"
-  assert get_selected_firmware_name(EV9_LONG_PREINIT_H7_APP, True, False, False, True) == \
-    "panda_h7_ev9_long_preinit.bin.signed"
-  assert get_selected_firmware_name(EV9_LONG_PREINIT_H7_APP, False, True, False, True) == \
-    "panda_h7_ev9_long_preinit_hkg_remote.bin.signed"
-  assert get_selected_firmware_name(EV9_LONG_PREINIT_H7_APP, False, False, True, True) == \
-    "panda_h7_ev9_long_preinit.bin.signed"
-  assert get_selected_firmware_name(EV9_LONG_PREINIT_H7_APP, False, True, True, True) == \
-    "panda_h7_ev9_long_preinit_hkg_remote.bin.signed"
-  assert get_selected_firmware_name("panda.bin.signed", False, False, False, True) == "panda.bin.signed"
+  assert ev9_module.firmware_name(False) == "panda_h7_ev9_long_preinit.bin.signed"
+  assert ev9_module.firmware_name(True) == "panda_h7_ev9_long_preinit_hkg_remote.bin.signed"
 
   assert ev9_long_preinit_firmware_selected(FakeSelectionPanda(True, EV9_LONG_PREINIT_H7_APP), True)
   assert not ev9_long_preinit_firmware_selected(FakeSelectionPanda(False, EV9_LONG_PREINIT_H7_APP), True)
@@ -168,7 +170,7 @@ def test_ev9_vehicle_telemetry_environment_requires_verified_internal_resident()
   environ = {}
   key = "BOARDD_EV9_VEHICLE_TELEMETRY_SERIAL"
 
-  assert pandad_module.configure_ev9_vehicle_telemetry_environment(True, "internal", {"internal"}, environ)
+  assert ev9_module.configure_vehicle_telemetry_environment(True, "internal", {"internal"}, environ)
   assert environ[key] == "internal"
 
   for enabled, internal_serial, resident_serials in (
@@ -176,7 +178,7 @@ def test_ev9_vehicle_telemetry_environment_requires_verified_internal_resident()
     (True, "", {"internal"}),
     (True, "internal", {"external"}),
   ):
-    assert not pandad_module.configure_ev9_vehicle_telemetry_environment(
+    assert not ev9_module.configure_vehicle_telemetry_environment(
       enabled, internal_serial, resident_serials, environ,
     )
     assert key not in environ
@@ -185,7 +187,7 @@ def test_ev9_vehicle_telemetry_environment_requires_verified_internal_resident()
 def test_ev9_long_preinit_recognizes_resident_signature(monkeypatch, tmp_path):
   firmware_path = tmp_path / "panda_h7_ev9_long_preinit.bin.signed"
   firmware_path.write_bytes(b"firmware")
-  monkeypatch.setattr(pandad_module, "FW_PATH", str(tmp_path))
+  monkeypatch.setattr(ev9_module, "FW_PATH", str(tmp_path))
   monkeypatch.setattr(Panda, "get_signature_from_firmware", lambda _path: b"resident-signature")
 
   assert ev9_long_preinit_resident_signature(b"resident-signature")

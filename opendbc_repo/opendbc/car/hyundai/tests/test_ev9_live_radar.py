@@ -1,10 +1,10 @@
 from opendbc.can.packer import CANPacker
 from opendbc.can.parser import CANParser
 
-from opendbc.car.hyundai.radar_interface import MRR35_RADAR_MSG_COUNT, MRR35_RADAR_START_ADDR, \
-                                                ev9_mrr35_cluster_display_candidate, \
-                                                ev9_mrr35_side_display_retention_candidate, \
-                                                ev9_mrr35_strict_side_display_candidate
+from opendbc.car.hyundai.radar_interface import MRR35_RADAR_MSG_COUNT, MRR35_RADAR_START_ADDR
+from opendbc.car.hyundai.ev9_radar import mrr35_cluster_display_candidate as ev9_mrr35_cluster_display_candidate, \
+                                            mrr35_side_display_retention_candidate as ev9_mrr35_side_display_retention_candidate, \
+                                            mrr35_strict_side_display_candidate as ev9_mrr35_strict_side_display_candidate
 
 
 def test_ev9_display_discriminator_rejects_observed_garage_tracks():

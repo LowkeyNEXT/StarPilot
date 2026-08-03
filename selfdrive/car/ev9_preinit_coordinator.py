@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
+from dataclasses import dataclass
 import os
 import time
 
+from cereal import car
 from openpilot.common.swaglog import cloudlog
 from opendbc.car.can_definitions import CanData
-from opendbc.car.hyundai import hyundaicanfd
-from opendbc.car.hyundai.interface import EV9PandaPreinitOwner, update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai import ev9_canfd
+from opendbc.car.hyundai.ev9_preinit import EV9PandaPreinitHandoff, EV9PandaPreinitOwner, \
+                                               attempt_ev9_pre_fingerprint_suppression, ev9_panda_preinit_armed, \
+                                               update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai.values import CAR
 from openpilot.selfdrive.pandad import can_list_to_can_capnp
 from openpilot.selfdrive.car.ev9_preinit import (
   EV9PreinitFaultHistory,
@@ -23,11 +28,19 @@ from openpilot.selfdrive.car.ev9_preinit import (
   ev9_preinit_health_unchanged,
   ev9_preinit_off_reclaim_failed,
   ev9_preinit_off_reclaim_ready,
+  ev9_preinit_allows_fw_query,
   ev9_preinit_parser_packets,
+  ev9_preinit_refreshed_takeover_allowed,
   ev9_preinit_recovered_fault_dwell_complete,
   ev9_preinit_safety_ready,
   ev9_preinit_resident_ignition_on,
   ev9_preinit_terminal_ignition_on,
+  ev9_preinit_warm_start_pending,
+  ev9_panda_faulted_for_actuation,
+  load_cached_car_params,
+  load_cached_starpilot_car_params,
+  normalize_ev9_cached_starpilot_safety,
+  revalidate_ev9_panda_preinit_handoff,
 )
 
 
@@ -38,6 +51,16 @@ EV9_PANDA_PREINIT_CLAIM_RETRY_S = 0.003
 EV9_PANDA_PREINIT_CLAIM_POLL_MS = 1
 EV9_PANDA_PREINIT_RECLAIM_TIMEOUT_S = 4.0
 EV9_PANDA_PREINIT_STATUS_TIMEOUT_S = 0.5
+EV9_PANDA_PREINIT_HANDOFF_TIMEOUT_S = 0.5
+
+
+@dataclass(frozen=True)
+class EV9FingerprintStartup:
+  handoff: EV9PandaPreinitHandoff
+  allow_fw_query: bool
+  cached_params: object | None
+  cached_fpcp: object | None
+  pre_fingerprint_suppressed: bool
 
 
 class EV9PreinitCoordinator:
@@ -45,6 +68,9 @@ class EV9PreinitCoordinator:
 
   @staticmethod
   def initialize(card) -> None:
+    card.interface_initialized = False
+    card.ev9_early_control_active = False
+    card.ev9_early_car_control = car.CarControl.new_message().as_reader()
     card.ev9_preinit_takeover_state = EV9PreinitTakeoverState.INACTIVE
     card.ev9_preinit_last_status_time = 0.0
     card.ev9_preinit_cycle_started_us = 0
@@ -60,6 +86,108 @@ class EV9PreinitCoordinator:
     card.ev9_preinit_off_high_pending_started = 0.0
     card.ev9_preinit_resume_fresh_can = False
     card.ev9_preinit_fault_history = EV9PreinitFaultHistory()
+
+  def prepare_fingerprint_startup(self, initial_can_messages: list[CanData], panda_states_event) -> EV9FingerprintStartup:
+    panda_states = panda_states_event.pandaStates
+    handoff = update_ev9_panda_preinit_handoff(panda_states)
+    if self.params.get_bool("EV9LongPreinitPanda"):
+      handoff_deadline = time.monotonic() + EV9_PANDA_PREINIT_HANDOFF_TIMEOUT_S
+      while (handoff.owner in (EV9PandaPreinitOwner.NONE, EV9PandaPreinitOwner.PANDA_PENDING) or
+             ev9_preinit_warm_start_pending(True, handoff, panda_states)) and time.monotonic() < handoff_deadline:
+        timeout_ms = max(1, min(100, int((handoff_deadline - time.monotonic()) * 1000)))
+        self.sm.update(timeout_ms)
+        if self.sm.updated['pandaStates']:
+          panda_states = self.sm['pandaStates']
+          handoff = update_ev9_panda_preinit_handoff(panda_states)
+      cloudlog.warning(f"EV9 Panda preinit startup decision: {handoff.reason}")
+
+    cached_params = load_cached_car_params(self.params)
+    cached_fpcp = normalize_ev9_cached_starpilot_safety(
+      cached_params, load_cached_starpilot_car_params(self.params),
+    )
+    suppressed = bool(cached_fpcp is not None and attempt_ev9_pre_fingerprint_suppression(
+      cached_params, self.params, *self.can_callbacks, initial_can_messages,
+    ))
+    return EV9FingerprintStartup(
+      handoff=handoff,
+      allow_fw_query=ev9_preinit_allows_fw_query(self.params, handoff),
+      cached_params=cached_params,
+      cached_fpcp=cached_fpcp,
+      pre_fingerprint_suppressed=suppressed,
+    )
+
+  def start_early_control(self, handoff: EV9PandaPreinitHandoff | None) -> None:
+    requested = bool(not self.CP.passive and self.CP.carFingerprint == CAR.KIA_EV9 and
+                     self.CP.openpilotLongitudinalControl)
+    if not requested:
+      return
+
+    cloudlog.warning("EV9 production early interface initialization requested")
+    refreshed_handoff = handoff or EV9PandaPreinitHandoff()
+    if self.params.get_bool("EV9LongPreinitPanda"):
+      refreshed_handoff = revalidate_ev9_panda_preinit_handoff(self.sm)
+      if not refreshed_handoff.adoptable:
+        cloudlog.error(f"EV9 Panda preinit changed before host takeover: {refreshed_handoff.reason}")
+    self._initialize_car_interface(signal_controls_ready=False)
+    self.ev9_early_control_active = self.CP.openpilotLongitudinalControl and not self.params.get_bool("EcuDisableFailed")
+    takeover = ev9_preinit_refreshed_takeover_allowed(
+      ev9_panda_preinit_armed(self.params), refreshed_handoff, self.ev9_early_control_active,
+    )
+    self.params.put_bool_nonblocking("ControlsReady", True)
+    if self.ev9_early_control_active and takeover:
+      self._prepare_ev9_panda_takeover()
+    elif self.ev9_early_control_active:
+      self._send_ev9_early_inactive_reconstruction(valid=False)
+      cloudlog.warning("EV9 legacy early inactive reconstruction primed")
+    cloudlog.warning(f"EV9 early inactive reconstruction active={self.ev9_early_control_active}")
+
+  def collect_claim_receipts_from_can_list(self, can_list) -> None:
+    if self.ev9_preinit_takeover_state != EV9PreinitTakeoverState.CLAIMING:
+      return
+    for _, frames in can_list:
+      collect_ev9_preinit_claim_receipts(
+        self.ev9_preinit_claim_receipts,
+        [CanData(address, dat, src) for address, dat, src in frames],
+      )
+
+  def update_runtime_state(self, CS, RD) -> None:
+    self._update_ev9_panda_takeover()
+    CS.adasUnavailable = self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.FAULTED
+    self._update_ev9_raw_blindspot_gate(CS, RD)
+    self._update_ev9_dash_tracker(CS, RD)
+    self.CI.CS.openpilot_radar_valid = self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']
+
+    if self.CP.carFingerprint != CAR.KIA_EV9:
+      return
+    self.ev9_preinit_fault_history.update(self.sm['pandaStates'])
+    panda_faulted = ev9_panda_faulted_for_actuation(
+      self.sm['pandaStates'], self.sm.seen['pandaStates'],
+      self.ev9_preinit_fault_history.recovered_fault_authorized,
+    )
+    self.CI.CS.panda_faulted = panda_faulted or self.ev9_preinit_safety_quarantine
+    CS.adasUnavailable = bool(self.CP.openpilotLongitudinalControl and
+                              (self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.FAULTED or panda_faulted))
+
+  def update_aol_state(self, FPCS) -> None:
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      self.CI.CS.ev9_always_on_lateral_enabled = bool(FPCS.alwaysOnLateralEnabled)
+
+  def handle_control_step(self, CS, initialized: bool) -> bool:
+    resume_fresh_can = self.ev9_preinit_resume_fresh_can
+    self.ev9_preinit_resume_fresh_can = False
+    if resume_fresh_can or self.ev9_preinit_takeover_state in (
+      EV9PreinitTakeoverState.FAULTED, EV9PreinitTakeoverState.OFF, EV9PreinitTakeoverState.WAIT_SAFETY,
+    ):
+      return True
+    if self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.CLAIMING:
+      self._send_ev9_early_inactive_reconstruction(CS.canValid)
+      return True
+    if self.CP.passive or initialized:
+      return False
+    if self.ev9_early_control_active:
+      self._send_ev9_early_inactive_reconstruction(CS.canValid)
+      return True
+    return False
 
   def _send_ev9_early_inactive_reconstruction(self, valid: bool) -> bool:
     """Maintain the complete non-actuating EV9 replacement set during startup."""
@@ -309,7 +437,7 @@ class EV9PreinitCoordinator:
           baseline_messages = complete_ev9_preinit_baselines(baselines, time.monotonic())
           if baseline_messages is None:
             continue
-          hyundaicanfd.set_ev9_adrv_baselines(baseline_messages)
+          ev9_canfd.set_adrv_baselines(baseline_messages)
           self.ev9_preinit_claim_templates = {
             (msg.src, msg.address): CanData(msg.address, bytes(msg.dat), msg.src)
             for msg in baseline_messages

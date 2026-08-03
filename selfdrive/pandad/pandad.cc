@@ -16,6 +16,7 @@
 #include "common/swaglog.h"
 #include "common/timing.h"
 #include "common/util.h"
+#include "selfdrive/pandad/ev9_preinit.h"
 #include "selfdrive/pandad/ev9_vehicle_telemetry.h"
 #include "system/hardware/hw.h"
 
@@ -60,16 +61,6 @@ static bool is_tesla_preap(Params &params) {
   } catch (...) {
     return false;
   }
-}
-
-static bool ev9_preinit_status_enabled(Panda *panda) {
-  const char *configured_serials = getenv("BOARDD_EV9_LONG_PREINIT_SERIALS");
-  if (configured_serials == nullptr) {
-    return false;
-  }
-
-  const std::string serial_list = "," + std::string(configured_serials) + ",";
-  return serial_list.find("," + panda->hw_serial() + ",") != std::string::npos;
 }
 
 bool check_all_connected(const std::vector<Panda *> &pandas) {
@@ -230,85 +221,6 @@ void fill_panda_can_state(cereal::PandaState::PandaCanState::Builder &cs, const 
   cs.setIrq1CallRate(can_health.irq1_call_rate);
   cs.setIrq2CallRate(can_health.irq2_call_rate);
   cs.setCanCoreResetCnt(can_health.can_core_reset_cnt);
-}
-
-void fill_ev9_long_preinit_status(cereal::PandaState::Ev9LongPreinitStatus::Builder &ps,
-                                  const std::optional<PandaEv9LongPreinitStatus> &preinit_status,
-                                  bool resident) {
-  ps.setResident(resident);
-  ps.setValid(false);
-  if (!preinit_status) {
-    return;
-  }
-
-  const auto &status = preinit_status->status;
-  ps.setValid(true);
-  ps.setVersion(status.version);
-  ps.setState(status.state);
-  ps.setFlags(status.flags);
-  ps.setFingerprint(status.fingerprint);
-  ps.setAttempts(status.attempts);
-  ps.setLastService(status.last_service);
-  ps.setLastResponse(status.last_response);
-  ps.setLastNrc(status.last_nrc);
-  ps.setCommunicationType(status.communication_type);
-  ps.setTrigger(status.trigger);
-  ps.setFirstEcanLen(status.first_ecan_len);
-  ps.setPowertrainState(status.powertrain_state);
-  ps.setPowertrainBootState(status.powertrain_boot_state);
-  ps.setPowertrainInitState(status.powertrain_init_state);
-  ps.setFirstEcanAddr(status.first_ecan_addr);
-  ps.setFirstCanUs(status.first_can_us);
-  ps.setStateStartedUs(status.state_started_us);
-  ps.setTriggerUs(status.trigger_us);
-  ps.setFirstEcanUs(status.first_ecan_us);
-  ps.setDriverBrakingUs(status.driver_braking_us);
-  ps.setPreReadyUs(status.pre_ready_us);
-  ps.setIgnitionUs(status.ignition_us);
-  ps.setSessionResponseUs(status.session_response_us);
-  ps.setCommControlUs(status.comm_control_us);
-  ps.setLastPowertrainUs(status.last_powertrain_us);
-  ps.setReadyUs(status.ready_us);
-  ps.setOutcomeUs(status.outcome_us);
-
-  ps.setTimingValid(preinit_status->timing_valid);
-  if (preinit_status->timing_valid) {
-    const auto &timing = preinit_status->timing;
-    ps.setTimingFlags(timing.flags);
-    ps.setCycleStartedUs(timing.cycle_started_us);
-    ps.setSessionRequestUs(timing.session_request_us);
-    ps.setCommControlResponseUs(timing.comm_control_response_us);
-    ps.setLastCriticalAdasUs(timing.last_critical_adas_us);
-    ps.setFirstReplacementUs(timing.first_replacement_us);
-    ps.setSuppressionConfirmedUs(timing.suppression_confirmed_us);
-    ps.setHandoffUs(timing.handoff_us);
-    ps.setRestoreUs(timing.restore_us);
-    ps.setAbortUs(timing.abort_us);
-    ps.setLastHostTxUs(timing.last_host_tx_us);
-    ps.setLastTesterPresentUs(timing.last_tester_present_us);
-    ps.setLastVehicleFrameUs(timing.last_vehicle_frame_us);
-  }
-}
-
-void fill_ev9_vehicle_telemetry(cereal::PandaState::Ev9VehicleTelemetry::Builder &state,
-                                const Ev9VehicleTelemetrySnapshot &telemetry, bool enabled) {
-  if (!enabled) {
-    return;
-  }
-
-  state.setVehicleTelemetryAvailable(telemetry.available);
-  state.setVehicleTelemetrySocValid(telemetry.soc_valid);
-  state.setVehicleTelemetryDteValid(telemetry.dte_valid);
-  state.setVehicleTelemetryChargingValid(telemetry.charging_valid);
-  state.setVehicleTelemetryChargePortValid(telemetry.charge_port_valid);
-  state.setFuelGauge(telemetry.fuel_gauge);
-  state.setDistanceToEmpty(telemetry.distance_to_empty);
-  state.setCharging(telemetry.charging);
-  state.setChargingPortConnected(telemetry.charging_port_connected);
-  state.setChargingTimeRemaining(telemetry.charging_time_remaining);
-  state.setVehicleTelemetrySourceMonoTime(telemetry.source_mono_time);
-  state.setVEgo(0.0F);
-  state.setStandstill(true);
 }
 
 std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> &pandas, bool is_onroad,
@@ -625,9 +537,7 @@ void pandad_run(std::vector<Panda *> &pandas) {
         sm["selfdriveState"].getSelfdriveState().getEnabled() || preap_aol_engaged
       );
       is_onroad = params.getBool("IsOnroad");
-      const std::string car_make = params.get("CarMake");
-      const bool is_gm = car_make == "gm" || car_make == "GM" || car_make == "Gm";
-      const bool ignore_ignition_line = is_gm && params.getBool("IgnoreIgnitionLine");
+      const bool ignore_ignition_line = params.getBool("IgnoreIgnitionLine");
       process_panda_state(pandas, &pm, engaged, is_onroad, spoofing_started, ignore_ignition_line,
                           ev9_vehicle_telemetry_enabled ? &ev9_vehicle_telemetry : nullptr,
                           ev9_vehicle_telemetry_serial);

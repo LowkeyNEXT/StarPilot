@@ -9,6 +9,7 @@ VEHICLE_SETTINGS_SOURCE = ROOT / "selfdrive/ui/layouts/settings/starpilot/vehicl
 EV9_CONTROL_KEYS = {
   "EV9LongPreinitPanda",
   "KiaEv9ClusterSideObjectsEnabled",
+  "KiaEv9ClusterEnhancedBsmEnabled",
   "KiaEv9ClusterHeadwayEnabled",
   "KiaEv9ClusterObjectsEnabled",
 }
