@@ -29,6 +29,7 @@ from openpilot.selfdrive.car.cruise import (
 from openpilot.selfdrive.car.redneck_cruise import RedneckCruise, select_redneck_target_speed
 from openpilot.selfdrive.car.car_specific import MockCarState
 from openpilot.selfdrive.car.ev9_preinit_coordinator import EV9PreinitCoordinator
+from openpilot.selfdrive.car.ev9_dash_coordinator import EV9DashCoordinator
 
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_ACTION_ACCEL_COUNTER,
@@ -76,7 +77,7 @@ def can_comm_callbacks(logcan: messaging.SubSocket, sendcan: messaging.PubSocket
   return can_recv, can_send
 
 
-class Car(EV9PreinitCoordinator):
+class Car(EV9PreinitCoordinator, EV9DashCoordinator):
   CI: CarInterfaceBase
   RI: RadarInterfaceBase
   CP: car.CarParams
@@ -200,6 +201,7 @@ class Car(EV9PreinitCoordinator):
     self.mock_carstate = MockCarState()
     self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
     self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
+    EV9DashCoordinator.initialize(self)
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.safe_mode = self.params.get_bool("SafeMode")
@@ -231,7 +233,10 @@ class Car(EV9PreinitCoordinator):
 
     self.starpilot_card = StarPilotCard(self.CP, self.FPCP)
 
-    self.sm = self.sm.extend(['starpilotOnroadEvents', 'starpilotPlan', 'starpilotSelfdriveState', 'liveCalibration', 'selfdriveState'])
+    extra_services = ['starpilotOnroadEvents', 'starpilotPlan', 'starpilotSelfdriveState', 'liveCalibration', 'selfdriveState']
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      extra_services.append('modelV2')
+    self.sm = self.sm.extend(extra_services)
     self.pm = self.pm.extend(['starpilotCarState'])
 
   def _inject_favorite_virtual_cruise_events(self, CS: car.CarState) -> None:
@@ -273,6 +278,7 @@ class Car(EV9PreinitCoordinator):
 
     self.sm.update(0)
     self.update_runtime_state(CS, RD)
+    self.update_ev9_dash_state(CS, RD)
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -407,6 +413,7 @@ class Car(EV9PreinitCoordinator):
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self._update_redneck_cruise(CS, CC)
       self._update_openpilot_lead_state(CC)
+      self._update_ev9_dash_scene(CS, CC)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, self.starpilot_toggles)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
@@ -500,6 +507,7 @@ class Car(EV9PreinitCoordinator):
       self.safe_mode = self.params.get_bool("SafeMode")
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl and not self.safe_mode
+      EV9DashCoordinator.refresh_settings(self)
       time.sleep(0.1)
 
   def card_thread(self):

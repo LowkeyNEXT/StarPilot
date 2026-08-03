@@ -6,6 +6,7 @@ from opendbc.can.dbc import DBC as DBCReader
 from opendbc.can.parser import get_raw_value
 from opendbc.car import Bus, structs
 from opendbc.car.interfaces import RadarInterfaceBase
+from opendbc.car.hyundai.ev9_radar import EV9RadarDisplayTracker
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HYUNDAI_MANDO_FRONT_RADAR_DBC, HYUNDAI_MRREVO14F_RADAR_DBC, \
                                        HYUNDAI_MRR30_RADAR_DBC, HYUNDAI_MRR35_RADAR_DBC
 from openpilot.common.swaglog import cloudlog
@@ -102,6 +103,16 @@ class RadarInterface(RadarInterfaceBase):
     self.ioniq_6_radar_probe = CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and CP.openpilotLongitudinalControl and self.radar_off_can
     self.ioniq_6_radar_probe_logged = False
     self.ioniq_6_radar_probe_updates = 0
+    if CP.carFingerprint == CAR.KIA_EV9:
+      # Retain these application-facing names for card.py compatibility. They
+      # classify cluster display candidates and never filter RadarData.
+      self.ev9_display_tracker = EV9RadarDisplayTracker()
+      self.ev9_cluster_quality_track_ids: set[int] = set()
+      self.ev9_cluster_strict_side_track_ids: set[int] = set()
+      self.ev9_cluster_side_retention_track_ids: set[int] = set()
+      self.ev9_dash_track_candidates = self.ev9_display_tracker.reset()
+      self.ev9_cluster_display_discriminator_reject_count = 0
+      self.ev9_cluster_display_discriminator_reject_logs = 0
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
     # Precompute (addr, "RADAR_TRACK_xxx") pairs once. _update runs on the
@@ -130,6 +141,11 @@ class RadarInterface(RadarInterfaceBase):
         self.updated_messages.clear()
 
     if self.radar_off_can or (self.rcp is None):
+      if self.CP.carFingerprint == CAR.KIA_EV9:
+        self.ev9_dash_track_candidates = self.ev9_display_tracker.reset()
+        self.ev9_cluster_quality_track_ids.clear()
+        self.ev9_cluster_strict_side_track_ids.clear()
+        self.ev9_cluster_side_retention_track_ids.clear()
       return super().update(None)
 
     vls = self.rcp.update(can_strings)
@@ -198,6 +214,8 @@ class RadarInterface(RadarInterfaceBase):
 
     radar_type = self.radar_config.radar_type
     vl = self.rcp.vl
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      self.ev9_display_tracker.begin_update()
 
     for addr, track_name in self.track_addrs:
       msg = vl[track_name]
@@ -261,6 +279,8 @@ class RadarInterface(RadarInterfaceBase):
           pt.vRel = msg["REL_SPEED"]
           pt.aRel = msg["REL_ACCEL"]
           pt.yvRel = float("nan")
+          if self.CP.carFingerprint == CAR.KIA_EV9:
+            self.ev9_display_tracker.update_track(msg, pt.trackId, addr, addr in updated_messages)
         elif addr in self.pts:
           del self.pts[addr]
         continue
@@ -282,6 +302,16 @@ class RadarInterface(RadarInterfaceBase):
 
       else:
         del self.pts[addr]
+
+    # A missing channel update or invalid parser must fail closed for display
+    # qualification. This set never changes the RadarData returned to fusion.
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      self.ev9_dash_track_candidates = self.ev9_display_tracker.finish_update(self.rcp.can_valid)
+      self.ev9_cluster_quality_track_ids = set(self.ev9_dash_track_candidates.display)
+      self.ev9_cluster_strict_side_track_ids = set(self.ev9_dash_track_candidates.side)
+      self.ev9_cluster_side_retention_track_ids = set(self.ev9_dash_track_candidates.side_retention)
+      self.ev9_cluster_display_discriminator_reject_count = self.ev9_display_tracker.discriminator_reject_count
+      self.ev9_cluster_display_discriminator_reject_logs = self.ev9_display_tracker.discriminator_reject_logs
 
     ret.points = list(self.pts.values())
     return ret
