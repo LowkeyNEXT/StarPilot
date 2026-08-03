@@ -4,6 +4,7 @@ import time
 
 from cereal import car, log
 from opendbc.car import structs
+from opendbc.car.hyundai import ev9_canfd
 from opendbc.car.hyundai.ev9_dash import (
   ClusterObjectSlots,
   Ev9DashObjectTracker,
@@ -48,6 +49,12 @@ class EV9DashCoordinator:
     card_process.ev9_enhanced_bsm_enabled = card_process.params.get_bool("KiaEv9ClusterEnhancedBsmEnabled")
     card_process.ev9_dash_headway_enabled = card_process.params.get_bool("KiaEv9ClusterHeadwayEnabled")
     card_process.ev9_dash_objects_enabled = card_process.params.get_bool("KiaEv9ClusterObjectsEnabled")
+
+  def compose_startup_ownership(self) -> None:
+    if self.CP.carFingerprint == CAR.KIA_EV9:
+      # Continue the counters captured by the resident preinit owner when both
+      # otherwise-independent features are installed.
+      ev9_canfd.set_adrv_baselines(list(self.ev9_preinit_claim_templates.values()))
 
   def update_ev9_dash_state(self, CS: car.CarState, RD: structs.RadarDataT | None) -> None:
     self._update_ev9_raw_blindspot_gate(CS, RD)
