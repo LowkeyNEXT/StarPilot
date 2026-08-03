@@ -634,9 +634,9 @@ class TestHyundaiCanfdLKASteeringLongEV(HyundaiLongitudinalBase, TestHyundaiCanf
 
 class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyundaiCanfdAngleSteering):
 
-  TX_MSGS = [[0x110, 0], [0x1CF, 1], [0x362, 0], [0x51, 0], [0x100, 0], [0x730, 1], [0x12a, 1], [0x160, 1],
-             [0x1ba, 1], [0x1e0, 1], [0x1e5, 1], [0x31a, 1], [0x3b5, 1], [0x3c1, 1],
-             [0x1a0, 1], [0x1ea, 1], [0x200, 1], [0x345, 1], [0x1da, 1]]
+  TX_MSGS = [[0x110, 0], [0xCB, 1], [0x1CF, 1], [0x362, 0], [0x100, 0], [0x730, 1], [0x12a, 1], [0x160, 1],
+             [0x1ba, 1], [0x1e0, 1], [0x1e5, 1], [0x1a0, 1], [0x1ea, 1], [0x200, 1], [0x345, 1], [0x1da, 1],
+             [0x161, 1], [0x162, 1], [0x38c, 1]]
 
   RELAY_MALFUNCTION_ADDRS = {0: (0x110, 0x362), 1: (0x1a0,)}  # LKAS_ALT, CAM_0x362, SCC_CONTROL
   FWD_BLACKLISTED_ADDRS = {0: MRR35_RADAR_TRACK_ADDRS}
@@ -650,11 +650,17 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
   STEER_MSG = "LKAS_ALT"
   GAS_MSG = ("ACCELERATOR", "ACCELERATOR_PEDAL")
   SAFETY_PARAM = HyundaiSafetyFlags.CANFD_LKA_STEERING | HyundaiSafetyFlags.CANFD_LKA_STEERING_ALT | \
-    HyundaiSafetyFlags.CANFD_ANGLE_STEERING | HyundaiSafetyFlags.LONG | HyundaiSafetyFlags.EV_GAS
+    HyundaiSafetyFlags.CANFD_ANGLE_STEERING | HyundaiSafetyFlags.LONG | HyundaiSafetyFlags.EV_GAS | HyundaiSafetyFlags.CCNC
 
   def setUp(self):
     super().setUp()
     self._rx(self._gear_msg(5))
+
+  def _angle_meas_msg(self, angle):
+    return self.packer.make_can_msg_safety("MDPS", self.PT_BUS, {
+      "STEERING_ANGLE": 0.0,
+      "STEERING_ANGLE_2": angle,
+    })
 
   def _angle_cmd_msg(self, angle, enabled, increment_timer=True, gain_raw=250):
     if increment_timer:
@@ -718,7 +724,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
   def test_lka_alt_standstill_forwards_stock_and_blocks_openpilot_tx(self):
-    self.safety.set_controls_allowed(True)
+    self.safety.set_controls_allowed(False)
     self._reset_speed_measurement(0)
 
     for addr in (0x110, 0x362):
@@ -728,6 +734,18 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self._set_prev_desired_angle(0)
     self.assertFalse(self._tx(self._angle_cmd_msg(0, enabled=False)))
     self.assertFalse(self._tx(common.make_msg(0, 0x362, 32)))
+
+  def test_ev9_lka_alt_standstill_allows_openpilot_tx_when_authorized(self):
+    self.safety.set_controls_allowed(True)
+    self._reset_speed_measurement(0)
+
+    for addr in (0x110, 0x362):
+      self.assertEqual(-1, self.safety.safety_fwd_hook(2, addr))
+
+    self._reset_angle_measurement(0)
+    self._set_prev_desired_angle(0)
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
+    self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
   def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)

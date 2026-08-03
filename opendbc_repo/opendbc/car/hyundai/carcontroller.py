@@ -773,7 +773,9 @@ class CarController(CarControllerBase):
     drive_gear = gear == structs.CarState.GearShifter.drive
     if angle_lkas_alt:
       steering_msg_active = bool(steering_msg_active and drive_gear)
-    angle_lkas_alt_standstill_handoff = bool(getattr(CS.out, "standstill", False) and not CC.latActive)
+    angle_lkas_alt_standstill_handoff = bool(
+      getattr(CS.out, "standstill", False) and (not CC.latActive or not self.CP.steerAtStandstill)
+    )
     forward_stock_lkas = angle_lkas_alt and (
       angle_lkas_alt_standstill_handoff or not (drive_gear and (CC.latActive or CC.enabled))
     )
