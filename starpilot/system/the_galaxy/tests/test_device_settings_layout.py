@@ -208,3 +208,13 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/appearance.py",
   )
   assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_ev9_enhanced_bsm_is_nested_under_experimental_master():
+  vehicle = _params_by_section(_layout())["Vehicle"]
+  master = vehicle["KiaEv9ClusterSideObjectsEnabled"]
+  enhanced = vehicle["KiaEv9ClusterEnhancedBsmEnabled"]
+
+  assert master["is_parent_toggle"]
+  assert enhanced["parent_key"] == "KiaEv9ClusterSideObjectsEnabled"
+  assert _declared_default("KiaEv9ClusterEnhancedBsmEnabled") == "1"

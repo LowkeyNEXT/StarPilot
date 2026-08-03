@@ -1335,6 +1335,9 @@ class StarPilotVariables:
     toggle.speed_limit_filler = self.get_value("SpeedLimitFiller")
     toggle.vision_speed_limit_detection = self.get_value("VisionSpeedLimitDetection")
     toggle.v_asm_enabled = self.get_value("VASMEnabled")
+    ev9_bsm = toggle.car_model == HYUNDAI_CAR.KIA_EV9 and self.get_value("KiaEv9ClusterSideObjectsEnabled")
+    toggle.ev9_bsm_reconstruction_enabled = ev9_bsm
+    toggle.ev9_enhanced_bsm_enabled = ev9_bsm and self.get_value("KiaEv9ClusterEnhancedBsmEnabled")
 
     toggle.startup_alert_top = self.get_value("StartupMessageTop", cast=str, default="")
     toggle.startup_alert_bottom = self.get_value("StartupMessageBottom", cast=str, default="")

@@ -132,6 +132,17 @@ class TestParams:
     assert b"EV9LongPreinitPanda" in self.params.all_keys()
     assert not self.params.get_default_value("EV9LongPreinitPanda")
 
+  def test_ev9_dash_feature_defaults(self):
+    defaults = {
+      "KiaEv9ClusterSideObjectsEnabled": True,
+      "KiaEv9ClusterEnhancedBsmEnabled": True,
+      "KiaEv9ClusterHeadwayEnabled": False,
+      "KiaEv9ClusterObjectsEnabled": False,
+    }
+
+    assert {key.encode() for key in defaults} <= set(self.params.all_keys())
+    assert {key: self.params.get_default_value(key) for key in defaults} == defaults
+
   def test_params_get_type(self):
     # json
     self.params.put("ApiCache_DriveStats", {"a": 0})

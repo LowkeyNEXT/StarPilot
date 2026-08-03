@@ -19,7 +19,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              should_use_ev6_gt_line_stop_direct_tracking
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state
 from opendbc.car.hyundai.interface import CarInterface, KIA_EV9_ACCEL_MAX
-from opendbc.car.hyundai import hyundaican, hyundaicanfd
+from opendbc.car.hyundai import ev9_canfd, hyundaican, hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.radar_interface import MRREVO14F_RADAR_START_ADDR, MRR30_RADAR_START_ADDR, MRR35_RADAR_START_ADDR, \
                                              RADAR_START_ADDR, get_radar_track_config
@@ -2697,12 +2697,18 @@ class TestHyundaiFingerprint:
     controller.frame = 5
     captured = {}
 
-    def capture_ccnc_adrv_messages(*args, **kwargs):
-      captured["steering_available"] = args[9]
-      captured["steering_active"] = args[10]
+    def capture_status_messages(*args, **kwargs):
+      captured["steering_available"] = kwargs["steering_available"]
+      captured["steering_active"] = kwargs["steering_active"]
       return []
 
-    monkeypatch.setattr(hyundaicanfd, "create_ccnc_adrv_messages", capture_ccnc_adrv_messages)
+    monkeypatch.setattr(ev9_canfd, "create_angle_long_status_messages", capture_status_messages)
+    monkeypatch.setattr(
+      "opendbc.car.hyundai.carcontroller.get_ev9_blindspot_warning_inputs",
+      lambda *_args: SimpleNamespace(left_detected=False, right_detected=False,
+                                    left_stalk_active=False, right_stalk_active=False),
+    )
+    monkeypatch.setattr(controller.ev9_dash, "create_adrv_messages", lambda *_args: [])
     lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
     lfa_block_msg["COUNTER"] = 0
     cc = SimpleNamespace(

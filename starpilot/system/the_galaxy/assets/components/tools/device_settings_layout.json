@@ -2901,6 +2901,40 @@
         "settings_tier": "simple"
       },
       {
+        "key": "KiaEv9ClusterSideObjectsEnabled",
+        "label": "Reconstruct Blind-Spot Alerts",
+        "description": "Recreate EV9 blind-spot warnings when the native ADAS source is unavailable. Basic and Enhanced modes are experimental and can miss vehicles or report false detections. Always check mirrors and surroundings.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "is_parent_toggle": true,
+        "settings_tier": "simple"
+      },
+      {
+        "key": "KiaEv9ClusterEnhancedBsmEnabled",
+        "label": "Enhanced Blind-Spot Mode",
+        "description": "On: qualify raw side detections using radar heuristics or same-side confirmation from the configured Vision Adjacent Spot Monitor (V-ASM). This reduces false detections but can miss more real vehicles. Off: Basic mode follows the raw side-object state directly, which can react sooner but is more likely to report false detections. Both modes are experimental—use with caution and always pay attention.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "KiaEv9ClusterSideObjectsEnabled",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "KiaEv9ClusterHeadwayEnabled",
+        "label": "Show Reconstructed Headway Line",
+        "description": "Show the stock-style speed-based following-distance line on the EV9 cluster. This changes display output only.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "KiaEv9ClusterObjectsEnabled",
+        "label": "Show Reconstructed Vehicle Objects",
+        "description": "Show qualified primary and adjacent vehicle objects on the EV9 cluster. This changes display output only.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
+      },
+      {
         "key": "VoltSNG",
         "label": "Stop-and-Go Hack",
         "description": "Force stop-and-go on the 2017 Chevy Volt.",
