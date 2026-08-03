@@ -242,6 +242,8 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.LONG.value
       if candidate in CANFD_ANGLE_LONGITUDINAL_CAR and ret.flags & HyundaiFlags.CCNC:
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CCNC.value
+      if candidate == CAR.KIA_EV9:
+        ret.steerAtStandstill = True
     if ret.flags & HyundaiFlags.HYBRID:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.HYBRID_GAS.value
     elif ret.flags & HyundaiFlags.EV:

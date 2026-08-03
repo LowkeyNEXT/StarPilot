@@ -308,12 +308,12 @@ class TestHyundaiFingerprint:
     assert direct_angle_request_allowed(8.47, 140.0, 140.0, True, controller.BASELINE_VM, controller.params)
     assert not direct_angle_request_allowed(8.47, 140.0, 140.0, False, controller.BASELINE_VM, controller.params)
 
-  def test_angle_platforms_disable_standstill_steering(self):
-    ev9_cp = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], False, False, False, None)
+  def test_ev9_is_the_only_angle_platform_with_standstill_steering(self):
+    ev9_cp = CarInterface.get_params(CAR.KIA_EV9, gen_empty_fingerprint(), [], True, False, False, None)
     ioniq_5_pe_cp = CarInterface.get_params(CAR.HYUNDAI_IONIQ_5_PE, gen_empty_fingerprint(), [], False, False, False, None)
     sportage_cp = CarInterface.get_params(CAR.KIA_SPORTAGE_HEV_2026, gen_empty_fingerprint(), [], False, False, False, None)
 
-    assert not ev9_cp.steerAtStandstill
+    assert ev9_cp.steerAtStandstill
     assert not ioniq_5_pe_cp.steerAtStandstill
     assert not sportage_cp.steerAtStandstill
 
