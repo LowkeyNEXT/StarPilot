@@ -130,6 +130,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     userBookmark @95;
     excessiveActuation @96;
     audioFeedback @97;
+    adasUnavailable @98;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -591,6 +592,7 @@ struct PandaState @0xa7649e2575e4591e {
   harnessStatus @21 :HarnessStatus;
   sbu1Voltage @35 :Float32;
   sbu2Voltage @36 :Float32;
+  ev9LongPreinitStatus @37 :Ev9LongPreinitStatus;
 
   # can health
   canState0 @29 :PandaCanState;
@@ -703,6 +705,18 @@ struct PandaState @0xa7649e2575e4591e {
       crcError @6;
       noChange @7;
     }
+  }
+
+  struct Ev9LongPreinitStatus {
+    valid @0 :Bool;
+    version @1 :UInt8;
+    state @2 :UInt8;
+    flags @3 :UInt8;
+    communicationType @4 :UInt8;
+    timingValid @5 :Bool;
+    cycleStartedUs @6 :UInt32;
+    lastHostTxUs @7 :UInt32;
+    resident @8 :Bool;
   }
 
   gasInterceptorDetectedDEPRECATED @4 :Bool;

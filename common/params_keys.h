@@ -40,6 +40,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriverTooDistracted", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"DriverLockoutCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, INT, "0"}},
     {"EcuDisableFailed", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"EV9LongPreinitPanda", {PERSISTENT, BOOL, "0"}},
     {"AlphaLongitudinalEnabled", {PERSISTENT, BOOL}},
     {"ExperimentalLongitudinalEnabled", {PERSISTENT, BOOL}},
     {"ExperimentalMode", {PERSISTENT, BOOL}},

@@ -2893,6 +2893,14 @@
         "settings_tier": "simple"
       },
       {
+        "key": "EV9LongPreinitPanda",
+        "label": "EV9 Preinit ADAS Handoff",
+        "description": "Use the resident EV9 Panda firmware to suppress the ADAS ECU during a stationary OFF-to-READY transition, then hand neutral continuity and control to openpilot.\n\nExperimental and disabled by default. Requires a Panda flash and device reboot.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
+      },
+      {
         "key": "VoltSNG",
         "label": "Stop-and-Go Hack",
         "description": "Force stop-and-go on the 2017 Chevy Volt.",
