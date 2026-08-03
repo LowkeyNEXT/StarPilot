@@ -130,6 +130,10 @@ PANDA_FIRMWARE_CONFIRMATION_FIELD = "confirmedPandaFirmwareFlash"
 _PANDA_FLASH_REBOOT_LOCK = threading.Lock()
 EV9_SCOPED_PARAM_KEYS = {
   "EV9LongPreinitPanda",
+  "KiaEv9ClusterSideObjectsEnabled",
+  "KiaEv9ClusterEnhancedBsmEnabled",
+  "KiaEv9ClusterHeadwayEnabled",
+  "KiaEv9ClusterObjectsEnabled",
 }
 
 
@@ -2471,6 +2475,30 @@ EV9_GALAXY_CONTROLS = (
     "EV9LongPreinitPanda",
     "EV9 Preinit ADAS Handoff",
     "Suppress the EV9 ADAS ECU during a stationary startup and hand neutral continuity and control to openpilot.",
+    None,
+  ),
+  (
+    "KiaEv9ClusterSideObjectsEnabled",
+    "Reconstruct Blind-Spot Alerts",
+    "Experimental reconstructed alerts. Both modes can miss vehicles or report false detections. Always check mirrors and surroundings.",
+    None,
+  ),
+  (
+    "KiaEv9ClusterEnhancedBsmEnabled",
+    "Enhanced Blind-Spot Mode",
+    "On: use radar heuristics and configured Vision Adjacent Spot Monitor (V-ASM) for fewer false detections but potentially more misses. Off: use raw side detection for faster but less selective alerts. Experimental—always pay attention.",
+    "KiaEv9ClusterSideObjectsEnabled",
+  ),
+  (
+    "KiaEv9ClusterHeadwayEnabled",
+    "Show Reconstructed Headway Line",
+    "Show the stock-style speed-based following-distance line.",
+    None,
+  ),
+  (
+    "KiaEv9ClusterObjectsEnabled",
+    "Show Reconstructed Vehicle Objects",
+    "Show qualified primary and adjacent vehicles on the cluster.",
     None,
   ),
 )
