@@ -1,5 +1,9 @@
 #include "fdcan_declarations.h"
 
+#ifdef PANDA_EV9_LONG_PREINIT
+#include "board/ev9_long_preinit_fdcan.h"
+#endif
+
 FDCAN_GlobalTypeDef *cans[PANDA_CAN_CNT] = {FDCAN1, FDCAN2, FDCAN3};
 
 static bool can_set_speed(uint8_t can_number) {
@@ -91,6 +95,12 @@ void process_can(uint8_t can_number) {
     uint8_t bus_number = BUS_NUM_FROM_CAN_NUM(can_number);
 
     FDCANx->IR |= FDCAN_IR_TFE; // Clear Tx FIFO Empty flag
+    #ifdef PANDA_EV9_LONG_PREINIT
+    if (!ev9_long_preinit_tx_drain_allowed(bus_number)) {
+      EXIT_CRITICAL();
+      return;
+    }
+    #endif
 
     if ((FDCANx->TXFQS & FDCAN_TXFQS_TFQF) == 0U) {
       CANPacket_t to_send;
@@ -121,6 +131,11 @@ void process_can(uint8_t can_number) {
           }
 
           FDCANx->TXBAR = (1UL << tx_index);
+          #ifdef PANDA_EV9_LONG_PREINIT
+          // TXBAR is the first hardware-visible ownership boundary. Software
+          // queue acceptance alone cannot complete a resident-to-host handoff.
+          ev9_long_preinit_tx_hw_loaded(&to_send, bus_number);
+          #endif
 
           // Send back to USB
           CANPacket_t to_push;
@@ -217,6 +232,9 @@ void can_rx(uint8_t can_number) {
 
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;
     ignition_can_hook(&to_push);
+    #ifdef PANDA_EV9_LONG_PREINIT
+    ev9_long_preinit_rx_hook(&to_push, microsecond_timer_get());
+    #endif
 
     led_set(LED_BLUE, true);
     rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
