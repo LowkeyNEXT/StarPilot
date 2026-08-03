@@ -2553,6 +2553,73 @@ class TestHyundaiFingerprint:
 
     assert captured == {"steering_available": True, "steering_active": steering_active}
 
+  def test_ev9_dash_writer_takes_display_precedence_without_taking_preinit_control(self, monkeypatch):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CCNC |
+                   HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_LKA_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING_ALT)
+    CP.openpilotLongitudinalControl = True
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    calls = {"preinit_steering": 0, "preinit_status": 0, "preinit_adrv": 0,
+             "dash_status": 0, "dash_adrv": 0}
+
+    def record(name):
+      def recorder(*_args, **_kwargs):
+        calls[name] += 1
+        return []
+      return recorder
+
+    monkeypatch.setattr(controller.ev9_preinit, "actuation_permitted", lambda *_args: True)
+    monkeypatch.setattr(controller.ev9_preinit, "create_steering_messages", record("preinit_steering"))
+    monkeypatch.setattr(controller.ev9_preinit, "create_status_messages", record("preinit_status"))
+    monkeypatch.setattr(controller.ev9_preinit, "create_adrv_messages", record("preinit_adrv"))
+    monkeypatch.setattr(controller.ev9_dash, "create_status_messages", record("dash_status"))
+    monkeypatch.setattr(controller.ev9_dash, "create_adrv_messages", record("dash_adrv"))
+    monkeypatch.setattr(
+      "opendbc.car.hyundai.carcontroller.get_ev9_blindspot_warning_inputs",
+      lambda *_args: SimpleNamespace(left_detected=False, right_detected=False,
+                                    left_stalk_active=False, right_stalk_active=False),
+    )
+
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cc = SimpleNamespace(
+      enabled=True,
+      latActive=True,
+      actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
+      leftBlinker=False,
+      rightBlinker=False,
+      hudControl=SimpleNamespace(),
+    )
+    cs = SimpleNamespace(
+      angle_steering_fault=False,
+      angle_steering_angle=0.0,
+      ev9_preinit_active=True,
+      hba_icon=0,
+      is_metric=True,
+      left_blindspot_from_radar=False,
+      right_blindspot_from_radar=False,
+      lfa_block_msg=lfa_block_msg,
+      panda_faulted=False,
+      out=SimpleNamespace(
+        brakePressed=False,
+        cruiseState=SimpleNamespace(available=True),
+        gasPressed=False,
+        gearShifter=structs.CarState.GearShifter.drive,
+        steeringAngleDeg=0.0,
+        steeringPressed=False,
+      ),
+    )
+
+    controller.create_canfd_msgs(0, True, 0.44, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                 get_test_toggles(), lka_icon=2, lfa_icon=2)
+
+    assert calls == {"preinit_steering": 1, "preinit_status": 0, "preinit_adrv": 0,
+                     "dash_status": 1, "dash_adrv": 1}
+
   def test_ioniq_6_blindspot_radar_state_decode(self):
     assert decode_ioniq_6_blindspot_radar_state(0x02) == (False, False)
     assert decode_ioniq_6_blindspot_radar_state(0x0A) == (False, True)
