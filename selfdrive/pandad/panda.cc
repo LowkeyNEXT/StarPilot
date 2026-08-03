@@ -146,6 +146,8 @@ bool Panda::up_to_date() {
       "panda_h7_can_ignition_only.bin.signed",
       "panda_remote_can_ignition_only.bin.signed",
       "panda_h7_remote_can_ignition_only.bin.signed",
+      "panda_h7_ev9_long_preinit.bin.signed",
+      "panda_h7_ev9_long_preinit_hkg_remote.bin.signed",
     }) {
       auto content = util::read_file(std::string("../../panda/board/obj/") + fn);
       if (content.size() >= fw_sig->size() &&
