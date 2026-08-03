@@ -144,66 +144,50 @@ void llcan_irq_enable(const FDCAN_GlobalTypeDef *FDCANx) {
   }
 }
 
+static void llcan_configure_in_init(FDCAN_GlobalTypeDef *FDCANx, uint32_t can_number) {
+  // Caller holds the controller in INIT while this constant-work setup runs.
+  FDCANx->CCCR |= FDCAN_CCCR_CCE;
+  FDCANx->CCCR &= ~(FDCAN_CCCR_DAR);
+  FDCANx->CCCR |= FDCAN_CCCR_TXP;
+  FDCANx->CCCR |= FDCAN_CCCR_PXHD;
+  FDCANx->CCCR |= (FDCAN_CCCR_FDOE | FDCAN_CCCR_BRSE);
+  FDCANx->TXBC &= ~(FDCAN_TXBC_TFQM);
+  FDCANx->TXESC |= 0x7U << FDCAN_TXESC_TBDS_Pos;
+  FDCANx->RXESC |= 0x7U << FDCAN_RXESC_F0DS_Pos;
+  FDCANx->XIDFC &= ~(FDCAN_XIDFC_LSE);
+  FDCANx->SIDFC &= ~(FDCAN_SIDFC_LSS);
+  FDCANx->GFC &= ~(FDCAN_GFC_RRFE);
+  FDCANx->GFC &= ~(FDCAN_GFC_RRFS);
+  FDCANx->GFC &= ~(FDCAN_GFC_ANFE);
+  FDCANx->GFC &= ~(FDCAN_GFC_ANFS);
+
+  uint32_t RxFIFO0SA = FDCAN_START_ADDRESS + (can_number * FDCAN_OFFSET);
+  uint32_t TxFIFOSA = RxFIFO0SA + (FDCAN_RX_FIFO_0_EL_CNT * FDCAN_RX_FIFO_0_EL_SIZE);
+  FDCANx->RXF0C |= (FDCAN_RX_FIFO_0_OFFSET + (can_number * FDCAN_OFFSET_W)) << FDCAN_RXF0C_F0SA_Pos;
+  FDCANx->RXF0C |= FDCAN_RX_FIFO_0_EL_CNT << FDCAN_RXF0C_F0S_Pos;
+  FDCANx->RXF0C |= FDCAN_RXF0C_F0OM;
+  FDCANx->TXBC |= (FDCAN_TX_FIFO_OFFSET + (can_number * FDCAN_OFFSET_W)) << FDCAN_TXBC_TBSA_Pos;
+  FDCANx->TXBC |= FDCAN_TX_FIFO_EL_CNT << FDCAN_TXBC_TFQS_Pos;
+
+  uint32_t EndAddress = TxFIFOSA + (FDCAN_TX_FIFO_EL_CNT * FDCAN_TX_FIFO_EL_SIZE);
+  for (uint32_t RAMcounter = RxFIFO0SA; RAMcounter < EndAddress; RAMcounter += 4U) {
+    *(uint32_t *)(RAMcounter) = 0x00000000;
+  }
+
+  FDCANx->ILE = (FDCAN_ILE_EINT0 | FDCAN_ILE_EINT1);
+  FDCANx->IE &= 0x0U; // Reset all interrupts
+  FDCANx->IE |= FDCAN_IE_RF0NE;
+  FDCANx->IE |= FDCAN_IE_PEDE | FDCAN_IE_PEAE | FDCAN_IE_BOE | FDCAN_IE_EPE | FDCAN_IE_RF0LE;
+  FDCANx->ILS |= FDCAN_ILS_TFEL;
+  FDCANx->IE |= FDCAN_IE_TFEE;
+}
+
 bool llcan_init(FDCAN_GlobalTypeDef *FDCANx) {
   uint32_t can_number = CAN_NUM_FROM_CANIF(FDCANx);
   bool ret = fdcan_request_init(FDCANx);
 
   if (ret) {
-    // Enable config change
-    FDCANx->CCCR |= FDCAN_CCCR_CCE;
-    // Enable automatic retransmission
-    FDCANx->CCCR &= ~(FDCAN_CCCR_DAR);
-    // Enable transmission pause feature
-    FDCANx->CCCR |= FDCAN_CCCR_TXP;
-    // Disable protocol exception handling
-    FDCANx->CCCR |= FDCAN_CCCR_PXHD;
-    // FD with BRS
-    FDCANx->CCCR |= (FDCAN_CCCR_FDOE | FDCAN_CCCR_BRSE);
-
-    // Set TX mode to FIFO
-    FDCANx->TXBC &= ~(FDCAN_TXBC_TFQM);
-    // Configure TX element data size
-    FDCANx->TXESC |= 0x7U << FDCAN_TXESC_TBDS_Pos; // 64 bytes
-    //Configure RX FIFO0 element data size
-    FDCANx->RXESC |= 0x7U << FDCAN_RXESC_F0DS_Pos;
-    // Disable filtering, accept all valid frames received
-    FDCANx->XIDFC &= ~(FDCAN_XIDFC_LSE); // No extended filters
-    FDCANx->SIDFC &= ~(FDCAN_SIDFC_LSS); // No standard filters
-    FDCANx->GFC &= ~(FDCAN_GFC_RRFE); // Accept extended remote frames
-    FDCANx->GFC &= ~(FDCAN_GFC_RRFS); // Accept standard remote frames
-    FDCANx->GFC &= ~(FDCAN_GFC_ANFE); // Accept extended frames to FIFO 0
-    FDCANx->GFC &= ~(FDCAN_GFC_ANFS); // Accept standard frames to FIFO 0
-
-    uint32_t RxFIFO0SA = FDCAN_START_ADDRESS + (can_number * FDCAN_OFFSET);
-    uint32_t TxFIFOSA = RxFIFO0SA + (FDCAN_RX_FIFO_0_EL_CNT * FDCAN_RX_FIFO_0_EL_SIZE);
-
-    // RX FIFO 0
-    FDCANx->RXF0C |= (FDCAN_RX_FIFO_0_OFFSET + (can_number * FDCAN_OFFSET_W)) << FDCAN_RXF0C_F0SA_Pos;
-    FDCANx->RXF0C |= FDCAN_RX_FIFO_0_EL_CNT << FDCAN_RXF0C_F0S_Pos;
-    // RX FIFO 0 switch to non-blocking (overwrite) mode
-    FDCANx->RXF0C |= FDCAN_RXF0C_F0OM;
-
-    // TX FIFO (mode set earlier)
-    FDCANx->TXBC |= (FDCAN_TX_FIFO_OFFSET + (can_number * FDCAN_OFFSET_W)) << FDCAN_TXBC_TBSA_Pos;
-    FDCANx->TXBC |= FDCAN_TX_FIFO_EL_CNT << FDCAN_TXBC_TFQS_Pos;
-
-    // Flush allocated RAM
-    uint32_t EndAddress = TxFIFOSA + (FDCAN_TX_FIFO_EL_CNT * FDCAN_TX_FIFO_EL_SIZE);
-    for (uint32_t RAMcounter = RxFIFO0SA; RAMcounter < EndAddress; RAMcounter += 4U) {
-        *(uint32_t *)(RAMcounter) = 0x00000000;
-    }
-
-    // Enable both interrupts for each module
-    FDCANx->ILE = (FDCAN_ILE_EINT0 | FDCAN_ILE_EINT1);
-
-    FDCANx->IE &= 0x0U; // Reset all interrupts
-    // Messages for INT0
-    FDCANx->IE |= FDCAN_IE_RF0NE; // Rx FIFO 0 new message
-    FDCANx->IE |= FDCAN_IE_PEDE | FDCAN_IE_PEAE | FDCAN_IE_BOE | FDCAN_IE_EPE | FDCAN_IE_RF0LE;
-
-    // Messages for INT1 (Only TFE works??)
-    FDCANx->ILS |= FDCAN_ILS_TFEL;
-    FDCANx->IE |= FDCAN_IE_TFEE; // Tx FIFO empty
+    llcan_configure_in_init(FDCANx, can_number);
 
     ret = fdcan_exit_init(FDCANx);
     if(!ret) {

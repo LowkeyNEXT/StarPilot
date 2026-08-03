@@ -1,6 +1,7 @@
 import time
 from opendbc.car import get_safety_config, structs, uds
 from opendbc.car.hyundai.hyundaicanfd import CanBus
+from opendbc.car.hyundai import ev9_preinit
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, CarControllerParams, \
                                                    CANFD_UNSUPPORTED_LONGITUDINAL_CAR, \
                                                    CANFD_SECURITYACCESS_CAR, \
@@ -294,7 +295,10 @@ class CarInterface(CarInterfaceBase):
   def init(CP, can_recv, can_send, communication_control=None):
     global ECU_DISABLE_TIMESTAMP
     from openpilot.common.params import Params
+    normal_init = communication_control is None
     params = Params()
+    ev9_profile = ev9_preinit.ev9_interface_init_profile(CP, params, normal_init)
+    ev9_long = ev9_profile.enabled
 
     if communication_control is None:
       if CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR:
@@ -306,6 +310,9 @@ class CarInterface(CarInterfaceBase):
         # 0x80 silences response for other cars (original behavior)
         communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
 
+    if ev9_profile.communication_control is not None:
+      communication_control = ev9_profile.communication_control
+
     ecu_log(f"=== init() called: opLong={CP.openpilotLongitudinalControl}, flags=0x{CP.flags:x}, safetyParam={CP.safetyConfigs[-1].safetyParam} ===")
 
     if CP.openpilotLongitudinalControl and not (CP.flags & (HyundaiFlags.CANFD_CAMERA_SCC | HyundaiFlags.CAMERA_SCC)):
@@ -313,12 +320,30 @@ class CarInterface(CarInterfaceBase):
       if CP.flags & HyundaiFlags.CANFD_LKA_STEERING.value:
         addr, bus = 0x730, CanBus(CP).ECAN
 
+      ecu_disabled = ev9_profile.handoff_adopted
+      if ecu_disabled:
+        ecu_log(f"=== EV9 PRE-FINGERPRINT SUPPRESSION HANDOFF accepted: {ev9_profile.handoff_reason} ===")
+      elif ev9_profile.host_request_veto:
+        apply_ecu_disable_failure_fallback(CP, params)
+        ecu_log(f"=== EV9 PANDA PREINIT unavailable; no duplicate knockout: {ev9_profile.handoff_reason} ===")
+        return
+
       # Try ECU disable. If it succeeds (IGN-ON mode), enable longitudinal.
       # If it fails (READY mode returns NRC 0x22, or timeout), strip LONG safety flag
       # so panda forwards stock SCC messages normally (lateral-only mode).
-      ecu_log(f"=== ECU DISABLE attempt: addr=0x{addr:x}, bus={bus} ===")
-      ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
-                                 reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED))
+      if not ecu_disabled:
+        ecu_log(f"=== ECU DISABLE attempt: addr=0x{addr:x}, bus={bus} ===")
+      if not ecu_disabled:
+        ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
+                                   reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED),
+                                   require_positive_response=ev9_long)
+
+      if ecu_disabled and ev9_long:
+        active_log = "".join((
+          f"=== EV9 PERSISTENT COMMUNICATION CONTROL ACTIVE - request={communication_control.hex()}; ",
+          "controller Tester Present required ===",
+        ))
+        ecu_log(active_log)
 
       if CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
         # Ioniq 6: track success/failure to auto-switch between openpilot long and stock ACC
@@ -344,6 +369,10 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
+    from openpilot.common.params import Params
+    if ev9_preinit.ev9_preinit_enabled(CP, Params()) and ev9_preinit.EV9_PANDA_PREINIT_HANDOFF.host_uds_veto:
+      ecu_log("=== EV9 resident Panda owns communication restore; skipping host 28 00 01 ===")
+      return
     communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
     CarInterface.init(CP, can_recv, can_send, communication_control)
 
@@ -356,11 +385,12 @@ class CarInterface(CarInterfaceBase):
     if not getattr(self, '_ecu_disable_failed_cached', False):
       from openpilot.common.params import Params
       self._ecu_disable_failed_cached = Params().get_bool("EcuDisableFailed")
-    if self._ecu_disable_failed_cached and not ret.canValid:
+    preinit_active = bool(getattr(self.CS, "ev9_preinit_active", False))
+    if not preinit_active and self._ecu_disable_failed_cached and not ret.canValid:
       ret.canValid = True
 
     global ECU_DISABLE_TIMESTAMP
-    if ECU_DISABLE_TIMESTAMP > 0 and not ret.canValid:
+    if not preinit_active and ECU_DISABLE_TIMESTAMP > 0 and not ret.canValid:
       # Check if any parser has counter/checksum errors (real CAN issues)
       has_counter_errors = False
       for cp in self.can_parsers.values():

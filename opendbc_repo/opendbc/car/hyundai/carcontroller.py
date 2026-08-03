@@ -8,6 +8,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_an
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.hyundaicanfd import CanBus
+from opendbc.car.hyundai.ev9_preinit_controller import EV9PreinitController
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
                                         CANFD_RADAR_LIVE_LONGITUDINAL_CAR, kia_ev6_gt_line_longitudinal_tuning
 from opendbc.car.interfaces import CarControllerBase
@@ -415,6 +416,7 @@ class CarController(CarControllerBase):
       self._ev9_long_tuning = EV9LongitudinalTuningState()
       self._left_blindspot_warning = BlindspotWarningState()
       self._right_blindspot_warning = BlindspotWarningState()
+    self.ev9_preinit = EV9PreinitController(CP, self.packer, self.CAN)
     self.long_active_ecu = self.CP.openpilotLongitudinalControl
     self._ioniq_6_lane_change_ui_side = None
     self._ioniq_6_lane_change_ui_frames = 0
@@ -749,6 +751,8 @@ class CarController(CarControllerBase):
     lka_steering = self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
     lka_steering_long = lka_steering and self.long_active_ecu
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not lka_steering
+    ev9_preinit_active = self.ev9_preinit.active(self.long_active_ecu, CS)
+    ev9_main_mode = self.ev9_preinit.main_mode(CS)
     use_egmp_dynamic_long_tuning = egmp_dynamic_longitudinal_tuning(self.CP) and self.long_active_ecu and \
                                    CC.actuators.longControlState in (LongCtrlState.starting, LongCtrlState.pid, LongCtrlState.stopping)
     use_egmp_smoothed_accel = use_egmp_dynamic_long_tuning and (
@@ -768,9 +772,13 @@ class CarController(CarControllerBase):
       # Angle LKAS_ALT cars fault if the angle-steering status drops inactive during torque limiting.
       # Hold the angle status active while lateral is active; VM/safety limits handle actuation.
       steering_msg_active = CC.latActive
+    apply_torque, apply_angle = self.ev9_preinit.inhibit_faulted_steering(
+      CS, self.long_active_ecu, apply_torque, apply_angle,
+    )
 
     gear = getattr(getattr(CS, "out", None), "gearShifter", None)
     drive_gear = gear == structs.CarState.GearShifter.drive
+    ev9_actuation_permitted = self.ev9_preinit.actuation_permitted(self.frame, CC, CS, accel) if ev9_preinit_active else True
     if angle_lkas_alt:
       steering_msg_active = bool(steering_msg_active and drive_gear)
     angle_lkas_alt_standstill_handoff = bool(getattr(CS.out, "standstill", False) and not CC.latActive)
@@ -783,24 +791,38 @@ class CarController(CarControllerBase):
                                                              CS.stock_lfa_msg,
                                                              CS.stock_lkas_msg if preserve_stock_lkas else None,
                                                              lka_icon=lka_icon))
-    direct_steering_active = ccnc_angle_long and drive_gear and CC.latActive and self.direct_angle_request_allowed and not CS.angle_steering_fault
+    direct_steering_active = ccnc_angle_long and drive_gear and CC.latActive and self.direct_angle_request_allowed and \
+      not CS.angle_steering_fault and ev9_actuation_permitted
     inactive_steering_angle = float(np.clip(CS.angle_steering_angle,
                                             -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
                                             self.params.ANGLE_LIMITS.STEER_ANGLE_MAX)) if ccnc_angle_long else 0.0
     if ccnc_angle_long and drive_gear:
-      can_sends.append(hyundaicanfd.create_angle_adas_cmd(
-        self.packer, self.CAN,
-        apply_angle if direct_steering_active else inactive_steering_angle,
-        direct_steering_active, apply_torque if direct_steering_active else 0.0,
-      ))
+      if ev9_preinit_active:
+        can_sends.extend(self.ev9_preinit.create_steering_messages(
+          self.frame, CC, CS, apply_torque, apply_angle, ev9_actuation_permitted,
+        ))
+      else:
+        can_sends.append(hyundaicanfd.create_angle_adas_cmd(
+          self.packer, self.CAN,
+          apply_angle if direct_steering_active else inactive_steering_angle,
+          direct_steering_active, apply_torque if direct_steering_active else 0.0,
+        ))
     if ccnc_angle_long and not drive_gear:
-      can_sends.extend(hyundaicanfd.create_inactive_angle_steering_messages(self.packer, self.CAN,
-                                                                             inactive_steering_angle))
+      if ev9_preinit_active:
+        can_sends.extend(self.ev9_preinit.create_steering_messages(
+          self.frame, CC, CS, apply_torque, apply_angle, ev9_actuation_permitted,
+        ))
+      else:
+        can_sends.extend(hyundaicanfd.create_inactive_angle_steering_messages(self.packer, self.CAN,
+                                                                               inactive_steering_angle))
 
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     suppress_lfa = bool(lka_steering)
     if angle_lkas_alt:
-      suppress_lfa = bool(lka_steering and drive_gear and (CC.latActive or (ccnc_angle_long and CC.enabled)))
+      suppress_lfa = bool(lka_steering and (
+        not forward_stock_lkas if ev9_preinit_active else
+        drive_gear and (CC.latActive or (ccnc_angle_long and CC.enabled))
+      ))
     if self.frame % 5 == 0 and suppress_lfa:
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
                                                         self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))
@@ -814,6 +836,11 @@ class CarController(CarControllerBase):
       else:
         can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, CS.stock_lfahda_cluster_msg,
                                                             lfa_icon=lfa_icon))
+    elif self.frame % 5 == 0 and ev9_preinit_active:
+      ev9_preinit_steering_active = direct_steering_active and apply_steer_req and not CS.out.steeringPressed
+      can_sends.extend(self.ev9_preinit.create_status_messages(
+        self.frame, CC, CS, ev9_main_mode, ev9_preinit_steering_active, ev9_actuation_permitted,
+      ))
 
     # blinkers
     if lka_steering and self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:
@@ -847,7 +874,7 @@ class CarController(CarControllerBase):
           right_escalated = CS.right_blindspot_from_radar and CC.rightBlinker and not CC.leftBlinker
           left_warning = BlindspotWarningOutput()
           right_warning = BlindspotWarningOutput()
-          if self.frame % 5 == 0:
+          if self.frame % 5 == 0 and not ev9_preinit_active:
             left_warning = update_blindspot_warning(
               self._left_blindspot_warning, left_escalated, CC.leftBlinker,
             )
@@ -856,27 +883,32 @@ class CarController(CarControllerBase):
             )
           steering_available = CC.latActive or CC.enabled
           steering_active = direct_steering_active and apply_steer_req and not CS.out.steeringPressed
-          adrv_messages = hyundaicanfd.create_ccnc_adrv_messages(
-            self.packer, self.CP, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
-            CS.out, CS.is_metric, steering_available, steering_active,
-            CS.left_blindspot_from_radar, CS.right_blindspot_from_radar,
-            drive_gear=drive_gear,
-            hba_icon=CS.hba_icon,
-            left_escalated=left_escalated, right_escalated=right_escalated,
-            left_warning_lamp=left_warning.mirror_lamp_active,
-            right_warning_lamp=right_warning.mirror_lamp_active,
-            left_sound_active=left_warning.sound_active, right_sound_active=right_warning.sound_active,
-          )
+          if ev9_preinit_active:
+            adrv_messages = self.ev9_preinit.create_adrv_messages(self.frame, CS)
+          else:
+            adrv_messages = hyundaicanfd.create_ccnc_adrv_messages(
+              self.packer, self.CP, self.CAN, self.frame, CC.enabled, CS.out.cruiseState.available, CC.hudControl,
+              CS.out, CS.is_metric, steering_available, steering_active,
+              CS.left_blindspot_from_radar, CS.right_blindspot_from_radar,
+              drive_gear=drive_gear,
+              hba_icon=CS.hba_icon,
+              left_escalated=left_escalated, right_escalated=right_escalated,
+              left_warning_lamp=left_warning.mirror_lamp_active,
+              right_warning_lamp=right_warning.mirror_lamp_active,
+              left_sound_active=left_warning.sound_active, right_sound_active=right_warning.sound_active,
+            )
         else:
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame)
         can_sends.extend(adrv_messages)
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.
         radar_heartbeat_step = 1 if ccnc_angle_long else 4
-        if self.CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR and self.frame % radar_heartbeat_step == 0:
-          can_sends.append(hyundaicanfd.create_accelerator_brake_alt_spoof(0, self.frame // radar_heartbeat_step,
-                                                                            CS.out.brakePressed, CS.out.gasPressed,
-                                                                            self.CP.carFingerprint))
+        if not ev9_preinit_active and self.CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR and \
+            self.frame % radar_heartbeat_step == 0:
+          can_sends.append(hyundaicanfd.create_accelerator_brake_alt_spoof(
+            0, self.frame // radar_heartbeat_step, CS.out.brakePressed, CS.out.gasPressed,
+            self.CP.carFingerprint,
+          ))
       elif not ccnc_non_hda2:
         can_sends.extend(hyundaicanfd.create_fca_warning_light(self.packer, self.CAN, self.frame))
       if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.frame % 5 == 0:
@@ -911,7 +943,21 @@ class CarController(CarControllerBase):
           if use_egmp_smoothed_accel:
             acc_kwargs["jerk_lower"] = self._ioniq_6_long_tuning.jerk_lower
             acc_kwargs["jerk_upper"] = self._ioniq_6_long_tuning.jerk_upper
-        if ccnc_angle_long:
+        if ev9_preinit_active:
+          self._ev9_long_tuning = update_ev9_longitudinal_tuning(
+            self._ev9_long_tuning, CC.enabled and ev9_actuation_permitted and not CC.cruiseControl.override,
+            stopping, float(CS.out.vEgo),
+          )
+          if self._ev9_long_tuning.stop_request or not CC.enabled or CC.cruiseControl.override:
+            self._ioniq_6_long_tuning = reset_egmp_longitudinal_tuning(self._ioniq_6_long_tuning)
+            accel = 0.0
+          acc_control, self.accel_last = self.ev9_preinit.create_acc_control(
+            CC, CS, accel, set_speed_in_units, ev9_main_mode,
+            lead_visible, lead_distance, lead_rel_speed, ev9_actuation_permitted, self._ev9_long_tuning,
+            acc_kwargs["jerk_lower"], acc_kwargs["jerk_upper"],
+          )
+          can_sends.append(acc_control)
+        elif ccnc_angle_long:
           self._ev9_long_tuning = update_ev9_longitudinal_tuning(
             self._ev9_long_tuning, CC.enabled and not CC.cruiseControl.override,
             CC.actuators.longControlState == LongCtrlState.stopping, float(CS.out.vEgo),
@@ -932,7 +978,8 @@ class CarController(CarControllerBase):
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,
             set_speed_in_units, hud_control, cruise_info=CS.cruise_info if ccnc_non_hda2 else None, **acc_kwargs,
           ))
-        self.accel_last = accel
+        if not ev9_preinit_active:
+          self.accel_last = accel
     else:
       # button presses
       if (self.frame - self.last_button_frame) * DT_CTRL > 0.25:
