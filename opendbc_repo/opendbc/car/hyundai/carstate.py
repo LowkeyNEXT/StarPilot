@@ -130,6 +130,13 @@ class CarState(CarStateBase):
     self.stock_camera_lead_distance = 0.0
     self.stock_camera_lead_rel_speed = 0.0
     self.stock_camera_lead_ts = 0
+    self.openpilot_lead_visible = False
+    self.openpilot_lead_distance = 0.0
+    self.openpilot_lead_rel_speed = 0.0
+    self.openpilot_radar_valid = False
+    self.panda_faulted = True
+    self.ev9_preinit_active = False
+    self.stock_blinker_stalks = {}
     self.stock_blinker_stalks_ts = 0
     self.blindspots_rear_corners = {}
     self.blindspots_front_corner_1 = {}
@@ -558,6 +565,7 @@ class CarState(CarStateBase):
       hba_icon = int(cp.vl["FR_CMR_01_10ms"]["HBA_IndLmpReq"])
       self.hba_icon = hba_icon if hba_icon in (1, 2) else 0
     if cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"] > 0:
+      self.stock_blinker_stalks = copy.copy(cp.vl["BLINKER_STALKS"])
       self.stock_blinker_stalks_ts = cp.ts_nanos["BLINKER_STALKS"]["CHECKSUM_MAYBE"]
 
     ret.buttonEvents = [*self.create_cruise_button_events(self.cruise_buttons[-1], prev_cruise_buttons),

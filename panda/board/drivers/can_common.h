@@ -1,5 +1,9 @@
 #include "can_common_declarations.h"
 
+#ifdef PANDA_EV9_LONG_PREINIT
+#include "board/ev9_long_preinit.h"
+#endif
+
 uint32_t safety_tx_blocked = 0;
 uint32_t safety_rx_invalid = 0;
 uint32_t tx_buffer_overflow = 0;
@@ -47,6 +51,8 @@ can_buffer(tx3_q, CAN_TX_BUFFER_SIZE)
 // FIXME:
 // cppcheck-suppress misra-c2012-9.3
 can_ring *can_queues[PANDA_CAN_CNT] = {&can_tx1_q, &can_tx2_q, &can_tx3_q};
+
+#include "board/ev9_long_preinit_can.h"
 
 // ********************* interrupt safe queue *********************
 bool can_pop(can_ring *q, CANPacket_t *elem) {
@@ -122,6 +128,7 @@ void can_clear(can_ring *q) {
   q->w_ptr = 0;
   q->r_ptr = 0;
   EXIT_CRITICAL();
+  ev9_long_preinit_can_queue_cleared(q);
   // handle TX buffer full with zero ECUs awake on the bus
   refresh_can_tx_slots_available();
 }
@@ -276,6 +283,11 @@ bool can_check_checksum(CANPacket_t *packet) {
   return (calculate_checksum((uint8_t *) packet, CANPACKET_HEAD_SIZE + GET_LEN(packet)) == 0U);
 }
 
+#ifdef PANDA_EV9_LONG_PREINIT
+void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
+  (void)can_send_with_result(to_push, bus_number, skip_tx_hook);
+}
+#else
 void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
   if (skip_tx_hook || safety_tx_hook(to_push) != 0) {
     if (bus_number < PANDA_CAN_CNT) {
@@ -293,6 +305,7 @@ void can_send(CANPacket_t *to_push, uint8_t bus_number, bool skip_tx_hook) {
     rx_buffer_overflow += can_push(&can_rx_q, to_push) ? 0U : 1U;
   }
 }
+#endif
 
 bool is_speed_valid(uint32_t speed, const uint32_t *all_speeds, uint8_t len) {
   bool ret = false;

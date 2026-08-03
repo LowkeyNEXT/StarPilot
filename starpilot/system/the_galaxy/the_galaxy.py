@@ -125,9 +125,23 @@ _TESTING_GROUND_CUSTOM_RESERVED_INTERVAL_S = 15.0
 _TESTING_GROUND_CUSTOM_RESERVED_PM = None
 _TESTING_GROUND_CUSTOM_RESERVED_LOCK = threading.Lock()
 _TESTING_GROUND_CUSTOM_RESERVED_LAST_PUBLISH_MONO = 0.0
-PANDA_FIRMWARE_TOGGLE_KEYS = {"IgnoreIgnitionLine", "RemoteStartBootsComma", "HKGRemoteStartBootsComma"}
+PANDA_FIRMWARE_TOGGLE_KEYS = {"IgnoreIgnitionLine", "RemoteStartBootsComma", "HKGRemoteStartBootsComma", "EV9LongPreinitPanda"}
 PANDA_FIRMWARE_CONFIRMATION_FIELD = "confirmedPandaFirmwareFlash"
 _PANDA_FLASH_REBOOT_LOCK = threading.Lock()
+EV9_SCOPED_PARAM_KEYS = {
+  "EV9LongPreinitPanda",
+}
+
+
+def _persistent_car_fingerprint() -> str:
+  try:
+    cp_bytes = params.get("CarParamsPersistent")
+    if cp_bytes:
+      with car.CarParams.from_bytes(cp_bytes) as cp:
+        return str(cp.carFingerprint or "")
+  except Exception:
+    pass
+  return ""
 
 
 def _flash_panda_then_reboot() -> None:
@@ -2440,6 +2454,67 @@ def _configured_favorite_slot_values(slots):
     if slot.get("key") and not is_favorite_action_key(slot.get("key"))
   }
 
+def _galaxy_nav_confirmation_payload(key):
+  if key not in PANDA_FIRMWARE_TOGGLE_KEYS:
+    return None
+
+  return {
+    "field": PANDA_FIRMWARE_CONFIRMATION_FIELD,
+    "title": "Confirm Panda Firmware Flash",
+    "message": "This will flash Panda firmware and reboot the device when it finishes.",
+    "confirmText": "Flash and Reboot",
+  }
+
+
+EV9_GALAXY_CONTROLS = (
+  (
+    "EV9LongPreinitPanda",
+    "EV9 Preinit ADAS Handoff",
+    "Suppress the EV9 ADAS ECU during a stationary startup and hand neutral continuity and control to openpilot.",
+    None,
+  ),
+)
+
+
+def _build_ev9_galaxy_control_catalog():
+  controls = []
+  if _persistent_car_fingerprint() == "KIA_EV9":
+    for key, title, subtitle, parent_key in EV9_GALAXY_CONTROLS:
+      control = {
+        "id": key,
+        "key": key,
+        "title": title,
+        "subtitle": subtitle,
+        "kind": "toggle",
+        "value": params.get_bool(key),
+        "options": [],
+        "path": ["params", key],
+        "endpoint": "/api/params",
+        "method": "PUT",
+        "isWritable": True,
+        "sectionID": "ev9",
+        "sectionTitle": "Kia EV9",
+      }
+      if parent_key is not None:
+        control["parentKey"] = parent_key
+      confirmation = _galaxy_nav_confirmation_payload(key)
+      if confirmation:
+        control["confirmation"] = confirmation
+      controls.append(control)
+
+  sections = [{
+    "id": "ev9",
+    "title": "Kia EV9",
+    "controls": controls,
+    "metrics": [],
+  }] if controls else []
+  return {
+    "version": 1,
+    "updatedAt": time.monotonic(),
+    "controls": controls,
+    "sections": sections,
+  }
+
 _cached_allowed_keys = None
 _cached_param_types = None
 _cached_default_values = None
@@ -4407,6 +4482,8 @@ def setup(app):
       allowed_keys, _ = _get_param_type_info()
       if key not in allowed_keys:
         return jsonify({"error": f"Parameter '{key}' is not editable."}), 403
+      if key in EV9_SCOPED_PARAM_KEYS and _persistent_car_fingerprint() != "KIA_EV9":
+        return jsonify({"error": f"Parameter '{key}' is only available for KIA_EV9."}), 403
 
       if key in {"UseOldUI", "TryRaylibUI"}:
         enabled = str_val.strip() in ("1", "true", "True")
@@ -4452,7 +4529,11 @@ def setup(app):
       if key in PANDA_FIRMWARE_TOGGLE_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot flash Panda firmware while driving."}), 403
       if key in PANDA_FIRMWARE_TOGGLE_KEYS and data.get(PANDA_FIRMWARE_CONFIRMATION_FIELD) is not True:
-        return jsonify({"error": "Panda firmware changes require confirmation before flashing."}), 409
+        return jsonify({
+          "error": "Panda firmware changes require confirmation before flashing.",
+          "confirmationRequired": True,
+          "confirmation": _galaxy_nav_confirmation_payload(key),
+        }), 409
 
       if key in {"LeadIndicator", "HideLeadMarker"}:
         enabled = str_val.strip() in ("1", "true", "True")
@@ -4791,6 +4872,7 @@ def setup(app):
         result[key] = None
 
     result["HasRadar"] = _get_has_radar()
+    result["CarFingerprint"] = _persistent_car_fingerprint()
 
     return jsonify(_sanitize_json_value(result)), 200
 
@@ -6367,11 +6449,16 @@ def setup(app):
     slug = _read_galaxy_text(GALAXY_SLUG_FILE)
     token = _read_galaxy_text(GALAXY_SESSION_FILE)
     paired = len(_read_galaxy_text(GALAXY_AUTH_FILE)) == 64 and bool(slug and token)
+    control_catalog = _build_ev9_galaxy_control_catalog()
     return jsonify({
       "appUrl": GALAXY_PLAY_STORE_URL,
       "cookieName": GALAXY_COOKIE_NAME,
       "paired": paired,
       "sessionToken": _build_galaxy_session_value(slug, token),
+      "controls": control_catalog["controls"],
+      "sections": control_catalog["sections"],
+      "controlCatalogVersion": control_catalog["version"],
+      "controlCatalogUpdatedAt": control_catalog["updatedAt"],
     })
 
   @app.route("/api/galaxy/pair", methods=["POST"])

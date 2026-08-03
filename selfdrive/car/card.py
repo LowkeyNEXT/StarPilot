@@ -18,6 +18,7 @@ from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallabl
 from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
+from opendbc.car.hyundai.values import CAR
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -28,6 +29,7 @@ from openpilot.selfdrive.car.cruise import (
 )
 from openpilot.selfdrive.car.redneck_cruise import RedneckCruise, select_redneck_target_speed
 from openpilot.selfdrive.car.car_specific import MockCarState
+from openpilot.selfdrive.car.ev9_preinit_coordinator import EV9PreinitCoordinator
 
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_ACTION_ACCEL_COUNTER,
@@ -75,7 +77,7 @@ def can_comm_callbacks(logcan: messaging.SubSocket, sendcan: messaging.PubSocket
   return can_recv, can_send
 
 
-class Car:
+class Car(EV9PreinitCoordinator):
   CI: CarInterfaceBase
   RI: RadarInterfaceBase
   CP: car.CarParams
@@ -92,6 +94,7 @@ class Car:
     self.CC_prev = car.CarControl.new_message()
     self.CS_prev = car.CarState.new_message()
     self.initialized_prev = False
+    EV9PreinitCoordinator.initialize(self)
 
     self.last_actuators_output = structs.CarControl.Actuators()
 
@@ -104,6 +107,7 @@ class Car:
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
 
     is_release = False
+    ev9_panda_handoff = None
 
     if CI is None:
       # wait for one pandaState and one CAN packet
@@ -114,7 +118,8 @@ class Car:
           break
 
       alpha_long_allowed = self.params.get_bool("AlphaLongitudinalEnabled")
-      num_pandas = len(messaging.recv_one_retry(self.sm.sock['pandaStates']).pandaStates)
+      panda_states_event = messaging.recv_one_retry(self.sm.sock['pandaStates'])
+      num_pandas = len(panda_states_event.pandaStates)
 
       cached_params = None
       cached_params_raw = self.params.get("CarParamsCache")
@@ -122,7 +127,23 @@ class Car:
         with car.CarParams.from_bytes(cached_params_raw) as _cached_params:
           cached_params = _cached_params
 
-      self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas, cached_params, get_starpilot_toggles())
+      if cached_params is not None and cached_params.carFingerprint == CAR.KIA_EV9:
+        initial_can_messages = [CanData(msg.address, msg.dat, msg.src) for msg in can.can]
+        # Preserve any additional frames already queued in the same wake-up
+        # burst. This does not wait or widen the UDS timing window.
+        for initial_event in messaging.drain_sock(self.can_sock, wait_for_one=False):
+          initial_can_messages.extend(CanData(msg.address, msg.dat, msg.src) for msg in initial_event.can)
+        ev9_startup = self.prepare_fingerprint_startup(initial_can_messages, panda_states_event, cached_params)
+        ev9_panda_handoff = ev9_startup.handoff
+        if ev9_startup.pre_fingerprint_suppressed:
+          cloudlog.warning("EV9 using verified persistent interface after pre-fingerprint suppression")
+          self.CI = interfaces[cached_params.carFingerprint](cached_params, ev9_startup.cached_fpcp)
+        else:
+          self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas,
+                            cached_params, get_starpilot_toggles(), allow_fw_query=ev9_startup.allow_fw_query)
+      else:
+        self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas,
+                          cached_params, get_starpilot_toggles())
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP)
       self.CP = self.CI.CP
 
@@ -205,6 +226,8 @@ class Car:
     self.params.put("StarPilotCarParams", fpcp_bytes)
     self.params.put_nonblocking("StarPilotCarParamsPersistent", fpcp_bytes)
 
+    self.start_early_control(ev9_panda_handoff)
+
     update_starpilot_toggles()
 
     self.starpilot_card = StarPilotCard(self.CP, self.FPCP)
@@ -236,8 +259,12 @@ class Car:
   def state_update(self) -> tuple[car.CarState, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
 
+    # Keep the blocking CAN scheduler. Panda's bridge and the surviving vehicle
+    # streams remain live; a nonblocking drain would bypass monitor_time's
+    # pacing and flood sendcan during startup.
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
+    self.collect_claim_receipts_from_can_list(can_list)
 
     # Update carState from CAN
     CS, FPCS = self.CI.update(can_list, self.starpilot_toggles)
@@ -249,6 +276,7 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+    self.update_runtime_state(CS, RD)
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -309,6 +337,7 @@ class Car:
       self.resume_prev_button = False
 
     FPCS = self.starpilot_card.update(CS, FPCS, self.sm, self.starpilot_toggles)
+    self.update_aol_state(FPCS)
 
     return CS, RD, FPCS
 
@@ -350,7 +379,7 @@ class Car:
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""
 
-    if not self.initialized_prev:
+    if not self.initialized_prev and not self.interface_initialized:
       # Initialize CarInterface, once controls are ready
       # TODO: this can make us miss at least a few cycles when doing an ECU knockout
       was_openpilot_long = self.CP.openpilotLongitudinalControl
@@ -373,6 +402,7 @@ class Car:
         self.CP.openpilotLongitudinalControl = False
         self.params.put("CarParams", self.CP.to_bytes())
         self.params.put("StarPilotCarParams", self.FPCP.to_bytes())
+      self.interface_initialized = True
       # signal pandad to switch to car safety mode
       self.params.put_bool_nonblocking("ControlsReady", True)
 
@@ -391,7 +421,7 @@ class Car:
     lead_distance = 0.0
     lead_rel_speed = 0.0
 
-    if self.sm.seen['radarState'] and self.sm.valid['radarState']:
+    if self.sm.seen['radarState'] and self.sm.alive['radarState'] and self.sm.valid['radarState']:
       lead = self.sm['radarState'].leadOne
       if lead.status:
         lead_visible = True
@@ -459,7 +489,7 @@ class Car:
 
     initialized = (not any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and
                    self.sm.seen['onroadEvents'])
-    if not self.CP.passive and initialized:
+    if not self.handle_control_step(CS, initialized) and not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
 
     self.initialized_prev = initialized
