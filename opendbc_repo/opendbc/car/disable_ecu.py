@@ -5,6 +5,8 @@ from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
 
 EXT_DIAG_REQUEST = b'\x10\x03'
 EXT_DIAG_RESPONSE = b'\x50\x03'
+DEFAULT_DIAG_REQUEST = b'\x10\x01'
+DEFAULT_DIAG_RESPONSE = b'\x50\x01'
 RESET_REQUEST = b'\x11\x01'
 RESET_RESPONSE = b''
 
@@ -21,6 +23,20 @@ def ecu_log(msg):
       f.write(log_line + "\n")
   except Exception:
     pass
+
+
+def restore_default_diagnostic_session(can_recv, can_send, bus, addr, sub_addr=None, timeout=0.1):
+  """Best-effort cleanup after a failed communication-control request."""
+  try:
+    ecu_log("restoring default diagnostic session after ECU disable failure...")
+    query = IsoTpParallelQuery(
+      can_send, can_recv, bus, [(addr, sub_addr)], [DEFAULT_DIAG_REQUEST], [DEFAULT_DIAG_RESPONSE],
+    )
+    query.get_data(timeout)
+    ecu_log("default diagnostic session restored")
+  except Exception as e:
+    # Falling back to stock control must not be blocked by diagnostic cleanup.
+    ecu_log(f"default diagnostic session restore exception: {e}")
 
 
 def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_req=b'\x28\x83\x01', timeout=0.1, retry=10,
@@ -42,6 +58,7 @@ def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_r
       ecu_log(f"reset exception: {e}")
 
   # Try multiple times with different approaches
+  extended_session_active = False
   for i in range(retry):
     try:
       # Enter extended diagnostic session
@@ -50,6 +67,7 @@ def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_r
 
       for _, _ in query.get_data(timeout).items():
         ecu_log("diag session OK")
+        extended_session_active = True
 
         # Small delay to let ECU fully enter diagnostic mode
         time.sleep(0.05)
@@ -63,7 +81,7 @@ def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_r
         cc_success = False
         cc_rejected = False
         cc_nrc = None
-        for (rx_addr, _), data in cc_response.items():
+        for (_rx_addr, _), data in cc_response.items():
           ecu_log(f"CC response: {data.hex() if data else 'empty'}")
           # Check for positive response (0x68 = 0x28 + 0x40)
           if len(data) >= 1 and data[0] == 0x68:
@@ -89,10 +107,13 @@ def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_r
         elif cc_rejected:
           if reset and cc_nrc == 0x22 and i < retry - 1:
             ecu_log("CC rejected with NRC 0x22 after reset; retrying...")
+            restore_default_diagnostic_session(can_recv, can_send, bus, addr, sub_addr, timeout)
+            extended_session_active = False
             time.sleep(0.2)
             continue
           # ECU explicitly rejected - don't retry, it won't work
           ecu_log("=== ECU DISABLE REJECTED ===")
+          restore_default_diagnostic_session(can_recv, can_send, bus, addr, sub_addr, timeout)
           return False
         elif require_positive_response:
           ecu_log("=== ECU DISABLE UNCONFIRMED (no response) ===")
@@ -107,4 +128,6 @@ def disable_ecu(can_recv, can_send, bus=0, addr=0x7d0, sub_addr=None, com_cont_r
     time.sleep(0.1)
 
   ecu_log("=== ECU DISABLE FAILED ===")
+  if extended_session_active:
+    restore_default_diagnostic_session(can_recv, can_send, bus, addr, sub_addr, timeout)
   return False

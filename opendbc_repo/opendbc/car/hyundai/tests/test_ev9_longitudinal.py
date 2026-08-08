@@ -28,7 +28,7 @@ class FakeParams:
 ))
 def test_disable_ecu_requires_positive_response_only_when_requested(monkeypatch, uds_request, cc_response,
                                                                     require_positive_response, expected):
-  responses = iter(({(0x738, None): b""}, cc_response))
+  responses = iter(({(0x738, None): b""}, cc_response, {(0x738, None): b"\x50\x01"}))
   requests = []
 
   class FakeIsoTpParallelQuery:
@@ -43,7 +43,33 @@ def test_disable_ecu_requires_positive_response_only_when_requested(monkeypatch,
 
   assert disable_ecu(None, None, bus=1, addr=0x730, com_cont_req=uds_request, retry=1,
                      require_positive_response=require_positive_response) is expected
-  assert requests == [b"\x10\x03", uds_request]
+  expected_requests = [b"\x10\x03", uds_request]
+  if not expected:
+    expected_requests.append(b"\x10\x01")
+  assert requests == expected_requests
+
+
+def test_disable_ecu_restores_default_session_after_explicit_rejection(monkeypatch):
+  responses = iter((
+    {(0x738, None): b"\x50\x03"},
+    {(0x738, None): b"\x7f\x28\x22"},
+    {(0x738, None): b"\x50\x01"},
+  ))
+  requests = []
+
+  class FakeIsoTpParallelQuery:
+    def __init__(self, _can_send, _can_recv, _bus, _addrs, uds_requests, _uds_responses):
+      requests.append(uds_requests[0])
+
+    def get_data(self, _timeout):
+      return next(responses)
+
+  monkeypatch.setattr("opendbc.car.disable_ecu.IsoTpParallelQuery", FakeIsoTpParallelQuery)
+  monkeypatch.setattr("opendbc.car.disable_ecu.time.sleep", lambda _seconds: None)
+
+  assert not disable_ecu(None, None, bus=1, addr=0x730, com_cont_req=b"\x28\x01\x01", retry=1,
+                         require_positive_response=True)
+  assert requests == [b"\x10\x03", b"\x28\x01\x01", b"\x10\x01"]
 
 
 def test_production_module_has_no_probe_or_tuning_surface():
