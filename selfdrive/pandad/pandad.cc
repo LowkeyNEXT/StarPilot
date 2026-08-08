@@ -221,8 +221,8 @@ void fill_panda_can_state(cereal::PandaState::PandaCanState::Builder &cs, const 
   cs.setCanCoreResetCnt(can_health.can_core_reset_cnt);
 }
 
-std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> &pandas, bool is_onroad,
-                                      bool spoofing_started, bool ignore_ignition_line,
+std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> &pandas, Params &params,
+                                      bool is_onroad, bool spoofing_started, bool ignore_ignition_line,
                                       const Ev9VehicleTelemetryDecoder *ev9_vehicle_telemetry) {
   bool ignition_local = false;
   const uint32_t pandas_cnt = pandas.size();
@@ -294,6 +294,15 @@ std::optional<bool> send_panda_states(PubMaster *pm, const std::vector<Panda *> 
   for (uint32_t i = 0; i < pandas_cnt; i++) {
     auto panda = pandas[i];
     const auto &health = pandaStates[i];
+
+    if (ev9PreinitResident[i] && ev9_preinit_maybe_rearm_offroad(
+          panda, ev9PreinitStatuses[i], is_onroad, ignition_local)) {
+      // EcuDisableFailed is deliberately not a generic offroad-cleared param.
+      // Clear it only after resident firmware accepts the exact completed
+      // cycle's ignition-low rearm, so a later warm start can prove ownership
+      // without requiring a SOM/Panda power cycle.
+      params.remove("EcuDisableFailed");
+    }
 
     // Make sure CAN buses are live: safety_setter_thread does not work if Panda CAN are silent and there is only one other CAN node
     if (health.safety_mode_pkt == (uint8_t)(cereal::CarParams::SafetyModel::SILENT)) {
@@ -378,8 +387,8 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
   pm->send("peripheralState", msg);
 }
 
-void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engaged, bool is_onroad,
-                         bool spoofing_started, bool ignore_ignition_line,
+void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, Params &params, bool engaged,
+                         bool is_onroad, bool spoofing_started, bool ignore_ignition_line,
                          const Ev9VehicleTelemetryDecoder *ev9_vehicle_telemetry) {
   std::vector<std::string> connected_serials;
   for (Panda *p : pandas) {
@@ -387,7 +396,8 @@ void process_panda_state(std::vector<Panda *> &pandas, PubMaster *pm, bool engag
   }
 
   {
-    auto ignition_opt = send_panda_states(pm, pandas, is_onroad, spoofing_started, ignore_ignition_line,
+    auto ignition_opt = send_panda_states(pm, pandas, params, is_onroad,
+                                          spoofing_started, ignore_ignition_line,
                                           ev9_vehicle_telemetry);
     if (!ignition_opt) {
       LOGE("Failed to get ignition_opt");
@@ -523,7 +533,8 @@ void pandad_run(std::vector<Panda *> &pandas) {
       );
       is_onroad = params.getBool("IsOnroad");
       const bool ignore_ignition_line = params.getBool("IgnoreIgnitionLine");
-      process_panda_state(pandas, &pm, engaged, is_onroad, spoofing_started, ignore_ignition_line,
+      process_panda_state(pandas, &pm, params, engaged, is_onroad,
+                          spoofing_started, ignore_ignition_line,
                           &ev9_vehicle_telemetry);
       panda_safety.configureSafetyMode(is_onroad);
     }

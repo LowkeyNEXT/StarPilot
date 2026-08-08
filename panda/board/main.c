@@ -30,6 +30,7 @@
 
 static bool panda_ignition_line(void);
 
+// cppcheck-suppress misra-c2012-20.1
 #include "board/main_comms.h"
 
 
@@ -41,7 +42,10 @@ static bool panda_ignition_line(void) {
   #endif
 }
 
-#include "board/ev9_long_preinit_main.h"
+#ifdef PANDA_EV9_LONG_PREINIT
+  // cppcheck-suppress misra-c2012-20.1
+  #include "board/ev9_long_preinit_main.h"
+#endif
 
 
 // ********************* Serial debugging *********************
@@ -66,7 +70,9 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
     // TERMINAL ERROR: we can't continue if SILENT safety mode isn't succesfully set
     assert_fatal(err == 0, "Error: Failed setting SILENT mode. Hanging\n");
   }
-  const bool preserve_preinit_can = ev9_long_preinit_preserve_safety_transition(mode_copy, param);
+  #ifdef PANDA_EV9_LONG_PREINIT
+    const bool preserve_preinit_can = ev9_long_preinit_preserve_safety_transition(mode_copy, param);
+  #endif
   safety_tx_blocked = 0;
   safety_rx_invalid = 0;
 
@@ -104,9 +110,13 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
       can_silent = false;
       break;
   }
-  if (!preserve_preinit_can) {
+  #ifdef PANDA_EV9_LONG_PREINIT
+    if (!preserve_preinit_can) {
+      can_init_all();
+    }
+  #else
     can_init_all();
-  }
+  #endif
 }
 
 bool is_car_safety_mode(uint16_t mode) {
@@ -156,6 +166,9 @@ static void tick_handler(void) {
     harness_tick();
     simple_watchdog_kick();
     sound_tick();
+    #ifdef PANDA_EV9_LONG_PREINIT
+      ev9_long_preinit_main_sample_ignition();
+    #endif
 
     if (relay_malfunction_prev != relay_malfunction) {
       if (relay_malfunction) {
@@ -256,14 +269,23 @@ static void tick_handler(void) {
           // clear heartbeat engaged state
           heartbeat_engaged = false;
 
-          if (!ev9_long_preinit_handle_heartbeat_loss(started)) {
+          #ifdef PANDA_EV9_LONG_PREINIT
+            if (!ev9_long_preinit_handle_heartbeat_loss(started)) {
+              if (current_safety_mode != SAFETY_SILENT) {
+                set_safety_mode(SAFETY_SILENT, 0U);
+              }
+              if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
+                set_power_save_state(POWER_SAVE_STATUS_ENABLED);
+              }
+            }
+          #else
             if (current_safety_mode != SAFETY_SILENT) {
               set_safety_mode(SAFETY_SILENT, 0U);
             }
             if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
               set_power_save_state(POWER_SAVE_STATUS_ENABLED);
             }
-          }
+          #endif
 
           // Also disable IR when the heartbeat goes missing
           current_board->set_ir_power(0U);
@@ -349,12 +371,19 @@ int main(void) {
     fan_init();
   }
 
-  set_safety_mode(ev9_long_preinit_initial_safety_mode(), 0U);
+  #ifdef PANDA_EV9_LONG_PREINIT
+    set_safety_mode(ev9_long_preinit_initial_safety_mode(), 0U);
+  #else
+    // init to SILENT and can silent
+    set_safety_mode(SAFETY_SILENT, 0U);
+  #endif
 
   // enable CAN TXs
   enable_can_transceivers(true);
 
-  ev9_long_preinit_main_init();
+  #ifdef PANDA_EV9_LONG_PREINIT
+    ev9_long_preinit_main_init();
+  #endif
 
   // init watchdog for heartbeat loop, fed at 8Hz
   simple_watchdog_init(FAULT_HEARTBEAT_LOOP_WATCHDOG, (3U * 1000000U / 8U));
@@ -383,14 +412,18 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
-    ev9_long_preinit_main_tick();
+    #ifdef PANDA_EV9_LONG_PREINIT
+      ev9_long_preinit_main_tick();
+    #endif
     if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {
       #endif
         // useful for debugging, fade breaks = panda is overloaded
         for (uint32_t fade = 0U; fade < MAX_LED_FADE; fade += 1U) {
-          ev9_long_preinit_main_service_tx_cancel();
+          #ifdef PANDA_EV9_LONG_PREINIT
+            ev9_long_preinit_main_service_tx_cancel();
+          #endif
           led_set(LED_RED, true);
           delay(fade >> 4);
           led_set(LED_RED, false);
@@ -398,7 +431,9 @@ int main(void) {
         }
 
         for (uint32_t fade = MAX_LED_FADE; fade > 0U; fade -= 1U) {
-          ev9_long_preinit_main_service_tx_cancel();
+          #ifdef PANDA_EV9_LONG_PREINIT
+            ev9_long_preinit_main_service_tx_cancel();
+          #endif
           led_set(LED_RED, true);
           delay(fade >> 4);
           led_set(LED_RED, false);

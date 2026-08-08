@@ -4,6 +4,7 @@
 
 #ifdef PANDA_HKG_REMOTE_START
 extern bool hkg_remote_climate_wake;
+extern uint32_t hkg_remote_climate_wake_cnt;
 #endif
 
 // Resident, non-actuating bridge for the EV9 ADAS CommunicationControl startup
@@ -44,6 +45,7 @@ extern bool hkg_remote_climate_wake;
 #define EV9_FP_IDENTITY_REQUIRED (EV9_FP_HEARTBEAT | EV9_FP_POWERTRAIN | EV9_FP_SCC_CONTROL)
 #define EV9_FP_KNOCKOUT_REQUIRED (EV9_FP_IDENTITY_REQUIRED | EV9_FP_WHEEL_SPEEDS | EV9_FP_STATIONARY)
 
+// cppcheck-suppress misra-c2012-20.1 ; feature modules are intentionally composed from headers
 #include "board/ev9_long_preinit_frames.h"
 #define EV9_PREINIT_HOST_HEARTBEAT_BIT (1UL << EV9_PREINIT_REPLAY_COUNT)
 #define EV9_PREINIT_HOST_TP_BIT (1UL << (EV9_PREINIT_REPLAY_COUNT + 1U))
@@ -65,8 +67,6 @@ extern bool hkg_remote_climate_wake;
 #define EV9_PREINIT_DRIVER_BRAKE_FRESH_US 2000000U
 #define EV9_PREINIT_REMOTE_WAKE_FRESH_US 3000000U
 #define EV9_PREINIT_STANDSTILL_RAW_MAX 12U
-#define EV9_PREINIT_USB_CONTROL_REQUEST 0xEAU
-#define EV9_PREINIT_USB_RELEASE 0x01U
 #define EV9_PREINIT_SAFETY_MODEL SAFETY_HYUNDAI_CANFD
 #define EV9_PREINIT_LIFECYCLE_RELEASE_REQUESTED 0x01U
 #define EV9_PREINIT_LIFECYCLE_RELEASE_COMPLETE 0x02U
@@ -145,7 +145,7 @@ static uint8_t ev9_preinit_powertrain_boot_state = 0U;
 static uint8_t ev9_preinit_powertrain_init_state = 0U;
 static uint8_t ev9_preinit_restore_seen = 0U;
 static uint8_t ev9_preinit_restore_attempts = 0U;
-static uint32_t ev9_preinit_restore_seen_us[EV9_PREINIT_RESTORE_STREAM_COUNT] = {0U};
+static uint32_t ev9_preinit_restore_seen_us[EV9_PREINIT_RESTORE_STREAM_COUNT] = {0U, 0U, 0U, 0U, 0U};
 static uint8_t ev9_preinit_heartbeat_counter = 0U;
 static uint32_t ev9_preinit_host_mask = 0U;
 static uint32_t ev9_preinit_host_hw_mask = 0U;
@@ -153,10 +153,15 @@ static uint32_t ev9_preinit_host_hw_pending_mask = 0U;
 static bool ev9_preinit_pending_start = false;
 static bool ev9_preinit_restart_used = false;
 static bool ev9_preinit_ignition_prev = false;
-static bool ev9_preinit_ignition_low_pending = false;
 static bool ev9_preinit_ignition_low_handoff_candidate = false;
 static bool ev9_preinit_off_latched = false;
 static bool ev9_preinit_warm_rearm_candidate = false;
+static bool ev9_preinit_warm_ignition_pending = false;
+static volatile bool ev9_preinit_sampled_ignition = false;
+static volatile bool ev9_preinit_sampled_ignition_low_pending = false;
+static volatile bool ev9_preinit_sampled_ignition_low_candidate = false;
+static volatile bool ev9_preinit_sampled_ignition_fell = false;
+static volatile bool ev9_preinit_sampled_ignition_rose = false;
 static bool ev9_preinit_session_in_flight = false;
 static bool ev9_preinit_comm_control_queued = false;
 static bool ev9_preinit_comm_control_in_flight = false;
@@ -179,6 +184,8 @@ static bool ev9_preinit_can_reset_failed = false;
 static bool ev9_preinit_status_snapshot_valid = false;
 static bool ev9_preinit_host_heartbeat_hw_pending = false;
 static bool ev9_preinit_host_tp_hw_pending = false;
+static uint8_t ev9_preinit_host_heartbeat_hw_index = 0xFFU;
+static uint8_t ev9_preinit_host_tp_hw_index = 0xFFU;
 static bool ev9_preinit_steering_angle_valid = false;
 static uint16_t ev9_preinit_steering_angle_raw = 0U;
 
@@ -195,7 +202,7 @@ static uint32_t ev9_preinit_steering_angle_us = 0U;
 static uint32_t ev9_preinit_climate_takeover_us = 0U;
 static uint32_t ev9_preinit_pre_ready_us = 0U;
 static uint32_t ev9_preinit_ignition_us = 0U;
-static uint32_t ev9_preinit_ignition_low_since_us = 0U;
+static volatile uint32_t ev9_preinit_sampled_ignition_low_since_us = 0U;
 static uint32_t ev9_preinit_session_request_us = 0U;
 static uint32_t ev9_preinit_session_response_us = 0U;
 static uint32_t ev9_preinit_comm_control_us = 0U;
@@ -830,6 +837,9 @@ static ev9_long_preinit_timing_t ev9_long_preinit_get_timing(void) {
 }
 
 static void ev9_long_preinit_reset_cycle(void) {
+  // Reset can run from RX or the main loop while the timer sampler is active.
+  // Keep the sampler's multi-field edge latch coherent with the new epoch.
+  ENTER_CRITICAL();
   ev9_preinit_state = EV9_PREINIT_COLLECTING;
   ev9_preinit_trigger = EV9_PREINIT_TRIGGER_NONE;
   ev9_preinit_flags = 0U;
@@ -855,10 +865,15 @@ static void ev9_long_preinit_reset_cycle(void) {
   ev9_preinit_pending_start = false;
   ev9_preinit_restart_used = false;
   ev9_preinit_ignition_prev = false;
-  ev9_preinit_ignition_low_pending = false;
   ev9_preinit_ignition_low_handoff_candidate = false;
   ev9_preinit_off_latched = false;
   ev9_preinit_warm_rearm_candidate = false;
+  ev9_preinit_warm_ignition_pending = false;
+  ev9_preinit_sampled_ignition = false;
+  ev9_preinit_sampled_ignition_low_pending = false;
+  ev9_preinit_sampled_ignition_low_candidate = false;
+  ev9_preinit_sampled_ignition_fell = false;
+  ev9_preinit_sampled_ignition_rose = false;
   ev9_preinit_session_in_flight = false;
   ev9_preinit_comm_control_queued = false;
   ev9_preinit_comm_control_in_flight = false;
@@ -879,6 +894,8 @@ static void ev9_long_preinit_reset_cycle(void) {
   ev9_preinit_can_reset_failed = false;
   ev9_preinit_host_heartbeat_hw_pending = false;
   ev9_preinit_host_tp_hw_pending = false;
+  ev9_preinit_host_heartbeat_hw_index = 0xFFU;
+  ev9_preinit_host_tp_hw_index = 0xFFU;
   ev9_preinit_steering_angle_valid = false;
   ev9_preinit_steering_angle_raw = 0U;
   ev9_preinit_cycle_started_us = 0U;
@@ -894,7 +911,7 @@ static void ev9_long_preinit_reset_cycle(void) {
   ev9_preinit_climate_takeover_us = 0U;
   ev9_preinit_pre_ready_us = 0U;
   ev9_preinit_ignition_us = 0U;
-  ev9_preinit_ignition_low_since_us = 0U;
+  ev9_preinit_sampled_ignition_low_since_us = 0U;
   ev9_preinit_session_request_us = 0U;
   ev9_preinit_session_response_us = 0U;
   ev9_preinit_comm_control_us = 0U;
@@ -934,6 +951,7 @@ static void ev9_long_preinit_reset_cycle(void) {
     ev9_preinit_replay[i].host_claim_reservation_used = false;
     ev9_preinit_replay[i].host_claim_reserved = false;
     ev9_preinit_replay[i].host_hw_pending = false;
+    ev9_preinit_replay[i].host_hw_index = 0xFFU;
     const uint8_t *fallback = ev9_preinit_fallback(ev9_preinit_replay[i].addr);
     if (fallback != NULL) {
       ev9_preinit_replay[i].packet = ev9_preinit_make_packet(ev9_preinit_replay[i].addr,
@@ -941,6 +959,7 @@ static void ev9_long_preinit_reset_cycle(void) {
       (void)memcpy(ev9_preinit_replay[i].packet.data, fallback, ev9_preinit_replay[i].len);
     }
   }
+  EXIT_CRITICAL();
 }
 
 static void ev9_long_preinit_init(void) {
@@ -1217,7 +1236,8 @@ static void ev9_preinit_publish_bridge(uint32_t now_us) {
       (ev9_preinit_comm_control_response_us == 0U)) {
     return;
   }
-  const bool host_heartbeat_fresh = ev9_preinit_host_fresh(now_us, ev9_preinit_last_host_heartbeat_us, 10000U);
+  const bool host_heartbeat_fresh = ev9_preinit_host_heartbeat_hw_pending ||
+    ev9_preinit_host_fresh(now_us, ev9_preinit_last_host_heartbeat_us, 10000U);
   if (!host_heartbeat_fresh &&
       ev9_preinit_due(now_us, ev9_preinit_last_heartbeat_rx_us,
                       ev9_preinit_last_heartbeat_tx_us,
@@ -1238,7 +1258,8 @@ static void ev9_preinit_publish_bridge(uint32_t now_us) {
 
   for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
     ev9_preinit_replay_t *replay = &ev9_preinit_replay[i];
-    const bool host_fresh = ev9_preinit_host_fresh(now_us, replay->last_host_tx_us, replay->period_us);
+    const bool host_fresh = replay->host_hw_pending ||
+      ev9_preinit_host_fresh(now_us, replay->last_host_tx_us, replay->period_us);
     const bool fallback_due = ev9_preinit_due(now_us, replay->last_rx_us, replay->last_tx_us,
                                               replay->last_attempt_us, replay->period_us);
     if (!host_fresh && replay->captured && fallback_due) {
@@ -1703,12 +1724,6 @@ static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
     ev9_preinit_host_hw_pending_mask |= EV9_PREINIT_HOST_HEARTBEAT_BIT;
     ev9_preinit_host_heartbeat_hw_pending = true;
     ev9_preinit_host_heartbeat_hw_packet = *packet;
-    ev9_preinit_last_host_heartbeat_us = now_us;
-    ev9_preinit_heartbeat_packet = *packet;
-    ev9_preinit_heartbeat_packet.fd = 1U;
-    ev9_preinit_heartbeat_packet.bus = EV9_PREINIT_BUS_RADAR;
-    ev9_preinit_heartbeat_counter = packet->data[2] + 1U;
-    ev9_preinit_last_heartbeat_tx_us = now_us;
     ev9_preinit_last_heartbeat_attempt_us = now_us;
   } else if ((packet->bus == EV9_PREINIT_BUS_ECAN) && (packet->addr == EV9_PREINIT_DIAG_ADDR) &&
              (GET_LEN(packet) == 8U) && (packet->data[0] == 2U) &&
@@ -1717,67 +1732,137 @@ static void ev9_long_preinit_host_tx_hook(const CANPacket_t *packet) {
     ev9_preinit_host_hw_pending_mask |= EV9_PREINIT_HOST_TP_BIT;
     ev9_preinit_host_tp_hw_pending = true;
     ev9_preinit_host_tp_hw_packet = *packet;
-    ev9_preinit_last_host_tp_us = now_us;
-    ev9_preinit_last_tester_present_us = now_us;
   } else {
     for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
       if ((packet->bus == EV9_PREINIT_BUS_ECAN) &&
           (packet->addr == ev9_preinit_replay[i].addr) &&
           (GET_LEN(packet) == ev9_preinit_replay[i].len)) {
-        ev9_preinit_host_mask |= 1U << i;
-        ev9_preinit_host_hw_pending_mask |= 1U << i;
+        ev9_preinit_host_mask |= 1UL << i;
+        ev9_preinit_host_hw_pending_mask |= 1UL << i;
         ev9_preinit_replay[i].host_hw_pending = true;
         ev9_preinit_replay[i].host_hw_packet = *packet;
-        ev9_preinit_replay[i].last_host_tx_us = now_us;
         ev9_preinit_replay[i].host_claim_reserved = false;
-        // Keep the resident fallback phase synchronized with the last frame
-        // that actually entered the hardware queue. If the host lease lapses,
-        // the bridge resumes at the next counter and neutralizes any command
-        // fields instead of replaying an old pre-handoff epoch.
-        const uint8_t *fallback = ev9_preinit_fallback(packet->addr);
-        if (ev9_preinit_force_neutral_addr(packet->addr) && (fallback != NULL)) {
-          ev9_preinit_replay[i].packet = ev9_preinit_make_packet(
-            packet->addr, EV9_PREINIT_BUS_ECAN, ev9_preinit_replay[i].len, true);
-          (void)memcpy(ev9_preinit_replay[i].packet.data, fallback, ev9_preinit_replay[i].len);
-          ev9_preinit_replay[i].packet.data[2] = packet->data[2];
-        } else {
-          ev9_preinit_replay[i].packet = *packet;
-          ev9_preinit_replay[i].packet.fd = 1U;
-          ev9_preinit_replay[i].packet.bus = EV9_PREINIT_BUS_ECAN;
-        }
-        ev9_preinit_replay[i].last_tx_us = now_us;
+        // Queue admission reserves cadence but does not advance ownership,
+        // counters, or fallback bodies until TXBTO proves transmission.
         ev9_preinit_replay[i].last_attempt_us = now_us;
       }
     }
   }
-  ev9_preinit_last_host_tx_us = now_us;
 }
 
-static void ev9_long_preinit_tx_hw_loaded(const CANPacket_t *packet, uint8_t bus_number) {
+static void ev9_preinit_commit_host_replay(uint8_t index, uint32_t now_us) {
+  ev9_preinit_replay_t *replay = &ev9_preinit_replay[index];
+  const CANPacket_t *packet = &replay->host_hw_packet;
+  const uint8_t *fallback = ev9_preinit_fallback(packet->addr);
+  if (ev9_preinit_force_neutral_addr(packet->addr) && (fallback != NULL)) {
+    replay->packet = ev9_preinit_make_packet(packet->addr, EV9_PREINIT_BUS_ECAN,
+                                             replay->len, true);
+    (void)memcpy(replay->packet.data, fallback, replay->len);
+    replay->packet.data[2] = packet->data[2];
+  } else {
+    replay->packet = *packet;
+    replay->packet.fd = 1U;
+    replay->packet.bus = EV9_PREINIT_BUS_ECAN;
+  }
+  replay->last_tx_us = now_us;
+  replay->last_attempt_us = now_us;
+  replay->last_host_tx_us = now_us;
+}
+
+static void ev9_long_preinit_tx_hw_loaded(const CANPacket_t *packet, uint8_t bus_number,
+                                          uint8_t tx_index) {
+  if ((ev9_preinit_flags & EV9_PREINIT_FLAG_BRIDGE_ACTIVE) == 0U) {
+    return;
+  }
+  if ((bus_number == EV9_PREINIT_BUS_RADAR) && ev9_preinit_host_heartbeat_hw_pending &&
+      ev9_preinit_same_packet(packet, &ev9_preinit_host_heartbeat_hw_packet)) {
+    ev9_preinit_host_heartbeat_hw_index = tx_index;
+  } else if ((bus_number == EV9_PREINIT_BUS_ECAN) && ev9_preinit_host_tp_hw_pending &&
+             ev9_preinit_same_packet(packet, &ev9_preinit_host_tp_hw_packet)) {
+    ev9_preinit_host_tp_hw_index = tx_index;
+  } else if (bus_number == EV9_PREINIT_BUS_ECAN) {
+    for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
+      if (ev9_preinit_replay[i].host_hw_pending &&
+          ev9_preinit_same_packet(packet, &ev9_preinit_replay[i].host_hw_packet)) {
+        ev9_preinit_replay[i].host_hw_index = tx_index;
+        break;
+      }
+    }
+  }
+}
+
+static void ev9_long_preinit_tx_hw_completed(uint8_t bus_number, uint32_t transmitted,
+                                             uint32_t cancelled) {
   if ((ev9_preinit_flags & EV9_PREINIT_FLAG_BRIDGE_ACTIVE) == 0U) {
     return;
   }
   const uint32_t now_us = microsecond_timer_get();
   if ((bus_number == EV9_PREINIT_BUS_RADAR) && ev9_preinit_host_heartbeat_hw_pending &&
-      ev9_preinit_same_packet(packet, &ev9_preinit_host_heartbeat_hw_packet)) {
-    ev9_preinit_host_heartbeat_hw_pending = false;
-    ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_HEARTBEAT_BIT;
-    ev9_preinit_host_hw_mask |= EV9_PREINIT_HOST_HEARTBEAT_BIT;
-  } else if ((bus_number == EV9_PREINIT_BUS_ECAN) && ev9_preinit_host_tp_hw_pending &&
-             ev9_preinit_same_packet(packet, &ev9_preinit_host_tp_hw_packet)) {
-    ev9_preinit_host_tp_hw_pending = false;
-    ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_TP_BIT;
-    ev9_preinit_host_hw_mask |= EV9_PREINIT_HOST_TP_BIT;
+      (ev9_preinit_host_heartbeat_hw_index < 32U)) {
+    const uint32_t slot = 1UL << ev9_preinit_host_heartbeat_hw_index;
+    if ((cancelled & slot) != 0U) {
+      ev9_preinit_host_heartbeat_hw_pending = false;
+      ev9_preinit_host_heartbeat_hw_index = 0xFFU;
+      ev9_preinit_host_mask &= ~EV9_PREINIT_HOST_HEARTBEAT_BIT;
+      ev9_preinit_host_hw_mask &= ~EV9_PREINIT_HOST_HEARTBEAT_BIT;
+      ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_HEARTBEAT_BIT;
+    } else if ((transmitted & slot) != 0U) {
+      ev9_preinit_host_heartbeat_hw_pending = false;
+      ev9_preinit_host_heartbeat_hw_index = 0xFFU;
+      ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_HEARTBEAT_BIT;
+      ev9_preinit_host_hw_mask |= EV9_PREINIT_HOST_HEARTBEAT_BIT;
+      ev9_preinit_heartbeat_packet = ev9_preinit_host_heartbeat_hw_packet;
+      ev9_preinit_heartbeat_packet.fd = 1U;
+      ev9_preinit_heartbeat_packet.bus = EV9_PREINIT_BUS_RADAR;
+      ev9_preinit_heartbeat_counter = ev9_preinit_host_heartbeat_hw_packet.data[2] + 1U;
+      ev9_preinit_last_heartbeat_tx_us = now_us;
+      ev9_preinit_last_host_heartbeat_us = now_us;
+      ev9_preinit_last_host_tx_us = now_us;
+    } else {
+    }
   } else if (bus_number == EV9_PREINIT_BUS_ECAN) {
-    for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
-      if (ev9_preinit_replay[i].host_hw_pending &&
-          ev9_preinit_same_packet(packet, &ev9_preinit_replay[i].host_hw_packet)) {
-        ev9_preinit_replay[i].host_hw_pending = false;
-        ev9_preinit_host_hw_pending_mask &= ~(1UL << i);
-        ev9_preinit_host_hw_mask |= 1UL << i;
-        break;
+    if (ev9_preinit_host_tp_hw_pending &&
+        (ev9_preinit_host_tp_hw_index < 32U)) {
+      const uint32_t slot = 1UL << ev9_preinit_host_tp_hw_index;
+      if ((cancelled & slot) != 0U) {
+        ev9_preinit_host_tp_hw_pending = false;
+        ev9_preinit_host_tp_hw_index = 0xFFU;
+        ev9_preinit_host_mask &= ~EV9_PREINIT_HOST_TP_BIT;
+        ev9_preinit_host_hw_mask &= ~EV9_PREINIT_HOST_TP_BIT;
+        ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_TP_BIT;
+      } else if ((transmitted & slot) != 0U) {
+        ev9_preinit_host_tp_hw_pending = false;
+        ev9_preinit_host_tp_hw_index = 0xFFU;
+        ev9_preinit_host_hw_pending_mask &= ~EV9_PREINIT_HOST_TP_BIT;
+        ev9_preinit_host_hw_mask |= EV9_PREINIT_HOST_TP_BIT;
+        ev9_preinit_last_tester_present_us = now_us;
+        ev9_preinit_last_host_tp_us = now_us;
+        ev9_preinit_last_host_tx_us = now_us;
+      } else {
       }
     }
+    for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
+      if (ev9_preinit_replay[i].host_hw_pending &&
+          (ev9_preinit_replay[i].host_hw_index < 32U)) {
+        const uint32_t slot = 1UL << ev9_preinit_replay[i].host_hw_index;
+        if ((cancelled & slot) != 0U) {
+          ev9_preinit_replay[i].host_hw_pending = false;
+          ev9_preinit_replay[i].host_hw_index = 0xFFU;
+          ev9_preinit_host_mask &= ~(1UL << i);
+          ev9_preinit_host_hw_mask &= ~(1UL << i);
+          ev9_preinit_host_hw_pending_mask &= ~(1UL << i);
+        } else if ((transmitted & slot) != 0U) {
+          ev9_preinit_replay[i].host_hw_pending = false;
+          ev9_preinit_replay[i].host_hw_index = 0xFFU;
+          ev9_preinit_host_hw_pending_mask &= ~(1UL << i);
+          ev9_preinit_host_hw_mask |= 1UL << i;
+          ev9_preinit_commit_host_replay(i, now_us);
+          ev9_preinit_last_host_tx_us = now_us;
+        } else {
+        }
+      }
+    }
+  } else {
   }
   ev9_preinit_maybe_complete_handoff(now_us);
 }
@@ -1787,11 +1872,14 @@ static void ev9_long_preinit_tx_queue_cleared(uint8_t bus_number) {
   if (bus_number == EV9_PREINIT_BUS_RADAR) {
     cleared_mask = EV9_PREINIT_HOST_HEARTBEAT_BIT;
     ev9_preinit_host_heartbeat_hw_pending = false;
+    ev9_preinit_host_heartbeat_hw_index = 0xFFU;
   } else if (bus_number == EV9_PREINIT_BUS_ECAN) {
     cleared_mask = EV9_PREINIT_HOST_TP_BIT | ((1UL << EV9_PREINIT_REPLAY_COUNT) - 1UL);
     ev9_preinit_host_tp_hw_pending = false;
+    ev9_preinit_host_tp_hw_index = 0xFFU;
     for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
       ev9_preinit_replay[i].host_hw_pending = false;
+      ev9_preinit_replay[i].host_hw_index = 0xFFU;
     }
   } else {
   }
@@ -1848,29 +1936,9 @@ static bool ev9_long_preinit_prepare_host_tx(CANPacket_t *packet, uint8_t bus_nu
   if ((ev9_preinit_state == EV9_PREINIT_HANDOFF) &&
       (get_ts_elapsed(microsecond_timer_get(), ev9_preinit_handoff_us) >=
        EV9_PREINIT_HANDOFF_SETTLE_US)) {
-    // Claim retries use frozen host bodies while the accepted on-wire counters
-    // continue advancing. Preserve only counter/CRC continuity at the boundary;
-    // cadence, body fields, commands, and the ordinary safety hook remain host-owned.
-    bool update_crc = false;
-    if ((bus_number == EV9_PREINIT_BUS_RADAR) && (packet->addr == 0x100U) &&
-        (GET_LEN(packet) == 24U)) {
-      packet->fd = 1U;
-      packet->data[2] = ev9_preinit_heartbeat_counter;
-      update_crc = true;
-    } else if (bus_number == EV9_PREINIT_BUS_ECAN) {
-      for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
-        if ((packet->addr == ev9_preinit_replay[i].addr) &&
-            (GET_LEN(packet) == ev9_preinit_replay[i].len)) {
-          packet->fd = 1U;
-          packet->data[2] = ev9_preinit_replay[i].packet.data[2] + 1U;
-          update_crc = true;
-          break;
-        }
-      }
-    }
-    if (update_crc) {
-      ev9_preinit_update_crc(packet);
-    }
+    // The host reseeds its generators from the final corrected TX receipts.
+    // After the bounded claim-settle window, preserve Panda's stock TX path:
+    // no resident cadence filtering, counter mutation, or CRC rewriting.
     return true;
   }
 
@@ -1878,7 +1946,8 @@ static bool ev9_long_preinit_prepare_host_tx(CANPacket_t *packet, uint8_t bus_nu
   const uint32_t now_us = microsecond_timer_get();
   if ((bus_number == EV9_PREINIT_BUS_RADAR) && (packet->addr == 0x100U) &&
       (GET_LEN(packet) == 24U)) {
-    if (!ev9_preinit_host_tx_due(now_us, ev9_preinit_last_heartbeat_rx_us,
+    if (ev9_preinit_host_heartbeat_hw_pending ||
+        !ev9_preinit_host_tx_due(now_us, ev9_preinit_last_heartbeat_rx_us,
                                  ev9_preinit_last_heartbeat_tx_us,
                                  ev9_preinit_last_heartbeat_attempt_us, 10000U)) {
       return false;
@@ -1890,7 +1959,8 @@ static bool ev9_long_preinit_prepare_host_tx(CANPacket_t *packet, uint8_t bus_nu
     managed = true;
   } else if ((bus_number == EV9_PREINIT_BUS_ECAN) && (packet->addr == EV9_PREINIT_DIAG_ADDR) &&
              !packet->fd && (GET_LEN(packet) == 8U)) {
-    if (!ev9_preinit_host_tx_due(now_us, 0U, ev9_preinit_last_tester_present_us,
+    if (ev9_preinit_host_tp_hw_pending ||
+        !ev9_preinit_host_tx_due(now_us, 0U, ev9_preinit_last_tester_present_us,
                                  0U, EV9_PREINIT_TESTER_PRESENT_INTERVAL_US)) {
       return false;
     }
@@ -1899,6 +1969,9 @@ static bool ev9_long_preinit_prepare_host_tx(CANPacket_t *packet, uint8_t bus_nu
       if ((packet->addr == ev9_preinit_replay[i].addr) &&
           (GET_LEN(packet) == ev9_preinit_replay[i].len)) {
         ev9_preinit_replay_t *replay = &ev9_preinit_replay[i];
+        if (replay->host_hw_pending) {
+          return false;
+        }
         if (!ev9_preinit_host_tx_due(now_us, replay->last_rx_us, replay->last_tx_us,
                                      replay->last_attempt_us, replay->period_us)) {
           const bool recent_managed_host_tx = (ev9_preinit_host_mask != 0U) &&
@@ -2123,8 +2196,9 @@ static bool ev9_preinit_valid_safety_param(uint16_t param) {
 }
 
 static bool ev9_long_preinit_preserve_can_on_safety_transition(uint16_t mode, uint16_t param) {
-  return ev9_long_preinit_must_preserve() && (mode == EV9_PREINIT_SAFETY_MODEL) &&
-         ev9_preinit_valid_safety_param(param) &&
+  const bool safe_mode = ((mode == SAFETY_NOOUTPUT) && (param == 0U)) ||
+                         ((mode == EV9_PREINIT_SAFETY_MODEL) && ev9_preinit_valid_safety_param(param));
+  return ev9_long_preinit_must_preserve() && safe_mode &&
          ((current_safety_mode == SAFETY_NOOUTPUT) || (current_safety_mode == EV9_PREINIT_SAFETY_MODEL));
 }
 
@@ -2141,44 +2215,47 @@ static bool ev9_long_preinit_usb_request_allowed(uint8_t request, uint16_t param
     // exact EV9 identity plus stationary proof still gate diagnostics.
     return false;
   }
-  if (!ev9_long_preinit_must_preserve() || (request == EV9_PREINIT_USB_CONTROL_REQUEST)) {
+  if (!ev9_long_preinit_must_preserve()) {
     return true;
   }
 
   switch (request) {
     case 0xC5U:  // relay drive
     case 0xD1U:  // bootloader/softloader
-    case 0xD8U:  // MCU reset
+      return false;
+    case 0xD8U:  // MCU reset: only an OFF-latched reset fault may escape manually
+      return ev9_preinit_can_reset_failed && ev9_preinit_off_latched;
     case 0xDBU:  // CAN mux
     case 0xF8U:  // heartbeat disable
       return false;
-    case 0xDCU:  // safety mode: only the exact EV9 profile may inherit ownership
-      return (param1 == EV9_PREINIT_SAFETY_MODEL) && ev9_preinit_valid_safety_param(param2);
+    case 0xDCU:  // safety mode: always permit fail-closed output revocation
+      return ((param1 == SAFETY_NOOUTPUT) && (param2 == 0U)) ||
+             ((param1 == SAFETY_SILENT) && (param2 == 0U) &&
+              (ev9_preinit_state == EV9_PREINIT_HANDOFF)) ||
+             ((param1 == EV9_PREINIT_SAFETY_MODEL) && ev9_preinit_valid_safety_param(param2));
     case 0xDEU:  // nominal bitrate: idempotent profile configuration only
       return (param1 < PANDA_CAN_CNT) && (bus_config[param1].can_speed == param2);
     case 0xE5U:  // loopback
-      return can_loopback == (param1 > 0U);
+      return ((param1 > 0U) && can_loopback) || ((param1 == 0U) && !can_loopback);
     case 0xE7U:  // power saving: disabling is safe; enabling can stall the resident bridge
       return param1 == 0U;
-    case 0xE8U:  // CAN-FD auto
-      return (param1 < PANDA_CAN_CNT) && (bus_config[param1].canfd_auto == (param2 > 0U));
+    case 0xE8U:  // CAN-FD auto: boardd must be able to enable stock auto-promotion
+      return (param1 < PANDA_CAN_CNT) && ((param2 > 0U) || !bus_config[param1].canfd_auto);
     case 0xF1U:  // RX or unrelated bus clear only
       return (param1 == 0xFFFFU) || (param1 >= PANDA_CAN_CNT) ||
              ((param1 != EV9_PREINIT_BUS_RADAR) && (param1 != EV9_PREINIT_BUS_ECAN));
     case 0xF9U:  // data bitrate: idempotent profile configuration only
       return (param1 < PANDA_CAN_CNT) && (bus_config[param1].can_data_speed == param2);
     case 0xFCU:  // non-ISO mode: idempotent profile configuration only
-      return (param1 < PANDA_CAN_CNT) && (bus_config[param1].canfd_non_iso == (param2 != 0U));
+      return (param1 < PANDA_CAN_CNT) &&
+             (((param2 > 0U) && bus_config[param1].canfd_non_iso) ||
+              ((param2 == 0U) && !bus_config[param1].canfd_non_iso));
     default:
       return true;
   }
 }
 
-static bool ev9_preinit_request_release(uint32_t now_us, uint16_t cycle_token, bool validate_token,
-                                        bool recovery_restore) {
-  if (validate_token && (cycle_token != (uint16_t)ev9_preinit_cycle_started_us)) {
-    return false;
-  }
+static bool ev9_preinit_request_release(uint32_t now_us, bool recovery_restore) {
   if (ev9_preinit_release_complete) {
     return true;
   }
@@ -2229,15 +2306,31 @@ static bool ev9_preinit_safe_release_boundary(uint32_t now_us) {
   return ev9_preinit_off_latched || bus_asleep;
 }
 
-static bool ev9_long_preinit_request_release(uint16_t cycle_token) {
-  bool accepted;
+static bool ev9_long_preinit_request_offroad_rearm(uint16_t cycle_token, bool ignition) {
+  bool accepted = false;
   ENTER_CRITICAL();
-  const uint32_t now_us = microsecond_timer_get();
-  // A valid cycle token authenticates the caller, but it is not proof that
-  // restoring stock ADAS is safe under the installed EV9 LONG safety model.
-  // Require the firmware's own debounced OFF edge or a five-second quiet bus.
-  accepted = ev9_preinit_safe_release_boundary(now_us) &&
-             ev9_preinit_request_release(now_us, cycle_token, true, false);
+  const bool token_valid = (ev9_preinit_cycle_started_us != 0U) &&
+                           (cycle_token == (uint16_t)ev9_preinit_cycle_started_us);
+  const bool completed_handoff = (ev9_preinit_state == EV9_PREINIT_HANDOFF) &&
+    ((ev9_preinit_flags & EV9_PREINIT_FLAG_HOST_HANDOFF) != 0U) &&
+    (ev9_preinit_handoff_us != 0U);
+  const bool off_rearm_in_progress = ev9_preinit_off_latched &&
+    (ev9_preinit_warm_rearm_candidate || ev9_preinit_rearm_on_next_can) &&
+    ((ev9_preinit_state == EV9_PREINIT_RESTORING) ||
+     (ev9_preinit_state == EV9_PREINIT_ABORTED));
+  if (token_valid && !ignition && (completed_handoff || off_rearm_in_progress)) {
+    if (completed_handoff) {
+      // Native pandad observed the same ignition-low condition that moved
+      // openpilot offroad. Latch the already-proven HANDOFF as an OFF edge so
+      // the normal restore/rearm path can consume it even if the 8 Hz firmware
+      // sampler straddled a very short warm restart. This request never emits
+      // diagnostics; the main state machine still owns restore and the next
+      // knockout retains its independent identity/start/stationary gates.
+      ev9_preinit_sampled_ignition_fell = true;
+      ev9_preinit_ignition_low_handoff_candidate = true;
+    }
+    accepted = true;
+  }
   EXIT_CRITICAL();
   return accepted;
 }
@@ -2253,11 +2346,14 @@ static void ev9_preinit_revoke_host_lease(void) {
   ev9_preinit_host_hw_pending_mask = 0U;
   ev9_preinit_host_heartbeat_hw_pending = false;
   ev9_preinit_host_tp_hw_pending = false;
+  ev9_preinit_host_heartbeat_hw_index = 0xFFU;
+  ev9_preinit_host_tp_hw_index = 0xFFU;
   ev9_preinit_last_host_heartbeat_us = 0U;
   ev9_preinit_last_host_tp_us = 0U;
   for (uint8_t i = 0U; i < EV9_PREINIT_REPLAY_COUNT; i++) {
     ev9_preinit_replay[i].last_host_tx_us = 0U;
     ev9_preinit_replay[i].host_hw_pending = false;
+    ev9_preinit_replay[i].host_hw_index = 0xFFU;
   }
   ev9_preinit_clear_slow_claim_reservations(true);
   // While the SOM heartbeat is absent, the resident bridge is the sole managed
@@ -2270,14 +2366,14 @@ static void ev9_long_preinit_host_watchdog_lost(uint32_t now_us, bool vehicle_li
   ENTER_CRITICAL();
   if ((ev9_preinit_state == EV9_PREINIT_HANDOFF) && !vehicle_live &&
       ev9_preinit_safe_release_boundary(now_us)) {
-    (void)ev9_preinit_request_release(now_us, 0U, false, false);
+    (void)ev9_preinit_request_release(now_us, false);
   } else if ((ev9_preinit_state != EV9_PREINIT_HANDOFF) && ev9_long_preinit_must_preserve()) {
     if (vehicle_live || !ev9_preinit_safe_release_boundary(now_us)) {
       // Before handoff, keep the already-proven resident bridge authoritative.
       // A completed handoff is intentionally one-way until ignition OFF.
       ev9_preinit_revoke_host_lease();
     } else {
-      (void)ev9_preinit_request_release(now_us, 0U, false, false);
+      (void)ev9_preinit_request_release(now_us, false);
     }
   }
   EXIT_CRITICAL();
@@ -2379,7 +2475,7 @@ static void ev9_preinit_service_state(uint32_t now_us, ev9_preinit_can_reset_res
     // critical ADAS publisher indicates that an earlier Panda may have left the
     // ECU communication-disabled. Quarantine host TX and issue only bounded
     // restore/default-session cleanup; never attempt a late knockout.
-    (void)ev9_preinit_request_release(now_us, 0U, false, true);
+    (void)ev9_preinit_request_release(now_us, true);
     return;
   }
 
@@ -2491,6 +2587,7 @@ static void ev9_preinit_service_state(uint32_t now_us, ev9_preinit_can_reset_res
 
   if (((ev9_preinit_state == EV9_PREINIT_WAIT_SUPPRESSION) ||
        (ev9_preinit_state == EV9_PREINIT_ACTIVE)) &&
+      !ev9_preinit_host_tp_hw_pending &&
       (get_ts_elapsed(now_us, ev9_preinit_last_tester_present_us) >=
        EV9_PREINIT_TESTER_PRESENT_INTERVAL_US)) {
     ev9_preinit_last_tester_present_us = now_us;
@@ -2532,12 +2629,52 @@ static void ev9_long_preinit_service_tx_cancel(uint32_t now_us) {
   }
 }
 
+static void ev9_long_preinit_sample_ignition(uint32_t now_us, bool ignition) {
+  // This constant-time sampler may run from Panda's 8 Hz tick interrupt. It
+  // only latches debounced edges; diagnostics and ownership transitions remain
+  // in the serialized main/RX state machine.
+  ENTER_CRITICAL();
+  if (ignition) {
+    if (!ev9_preinit_sampled_ignition) {
+      if (ev9_preinit_sampled_ignition_low_pending &&
+          (get_ts_elapsed(now_us, ev9_preinit_sampled_ignition_low_since_us) >=
+           EV9_PREINIT_IGNITION_FALL_DEBOUNCE_US)) {
+        ev9_preinit_sampled_ignition_fell = true;
+        ev9_preinit_ignition_low_handoff_candidate = ev9_preinit_sampled_ignition_low_candidate;
+      } else {
+        ev9_preinit_ignition_low_handoff_candidate = false;
+      }
+      ev9_preinit_sampled_ignition_rose = true;
+    }
+    ev9_preinit_sampled_ignition_low_pending = false;
+    ev9_preinit_sampled_ignition_low_candidate = false;
+    ev9_preinit_sampled_ignition_low_since_us = 0U;
+  } else if (ev9_preinit_sampled_ignition) {
+    ev9_preinit_sampled_ignition_low_pending = true;
+    ev9_preinit_sampled_ignition_low_candidate =
+      (ev9_preinit_state == EV9_PREINIT_HANDOFF) &&
+      ((ev9_preinit_flags & EV9_PREINIT_FLAG_HOST_HANDOFF) != 0U) &&
+      (ev9_preinit_handoff_us != 0U) && ev9_preinit_host_lease_fresh(now_us);
+    ev9_preinit_ignition_low_handoff_candidate = ev9_preinit_sampled_ignition_low_candidate;
+    ev9_preinit_sampled_ignition_low_since_us = now_us;
+  } else if (ev9_preinit_sampled_ignition_low_pending &&
+             (get_ts_elapsed(now_us, ev9_preinit_sampled_ignition_low_since_us) >=
+              EV9_PREINIT_IGNITION_FALL_DEBOUNCE_US)) {
+    ev9_preinit_sampled_ignition_fell = true;
+    ev9_preinit_ignition_low_handoff_candidate = ev9_preinit_sampled_ignition_low_candidate;
+    ev9_preinit_sampled_ignition_low_pending = false;
+    ev9_preinit_sampled_ignition_low_candidate = false;
+    ev9_preinit_sampled_ignition_low_since_us = 0U;
+  } else {
+  }
+  ev9_preinit_sampled_ignition = ignition;
+  EXIT_CRITICAL();
+}
+
 static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
   // Each poll advances at most one reset phase and contains no delay/poll loop.
   // Keep FDCAN RAM/register work outside the state-machine critical section.
   const ev9_preinit_can_reset_result_t reset_result = ev9_preinit_can_service_tx_reset(now_us);
-  // The harness ignition input is a raw GPIO sampled in the unbounded main
-  // loop. Hold a low level briefly before treating it as the terminal OFF edge.
   const bool raw_ignition_low = ev9_preinit_ignition_prev && !ignition;
   const bool preempt_firmware_query = ignition && !ev9_preinit_rearm_on_next_can &&
                                       !ev9_preinit_cancel_tx_pending && !ev9_preinit_off_latched &&
@@ -2584,42 +2721,19 @@ static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
     // Ignition may rise before the first CAN-FD wake frame. Do not let the old
     // fingerprint reopen diagnostics; only RX can establish the new epoch.
     ev9_preinit_ignition_prev = ignition;
-    ev9_preinit_ignition_low_pending = false;
-    ev9_preinit_ignition_low_since_us = 0U;
+    ev9_preinit_sampled_ignition_fell = false;
+    ev9_preinit_sampled_ignition_rose = false;
     EXIT_CRITICAL();
     return;
   }
-  const bool ignition_rose = ignition && !ev9_preinit_ignition_prev;
-  bool ignition_fell = false;
-  if (ignition) {
-    ev9_preinit_ignition_low_pending = false;
-    ev9_preinit_ignition_low_handoff_candidate = false;
-    ev9_preinit_ignition_low_since_us = 0U;
-  } else if (ev9_preinit_ignition_prev) {
-    if (!ev9_preinit_ignition_low_pending) {
-      ev9_preinit_ignition_low_pending = true;
-      // Capture HANDOFF qualification at the physical low edge, while the
-      // final host bodies are still fresh. Card intentionally stops output as
-      // soon as Panda publishes ignition low; main-loop or LED latency can
-      // otherwise let the lease expire before this 20 ms debounce completes.
-      ev9_preinit_ignition_low_handoff_candidate =
-        (ev9_preinit_state == EV9_PREINIT_HANDOFF) &&
-        ((ev9_preinit_flags & EV9_PREINIT_FLAG_HOST_HANDOFF) != 0U) &&
-        (ev9_preinit_handoff_us != 0U) && ev9_preinit_host_lease_fresh(now_us);
-      ev9_preinit_ignition_low_since_us = now_us;
-    } else if (get_ts_elapsed(now_us, ev9_preinit_ignition_low_since_us) >=
-               EV9_PREINIT_IGNITION_FALL_DEBOUNCE_US) {
-      ignition_fell = true;
-      ev9_preinit_ignition_low_pending = false;
-      ev9_preinit_ignition_low_since_us = 0U;
-    } else {
-    }
-  } else {
-    ev9_preinit_ignition_low_pending = false;
-    ev9_preinit_ignition_low_handoff_candidate = false;
-    ev9_preinit_ignition_low_since_us = 0U;
-  }
-  if (!ev9_preinit_cancel_tx_pending && ignition_fell && !ev9_preinit_off_latched) {
+  const bool ignition_rose = ev9_preinit_sampled_ignition_rose;
+  const bool ignition_fell = ev9_preinit_sampled_ignition_fell;
+  ev9_preinit_sampled_ignition_rose = false;
+  ev9_preinit_sampled_ignition_fell = false;
+  const bool reset_failed = ev9_preinit_can_reset_failed ||
+                            (reset_result == EV9_PREINIT_CAN_RESET_FAILED);
+  if ((!ev9_preinit_cancel_tx_pending || reset_failed) &&
+      ignition_fell && !ev9_preinit_off_latched) {
     // A true READY -> OFF edge ends this ownership epoch even while doors,
     // locks, or body controllers keep CAN awake. Restore at once and suppress
     // every new identity/wake retry until either a proven restore plus a later
@@ -2656,14 +2770,18 @@ static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
     ev9_preinit_ignition_prev = true;
   } else {
   }
-  if (!ev9_preinit_cancel_tx_pending && ignition_rose && ev9_preinit_off_latched &&
+  if (ignition_rose && ev9_preinit_off_latched && ev9_preinit_warm_rearm_candidate) {
+    ev9_preinit_warm_ignition_pending = true;
+  }
+  if (!ev9_preinit_cancel_tx_pending && ev9_preinit_warm_ignition_pending && ev9_preinit_off_latched &&
       ev9_preinit_warm_rearm_candidate && (ev9_preinit_state == EV9_PREINIT_ABORTED) &&
       (get_ts_elapsed(now_us, ev9_preinit_state_started_us) >= EV9_PREINIT_P2_TIMEOUT_US)) {
     // Restore proof and a later physical ignition rise are both required.
     // The cleanup 10 01 may already be in hardware, so also give its complete
     // P2 window time to close before purging every hardware/software TX path.
-    // An earlier rise is intentionally not deferred: a new low -> rise edge is
-    // required before the first valid current-epoch CAN-FD frame may init.
+    // A qualified rise may occur while restore proof or cleanup is still in
+    // flight. Consume the bounded latch only after both have converged.
+    ev9_preinit_warm_ignition_pending = false;
     ev9_preinit_warm_rearm_candidate = false;
     ev9_preinit_schedule_tx_cancel(true);
   }
@@ -2671,7 +2789,7 @@ static void ev9_long_preinit_tick(uint32_t now_us, bool ignition) {
   // SAFETY_SILENT core transition. A pending low also holds the request until
   // it either debounces to OFF or the ignition input recovers.
   if (!ev9_preinit_cancel_tx_pending && !ev9_preinit_off_latched &&
-      !ev9_preinit_ignition_low_pending && ev9_preinit_pending_start &&
+      !ev9_preinit_sampled_ignition_low_pending && ev9_preinit_pending_start &&
       (current_safety_mode == SAFETY_NOOUTPUT)) {
     ev9_preinit_pending_start = false;
     if (!ev9_preinit_start_confirmed(now_us)) {

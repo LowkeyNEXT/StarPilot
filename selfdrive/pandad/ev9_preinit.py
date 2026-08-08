@@ -13,6 +13,8 @@ from openpilot.common.swaglog import cloudlog
 
 STATUS_VERSION = 4
 LEGACY_STATUS_VERSION = 3
+LEGACY_V1_STATUS_VERSION = 1
+LEGACY_V2_STATUS_VERSION = 2
 H7_APP = "panda_h7.bin.signed"
 FIRMWARE_NAMES = (
   "panda_h7_ev9_long_preinit.bin.signed",
@@ -20,6 +22,8 @@ FIRMWARE_NAMES = (
 )
 SAFETY_PARAM = 0x8495
 OPTIONAL_SAFETY_PARAM = 0x800
+INSTALLED_PARAM = "EV9LongPreinitPandaInstalled"
+INSTALL_MARKER_MIGRATED_PARAM = "EV9LongPreinitPandaInstallMarkerMigrated"
 
 STATE_COLLECTING = 0
 STATE_WAIT_SESSION = 1
@@ -52,8 +56,13 @@ PRESERVE_FLAGS = (FLAG_START_INTENT | FLAG_SUPPRESSION_CONFIRMED | FLAG_BRIDGE_A
 # This reader is intentionally local to the wrapper. It must inspect ownership
 # before importing or flashing a newer Panda Python package.
 LEGACY_STATUS_STRUCT = struct.Struct("<14BH11I")
+LEGACY_V1_STATUS_STRUCT = struct.Struct("<8B2I")
+LEGACY_V2_STATUS_STRUCT = struct.Struct("<10BH9I")
 STATUS_STRUCT = struct.Struct("<14BH12I")
 TIMING_STRUCT = struct.Struct("<4B15I")
+SUPPORTED_STATUS_VERSIONS = frozenset({
+  LEGACY_V1_STATUS_VERSION, LEGACY_V2_STATUS_VERSION, LEGACY_STATUS_VERSION, STATUS_VERSION,
+})
 
 def firmware_name(hkg_remote_start: bool) -> str:
   return FIRMWARE_NAMES[1 if hkg_remote_start else 0]
@@ -118,6 +127,31 @@ def enabled_from_params(params: Params) -> bool:
     return False
 
 
+def installed_from_params(params: Params) -> bool:
+  try:
+    return params.get_bool(INSTALLED_PARAM)
+  except UnknownKeyName:
+    return False
+
+
+def installed_or_migrate_from_params(params: Params) -> bool:
+  """Seed durable resident evidence once for deployments predating the marker."""
+  try:
+    migration_complete = params.get_bool(INSTALL_MARKER_MIGRATED_PARAM)
+  except UnknownKeyName:
+    migration_complete = True
+  if not migration_complete:
+    if enabled_from_params(params):
+      params.put_bool(INSTALLED_PARAM, True)
+    params.put_bool(INSTALL_MARKER_MIGRATED_PARAM, True)
+  return installed_from_params(params)
+
+
+def installed_after_observation(previous: bool, resident_observed: bool, verified_stock: bool) -> bool:
+  """Keep resident evidence sticky until expected stock firmware is positively verified off-road."""
+  return resident_observed or (previous and not verified_stock)
+
+
 def _raw_status(panda: Panda):
   handle = getattr(panda, "_handle", None)
   if handle is None:
@@ -130,43 +164,57 @@ def _raw_status(panda: Panda):
 
   if len(dat) == STATUS_STRUCT.size and dat[0] == STATUS_VERSION:
     status = STATUS_STRUCT.unpack(dat)
+    result = {
+      "version": status[0], "state": status[1], "fingerprint": status[2], "attempts": status[3],
+      "last_service": status[4], "last_response": status[5], "last_nrc": status[6],
+      "communication_type": status[7], "trigger": status[8], "first_ecan_len": status[9],
+      "powertrain_state": status[10], "powertrain_boot_state": status[11],
+      "powertrain_init_state": status[12], "flags": status[13], "first_ecan_addr": status[14],
+      "first_can_us": status[15], "state_started_us": status[16], "trigger_us": status[17],
+      "first_ecan_us": status[18], "driver_braking_us": status[19], "pre_ready_us": status[20],
+      "ignition_us": status[21], "session_response_us": status[22], "comm_control_us": status[23],
+      "last_powertrain_us": status[24], "ready_us": status[25], "outcome_us": status[26],
+    }
   elif len(dat) == LEGACY_STATUS_STRUCT.size and dat[0] == LEGACY_STATUS_VERSION:
-    legacy_status = LEGACY_STATUS_STRUCT.unpack(dat)
-    status = (*legacy_status, 0)
+    status = LEGACY_STATUS_STRUCT.unpack(dat)
+    result = {
+      "version": status[0], "state": status[1], "fingerprint": status[2], "attempts": status[3],
+      "last_service": status[4], "last_response": status[5], "last_nrc": status[6],
+      "communication_type": status[7], "trigger": status[8], "first_ecan_len": status[9],
+      "powertrain_state": status[10], "powertrain_boot_state": status[11],
+      "powertrain_init_state": status[12], "first_ecan_addr": status[14], "first_can_us": status[15],
+      "state_started_us": status[16], "trigger_us": status[17], "first_ecan_us": status[18],
+      "driver_braking_us": status[19], "pre_ready_us": status[20], "ignition_us": status[21],
+      "session_response_us": status[22], "comm_control_us": status[23],
+      "last_powertrain_us": status[24], "ready_us": status[25],
+    }
+  elif len(dat) == LEGACY_V2_STATUS_STRUCT.size and dat[0] == LEGACY_V2_STATUS_VERSION:
+    status = LEGACY_V2_STATUS_STRUCT.unpack(dat)
+    result = {
+      "version": status[0], "state": status[1], "fingerprint": status[2], "attempts": status[3],
+      "last_service": status[4], "last_response": status[5], "last_nrc": status[6],
+      "communication_type": status[7], "trigger": status[8], "first_ecan_len": status[9],
+      "first_ecan_addr": status[10], "first_can_us": status[11], "state_started_us": status[12],
+      "trigger_us": status[13], "first_ecan_us": status[14], "driver_braking_us": status[15],
+      "pre_ready_us": status[16], "ignition_us": status[17], "session_response_us": status[18],
+      "comm_control_us": status[19],
+    }
+  elif len(dat) == LEGACY_V1_STATUS_STRUCT.size and dat[0] == LEGACY_V1_STATUS_VERSION:
+    status = LEGACY_V1_STATUS_STRUCT.unpack(dat)
+    result = {
+      "version": status[0], "state": status[1], "fingerprint": status[2], "attempts": status[3],
+      "last_service": status[4], "last_response": status[5], "last_nrc": status[6],
+      "communication_type": status[7], "first_can_us": status[8], "state_started_us": status[9],
+    }
+  elif len(dat) > 0:
+    # A response to the private status request is durable resident evidence.
+    # Unknown future layouts are deliberately non-adoptable and mutation-vetoed.
+    return {"valid": False, "resident": True, "unsupported": True, "version": dat[0], "raw": bytes(dat)}
   else:
     return None
 
-  result = {
-    "valid": True,
-    "version": status[0],
-    "state": status[1],
-    "flags": status[13] if status[0] == STATUS_VERSION else 0,
-    "fingerprint": status[2],
-    "attempts": status[3],
-    "last_service": status[4],
-    "last_response": status[5],
-    "last_nrc": status[6],
-    "communication_type": status[7],
-    "trigger": status[8],
-    "first_ecan_len": status[9],
-    "powertrain_state": status[10],
-    "powertrain_boot_state": status[11],
-    "powertrain_init_state": status[12],
-    "first_ecan_addr": status[14],
-    "first_can_us": status[15],
-    "state_started_us": status[16],
-    "trigger_us": status[17],
-    "first_ecan_us": status[18],
-    "driver_braking_us": status[19],
-    "pre_ready_us": status[20],
-    "ignition_us": status[21],
-    "session_response_us": status[22],
-    "comm_control_us": status[23],
-    "last_powertrain_us": status[24],
-    "ready_us": status[25],
-    "outcome_us": status[26],
-    "timing_valid": False,
-  }
+  result.update({"valid": True, "resident": True, "flags": result.get("flags", 0),
+                 "outcome_us": result.get("outcome_us", 0), "timing_valid": False})
 
   if result["version"] == STATUS_VERSION:
     try:
@@ -211,25 +259,15 @@ def _raw_status(panda: Panda):
 
 
 def get_status(panda: Panda):
-  raw_status = _raw_status(panda)
-  if raw_status is not None or getattr(panda, "_handle", None) is not None:
-    return raw_status
-
-  status_reader = getattr(panda, "get_ev9_long_preinit_status", None)
-  if status_reader is not None:
-    try:
-      status = status_reader()
-      if status is not None:
-        return status
-    except usb1.USBError:
-      pass
   return _raw_status(panda)
 
 
 def status_valid(status) -> bool:
-  return status is not None and status.get("valid", True) and status.get("version") in (
-    LEGACY_STATUS_VERSION, STATUS_VERSION,
-  )
+  return status is not None and status.get("valid", True) and status.get("version") in SUPPORTED_STATUS_VERSIONS
+
+
+def resident(status) -> bool:
+  return status is not None and bool(status.get("resident", False))
 
 
 def active(status) -> bool:
@@ -240,6 +278,8 @@ def active(status) -> bool:
 
 
 def must_preserve(status) -> bool:
+  if resident(status) and not status_valid(status):
+    return True
   if not status_valid(status):
     return False
   legacy_ambiguous_disable = status.get("version") == LEGACY_STATUS_VERSION and status.get("comm_control_us", 0) != 0
@@ -261,7 +301,14 @@ def resident_signature(signature: bytes) -> bool:
   return False
 
 
+def verified_non_preinit_signature(signature: bytes, expected_signature: bytes) -> bool:
+  """Positive proof that the running application is the selected non-preinit firmware."""
+  return bool(signature and expected_signature and signature == expected_signature and not resident_signature(signature))
+
+
 def status_snapshot(status):
+  if resident(status) and not status_valid(status):
+    return status.get("version"), status.get("raw", b"")
   if not status_valid(status):
     return None
   return tuple(status.get(key, 0) for key in (
@@ -274,16 +321,17 @@ def status_stable(first_status, second_status) -> bool:
 
 
 def flash_blocked(status, firmware_selected: bool, ignition_on: bool,
-                  resident_firmware: bool = False, status_stable: bool = True) -> bool:
-  if resident_firmware and not status_valid(status):
+                  resident_firmware: bool = False, status_stable: bool = True,
+                  installed_firmware: bool = False) -> bool:
+  if (resident_firmware or installed_firmware or resident(status)) and not status_valid(status):
     return True
-  sensitive = firmware_selected or resident_firmware or status_valid(status)
+  sensitive = firmware_selected or resident_firmware or installed_firmware or resident(status) or status_valid(status)
   return must_preserve(status) or (sensitive and (ignition_on or not status_stable))
 
 
 def reset_blocked(status, firmware_selected: bool, resident_firmware: bool = False,
                   ignition_on: bool = False, status_stable: bool = True) -> bool:
-  return firmware_selected or resident_firmware or must_preserve(status) or \
+  return firmware_selected or resident_firmware or resident(status) or must_preserve(status) or \
     (status_valid(status) and (ignition_on or not status_stable))
 
 

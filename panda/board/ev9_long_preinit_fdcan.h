@@ -6,8 +6,8 @@
 
 bool ev9_preinit_can_tx_idle(uint8_t bus_number) {
   const uint8_t can_number = CAN_NUM_FROM_BUS_NUM(bus_number);
-  FDCAN_GlobalTypeDef *FDCANx = CANIF_FROM_CAN_NUM(can_number);
-  can_ring *queue = can_queues[bus_number];
+  const FDCAN_GlobalTypeDef *FDCANx = CANIF_FROM_CAN_NUM(can_number);
+  const can_ring *queue = can_queues[bus_number];
   return (can_slots_empty(queue) == (queue->fifo_size - 1U)) && (FDCANx->TXBRP == 0U);
 }
 
@@ -26,6 +26,20 @@ typedef enum {
 static ev9_fdcan_reset_state_t ev9_fdcan_reset_state = EV9_FDCAN_RESET_IDLE;
 static uint32_t ev9_fdcan_reset_state_started_us = 0U;
 
+static void ev9_preinit_can_clear_pending_irqs(const FDCAN_GlobalTypeDef *FDCANx) {
+  if (FDCANx == FDCAN1) {
+    NVIC_ClearPendingIRQ(FDCAN1_IT0_IRQn);
+    NVIC_ClearPendingIRQ(FDCAN1_IT1_IRQn);
+  } else if (FDCANx == FDCAN2) {
+    NVIC_ClearPendingIRQ(FDCAN2_IT0_IRQn);
+    NVIC_ClearPendingIRQ(FDCAN2_IT1_IRQn);
+  } else if (FDCANx == FDCAN3) {
+    NVIC_ClearPendingIRQ(FDCAN3_IT0_IRQn);
+    NVIC_ClearPendingIRQ(FDCAN3_IT1_IRQn);
+  } else {
+  }
+}
+
 void ev9_preinit_can_request_tx_reset(uint32_t now_us) {
   if ((ev9_fdcan_reset_state != EV9_FDCAN_RESET_IDLE) &&
       (ev9_fdcan_reset_state != EV9_FDCAN_RESET_DONE)) {
@@ -34,6 +48,11 @@ void ev9_preinit_can_request_tx_reset(uint32_t now_us) {
   FDCAN_GlobalTypeDef *radar = CANIF_FROM_CAN_NUM(CAN_NUM_FROM_BUS_NUM(EV9_PREINIT_BUS_RADAR));
   FDCAN_GlobalTypeDef *ecan = CANIF_FROM_CAN_NUM(CAN_NUM_FROM_BUS_NUM(EV9_PREINIT_BUS_ECAN));
   // Constant-time request path: RX may call this, so never poll or delay here.
+  // Stop TX-empty from retriggering while the main-loop reset is staged. RX
+  // stays enabled until both controllers acknowledge INIT so pending frames can
+  // drain normally before message RAM is touched.
+  radar->IE &= ~FDCAN_IE_TFEE;
+  ecan->IE &= ~FDCAN_IE_TFEE;
   radar->CCCR &= ~FDCAN_CCCR_CSR;
   ecan->CCCR &= ~FDCAN_CCCR_CSR;
   ev9_fdcan_reset_state = EV9_FDCAN_RESET_WAIT_CLOCK;
@@ -73,6 +92,10 @@ ev9_preinit_can_reset_result_t ev9_preinit_can_service_tx_reset(uint32_t now_us)
     case EV9_FDCAN_RESET_WAIT_RX_EMPTY:
       if (((radar->RXF0S & FDCAN_RXF0S_F0FL) == 0U) &&
           ((ecan->RXF0S & FDCAN_RXF0S_F0FL) == 0U)) {
+        llcan_irq_disable(radar);
+        llcan_irq_disable(ecan);
+        ev9_preinit_can_clear_pending_irqs(radar);
+        ev9_preinit_can_clear_pending_irqs(ecan);
         can_health[radar_number].can_core_reset_cnt += 1U;
         can_health[ecan_number].can_core_reset_cnt += 1U;
         can_health[radar_number].total_tx_lost_cnt +=
@@ -101,6 +124,8 @@ ev9_preinit_can_reset_result_t ev9_preinit_can_service_tx_reset(uint32_t now_us)
       break;
     case EV9_FDCAN_RESET_WAIT_RUNNING:
       if (((radar->CCCR & FDCAN_CCCR_INIT) == 0U) && ((ecan->CCCR & FDCAN_CCCR_INIT) == 0U)) {
+        ev9_preinit_can_clear_pending_irqs(radar);
+        ev9_preinit_can_clear_pending_irqs(ecan);
         llcan_irq_enable(radar);
         llcan_irq_enable(ecan);
         ev9_fdcan_reset_state = EV9_FDCAN_RESET_DONE;

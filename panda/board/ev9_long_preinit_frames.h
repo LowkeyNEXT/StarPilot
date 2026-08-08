@@ -20,6 +20,7 @@ typedef struct {
   bool host_claim_reservation_used;
   bool host_claim_reserved;
   bool host_hw_pending;
+  uint8_t host_hw_index;
   CANPacket_t packet;
   CANPacket_t host_hw_packet;
 } ev9_preinit_replay_t;

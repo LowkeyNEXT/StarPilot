@@ -1,6 +1,9 @@
 extern int _app_start[0xc000]; // Only first 3 sectors of size 0x4000 are used
 
-#include "board/ev9_long_preinit_comms.h"
+#ifdef PANDA_EV9_LONG_PREINIT
+  // cppcheck-suppress misra-c2012-20.1
+  #include "board/ev9_long_preinit_comms.h"
+#endif
 
 // Prototypes
 void set_safety_mode(uint16_t mode, uint16_t param);
@@ -76,10 +79,13 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
   print("- param2 "); puth(req->param2); print("\n");
 #endif
 
-  const int ev9_preinit_resp_len = ev9_long_preinit_comms_handle(req, resp);
-  if (ev9_preinit_resp_len >= 0) {
-    return ev9_preinit_resp_len;
-  }
+  #ifdef PANDA_EV9_LONG_PREINIT
+    const int ev9_preinit_resp_len = ev9_long_preinit_comms_handle(req, resp);
+    if (ev9_preinit_resp_len >= 0) {
+      // cppcheck-suppress misra-c2012-15.5
+      return ev9_preinit_resp_len;
+    }
+  #endif
 
   switch (req->request) {
     // **** 0xa8: get microsecond timer

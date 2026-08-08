@@ -51,10 +51,18 @@ std::string PandaSafety::fetchCarParams() {
     log_once_ = true;
   }
 
-  if (!params_.getBool("ControlsReady")) {
+  const bool controls_ready = params_.getBool("ControlsReady");
+  const bool safety_ready = params_.getBool("PandaSafetyReady");
+  if (!controls_ready && !safety_ready) {
     return {};
   }
-  return params_.get("CarParams");
+  const char *car_params_key = controls_ready ? "CarParams" : "CarParamsSafety";
+  const char *starpilot_params_key = controls_ready ? "StarPilotCarParams" : "StarPilotCarParamsSafety";
+  std::string car_params = params_.get(car_params_key);
+  if (car_params.empty() || params_.get(starpilot_params_key).empty()) {
+    return {};
+  }
+  return car_params;
 }
 
 void PandaSafety::setSafetyMode(const std::string &params_string) {
@@ -65,7 +73,9 @@ void PandaSafety::setSafetyMode(const std::string &params_string) {
   auto safety_configs = car_params.getSafetyConfigs();
   uint16_t alternative_experience = car_params.getAlternativeExperience();
 
-  std::string starpilot_params_string = params_.get("StarPilotCarParams");
+  const char *starpilot_params_key = params_.getBool("ControlsReady") ?
+    "StarPilotCarParams" : "StarPilotCarParamsSafety";
+  std::string starpilot_params_string = params_.get(starpilot_params_key);
 
   AlignedBuffer starpilot_aligned_buf;
   capnp::FlatArrayMessageReader starpilot_cmsg(starpilot_aligned_buf.align(starpilot_params_string.data(), starpilot_params_string.size()));

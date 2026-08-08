@@ -3,7 +3,7 @@
 // EV9 policy for Panda's shared CAN transmit path. Queueing, safety receipts,
 // and hardware dispatch remain in the base driver so base updates are inherited.
 
-static void firmware_feature_can_queue_cleared(can_ring *q) {
+static void firmware_feature_can_queue_cleared(const can_ring *q) {
   ENTER_CRITICAL();
   for (uint8_t i = 0U; i < PANDA_CAN_CNT; i++) {
     if (q == can_queues[i]) {

@@ -364,7 +364,7 @@ class CarInterface(CarInterfaceBase):
       if not ecu_disabled:
         ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
                                    reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED),
-                                   require_positive_response=ev9_long)
+                                   require_positive_response=ev9_long and normal_init)
 
       if ecu_disabled and ev9_long:
         active_log = "".join((

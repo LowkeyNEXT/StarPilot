@@ -94,12 +94,12 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
     self.CC_prev = car.CarControl.new_message()
     self.CS_prev = car.CarState.new_message()
     self.initialized_prev = False
-    EV9PreinitCoordinator.initialize(self)
 
     self.last_actuators_output = structs.CarControl.Actuators()
 
     self.params = Params()
     self.params_memory = Params(memory=True)
+    EV9PreinitCoordinator.initialize(self)
     self._favorite_virtual_accel_counter = self.params_memory.get_int(FAVORITE_ACTION_ACCEL_COUNTER)
     self._favorite_virtual_decel_counter = self.params_memory.get_int(FAVORITE_ACTION_DECEL_COUNTER)
     self._favorite_virtual_releases = []
@@ -137,14 +137,12 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
         ev9_startup = self.prepare_fingerprint_startup(initial_can_messages, panda_states_event, cached_params)
         ev9_panda_handoff = ev9_startup.handoff
         if ev9_startup.pre_fingerprint_suppressed:
-          cloudlog.warning("EV9 using verified persistent interface after pre-fingerprint suppression")
-          self.CI = interfaces[cached_params.carFingerprint](cached_params, ev9_startup.cached_fpcp)
-        else:
-          self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas,
-                            cached_params, get_starpilot_toggles(read_persisted_force_params=True), allow_fw_query=ev9_startup.allow_fw_query)
+          cloudlog.warning("EV9 rebuilding the current interface after pre-fingerprint suppression")
+        self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas,
+                          cached_params, get_starpilot_toggles(read_persisted_force_params=True), allow_fw_query=ev9_startup.allow_fw_query)
       else:
-        self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas, cached_params,
-                          get_starpilot_toggles(read_persisted_force_params=True))
+        self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas,
+                          cached_params, get_starpilot_toggles(read_persisted_force_params=True))
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP)
       self.CP = self.CI.CP
 
@@ -205,13 +203,16 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
 
     # Write CarParams for controls and radard
     cp_bytes = self.CP.to_bytes()
-    self.params.put("CarParams", cp_bytes)
+    defer_controls_params = self.early_control_requested()
+    if not defer_controls_params:
+      self.params.put("CarParams", cp_bytes)
     self.params.put_nonblocking("CarParamsCache", cp_bytes)
     self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
 
     self.mock_carstate = MockCarState()
     self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
-    self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
+    self.redneck_cruise = RedneckCruise(self.CP, self.FPCP) if self.CP.brand == "hyundai" and \
+      self.FPCP.redneckCruiseAvailable and not self.FPCP.pcmCruiseSpeed else None
     EV9DashCoordinator.initialize(self)
 
     self.is_metric = self.params.get_bool("IsMetric")
@@ -235,11 +236,32 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
       self.FPCP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.GM_REMAP_CANCEL_TO_DISTANCE
 
     fpcp_bytes = self.FPCP.to_bytes()
-    self.params.put("StarPilotCarParams", fpcp_bytes)
+    if not defer_controls_params:
+      self.params.put("StarPilotCarParams", fpcp_bytes)
     self.params.put_nonblocking("StarPilotCarParamsPersistent", fpcp_bytes)
+
+    if defer_controls_params:
+      # Publish the complete safety pair only after all CP/FPCP safety and
+      # alternative-experience mutations have been applied.
+      self.params.put("CarParamsSafety", self.CP.to_bytes())
+      self.params.put("StarPilotCarParamsSafety", fpcp_bytes)
 
     self.start_early_control(ev9_panda_handoff)
     self.compose_startup_ownership()
+
+    if defer_controls_params:
+      # Publish the final interface atomically after the synchronous claim so
+      # controls processes never start during Card's bounded takeover window.
+      cp_bytes = self.CP.to_bytes()
+      fpcp_bytes = self.FPCP.to_bytes()
+      self.params.put("CarParams", cp_bytes)
+      self.params.put("StarPilotCarParams", fpcp_bytes)
+      self.params.put_nonblocking("CarParamsCache", cp_bytes)
+      self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
+      self.params.put_nonblocking("StarPilotCarParamsPersistent", fpcp_bytes)
+      self.params.put_bool_nonblocking("ControlsReady", True)
+      self.params.remove("CarParamsSafety")
+      self.params.remove("StarPilotCarParamsSafety")
 
     update_starpilot_toggles()
 

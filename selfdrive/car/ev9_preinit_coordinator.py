@@ -19,6 +19,7 @@ from openpilot.selfdrive.car.ev9_preinit import (
   collect_ev9_preinit_baselines,
   collect_ev9_preinit_claim_receipts,
   complete_ev9_preinit_baselines,
+  complete_ev9_preinit_claim_baselines,
   complete_ev9_preinit_claim_receipts,
   ensure_ev9_preinit_claim_retries,
   ev9_preinit_classify_off_sample,
@@ -38,8 +39,6 @@ from openpilot.selfdrive.car.ev9_preinit import (
   ev9_preinit_warm_start_pending,
   ev9_panda_faulted_for_actuation,
   load_cached_car_params,
-  load_cached_starpilot_car_params,
-  normalize_ev9_cached_starpilot_safety,
   revalidate_ev9_panda_preinit_handoff,
 )
 
@@ -58,7 +57,6 @@ EV9_PANDA_PREINIT_HANDOFF_TIMEOUT_S = 0.5
 class EV9FingerprintStartup:
   handoff: EV9PandaPreinitHandoff
   allow_fw_query: bool
-  cached_fpcp: object | None
   pre_fingerprint_suppressed: bool
 
 
@@ -67,6 +65,7 @@ class EV9PreinitCoordinator:
 
   @staticmethod
   def initialize(card) -> None:
+    card.params.put_bool("PandaSafetyReady", False)
     card.interface_initialized = False
     card.ev9_preinit_enabled = False
     card.ev9_early_control_active = False
@@ -80,6 +79,7 @@ class EV9PreinitCoordinator:
     card.ev9_preinit_safety_quarantine = False
     card.ev9_preinit_rejected_outputs: list[tuple[float, CanData]] = []
     card.ev9_preinit_claim_receipts = set()
+    card.ev9_preinit_claim_receipt_frames = {}
     card.ev9_preinit_claim_templates: dict[tuple[int, int], CanData] = {}
     card.ev9_preinit_claim_started = 0.0
     card.ev9_preinit_off_high_pending = False
@@ -133,23 +133,21 @@ class EV9PreinitCoordinator:
         handoff = update_ev9_panda_preinit_handoff(panda_states)
     cloudlog.warning(f"EV9 Panda preinit startup decision: {handoff.reason}")
 
-    cached_fpcp = normalize_ev9_cached_starpilot_safety(
-      cached_params, load_cached_starpilot_car_params(self.params),
-    )
-    suppressed = bool(cached_fpcp is not None and attempt_ev9_pre_fingerprint_suppression(
+    suppressed = bool(attempt_ev9_pre_fingerprint_suppression(
       cached_params, self.params, initial_can_messages,
     ))
     return EV9FingerprintStartup(
       handoff=handoff,
       allow_fw_query=ev9_preinit_allows_fw_query(self.params, handoff),
-      cached_fpcp=cached_fpcp,
       pre_fingerprint_suppressed=suppressed,
     )
 
+  def early_control_requested(self) -> bool:
+    return bool(ev9_panda_preinit_armed(self.params) and not self.CP.passive and
+                self.CP.carFingerprint == CAR.KIA_EV9 and self.CP.openpilotLongitudinalControl)
+
   def start_early_control(self, handoff: EV9PandaPreinitHandoff | None) -> None:
-    requested = bool(ev9_panda_preinit_armed(self.params) and not self.CP.passive and
-                     self.CP.carFingerprint == CAR.KIA_EV9 and
-                     self.CP.openpilotLongitudinalControl)
+    requested = self.early_control_requested()
     self.ev9_preinit_enabled = requested
     if not requested:
       return
@@ -166,9 +164,15 @@ class EV9PreinitCoordinator:
     takeover = ev9_preinit_refreshed_takeover_allowed(
       ev9_panda_preinit_armed(self.params), refreshed_handoff, self.ev9_early_control_active,
     )
-    self.params.put_bool_nonblocking("ControlsReady", True)
     if self.ev9_early_control_active and takeover:
-      self._prepare_ev9_panda_takeover()
+      # Panda safety must be installed before the neutral host claim, but
+      # ControlsReady also tells controlsd that Card is publishing. Keep those
+      # readiness edges distinct while this bounded constructor path runs.
+      self.params.put_bool("PandaSafetyReady", True)
+      try:
+        self._prepare_ev9_panda_takeover()
+      finally:
+        self.params.put_bool_nonblocking("PandaSafetyReady", False)
     elif self.ev9_early_control_active:
       self._send_ev9_early_inactive_reconstruction(valid=False)
       cloudlog.warning("EV9 legacy early inactive reconstruction primed")
@@ -189,8 +193,8 @@ class EV9PreinitCoordinator:
         cfg.safetyParam &= ~long_flag
       self.CP.pcmCruise = True
       self.CP.openpilotLongitudinalControl = False
-      self.params.put("CarParams", self.CP.to_bytes())
-      self.params.put("StarPilotCarParams", self.FPCP.to_bytes())
+      self.params.put("CarParamsSafety", self.CP.to_bytes())
+      self.params.put("StarPilotCarParamsSafety", self.FPCP.to_bytes())
     self.interface_initialized = True
 
   def collect_claim_receipts_from_can_list(self, can_list) -> None:
@@ -202,6 +206,7 @@ class EV9PreinitCoordinator:
       collect_ev9_preinit_claim_receipts(
         self.ev9_preinit_claim_receipts,
         [CanData(address, dat, src) for address, dat, src in frames],
+        self.ev9_preinit_claim_receipt_frames,
       )
 
   def update_runtime_state(self, CS, _RD) -> None:
@@ -299,7 +304,7 @@ class EV9PreinitCoordinator:
         collect_ev9_preinit_baselines(baselines, packet, now)
     if claim_receipts is not None:
       for packet in packets:
-        collect_ev9_preinit_claim_receipts(claim_receipts, packet)
+        collect_ev9_preinit_claim_receipts(claim_receipts, packet, self.ev9_preinit_claim_receipt_frames)
     # Keep CarState's parsers current while the resident bridge owns output so
     # the first neutral host body uses current brake/angle/gear observations.
     self.CI.update(ev9_preinit_parser_packets(packets, now), self.starpilot_toggles)
@@ -309,6 +314,8 @@ class EV9PreinitCoordinator:
       return
     self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.FAULTED
     self.ev9_preinit_claim_templates = {}
+    getattr(self, "ev9_preinit_claim_receipts", set()).clear()
+    getattr(self, "ev9_preinit_claim_receipt_frames", {}).clear()
     self.ev9_preinit_health_pending = None
     self.ev9_preinit_safety_quarantine = False
     getattr(self, "ev9_preinit_rejected_outputs", []).clear()
@@ -323,6 +330,7 @@ class EV9PreinitCoordinator:
   def _enter_ev9_panda_off(self, handoff, terminal_ignition_on: bool | None, now: float) -> None:
     self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.OFF
     self.ev9_preinit_claim_receipts.clear()
+    getattr(self, "ev9_preinit_claim_receipt_frames", {}).clear()
     self.ev9_preinit_claim_templates = {}
     self.ev9_preinit_health_pending = None
     self.ev9_preinit_safety_quarantine = False
@@ -338,6 +346,7 @@ class EV9PreinitCoordinator:
     expected_model, expected_param, expected_alternative_experience = self._expected_ev9_panda_safety()
     self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CLAIMING
     self.ev9_preinit_claim_receipts = set()
+    self.ev9_preinit_claim_receipt_frames = {}
     self.ev9_preinit_claim_started = time.monotonic()
     claim_deadline = self.ev9_preinit_claim_started + timeout_s
     # Prime the frozen cache exactly once from the normal 100 Hz controller.
@@ -392,9 +401,15 @@ class EV9PreinitCoordinator:
           return False
         if not timing_valid:
           continue
+        claim_baselines = complete_ev9_preinit_claim_baselines(
+          self.ev9_preinit_claim_receipts, self.ev9_preinit_claim_receipt_frames,
+        )
         if latest_handoff.owner == EV9PandaPreinitOwner.HOST and latest_status is not None and \
             int(getattr(latest_status, "lastHostTxUs", 0)) != self.ev9_preinit_claim_last_host_tx_us and \
-            complete_ev9_preinit_claim_receipts(self.ev9_preinit_claim_receipts):
+            complete_ev9_preinit_claim_receipts(self.ev9_preinit_claim_receipts) and claim_baselines is not None:
+          controller = self.CI.CC
+          origins = ev9_preinit_canfd.counter_origins(controller.frame, controller.ev9_preinit.scc_counter)
+          ev9_preinit_canfd.set_adrv_baselines(claim_baselines, origins)
           self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
           if resume_fresh_can:
             self.ev9_preinit_resume_fresh_can = True
@@ -559,6 +574,7 @@ class EV9PreinitCoordinator:
           self.ev9_preinit_safety_quarantine = False
           getattr(self, "ev9_preinit_rejected_outputs", []).clear()
           self.ev9_preinit_claim_receipts.clear()
+          getattr(self, "ev9_preinit_claim_receipt_frames", {}).clear()
           self.ev9_preinit_claim_last_host_tx_us = 0
           self.ev9_preinit_claim_started = 0.0
           self.ev9_preinit_last_status_time = 0.0
@@ -648,7 +664,14 @@ class EV9PreinitCoordinator:
         if self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.CLAIMING and latest_status is not None and \
             int(getattr(latest_status, "lastHostTxUs", 0)) != self.ev9_preinit_claim_last_host_tx_us and \
             complete_ev9_preinit_claim_receipts(self.ev9_preinit_claim_receipts):
-          self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
+          claim_baselines = complete_ev9_preinit_claim_baselines(
+            self.ev9_preinit_claim_receipts, self.ev9_preinit_claim_receipt_frames,
+          )
+          if claim_baselines is not None:
+            controller = self.CI.CC
+            origins = ev9_preinit_canfd.counter_origins(controller.frame, controller.ev9_preinit.scc_counter)
+            ev9_preinit_canfd.set_adrv_baselines(claim_baselines, origins)
+            self.ev9_preinit_takeover_state = EV9PreinitTakeoverState.CONFIRMED
       elif handoff.owner == EV9PandaPreinitOwner.PANDA:
         self.ev9_preinit_last_status_time = now
         if self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.CONFIRMED:

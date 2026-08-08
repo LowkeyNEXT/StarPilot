@@ -80,6 +80,7 @@ public:
   std::optional<health_t> get_state();
   std::optional<can_health_t> get_can_state(uint16_t can_number);
   std::optional<PandaEv9LongPreinitStatus> get_ev9_long_preinit_status();
+  bool request_ev9_long_preinit_offroad_rearm(uint32_t cycle_started_us);
   void set_loopback(bool loopback);
   std::optional<std::vector<uint8_t>> get_firmware_version();
   bool up_to_date();

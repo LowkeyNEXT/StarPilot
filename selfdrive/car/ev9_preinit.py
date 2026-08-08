@@ -209,7 +209,8 @@ def complete_ev9_preinit_baselines(baselines: dict, now: float) -> list[CanData]
   return [baselines[key][0] for key in EV9_PREINIT_MANAGED_FRAMES]
 
 
-def collect_ev9_preinit_claim_receipts(receipts: set, messages: list[CanData]) -> None:
+def collect_ev9_preinit_claim_receipts(receipts: set, messages: list[CanData],
+                                       receipt_frames: dict | None = None) -> None:
   """Record only frames that Panda has moved from its software queue to a CAN core."""
   for msg in messages:
     if not 0x80 <= msg.src < 0xC0:
@@ -225,11 +226,21 @@ def collect_ev9_preinit_claim_receipts(receipts: set, messages: list[CanData]) -
       continue
     expected_crc = dat[0] | (dat[1] << 8)
     if hyundaicanfd.hkg_can_fd_checksum(msg.address, None, dat) == expected_crc:
-      receipts.add((bus, msg.address))
+      key = (bus, msg.address)
+      receipts.add(key)
+      if receipt_frames is not None:
+        receipt_frames[key] = CanData(msg.address, dat, bus)
 
 
 def complete_ev9_preinit_claim_receipts(receipts: set) -> bool:
   return receipts == EV9_PREINIT_CLAIM_RECEIPTS
+
+
+def complete_ev9_preinit_claim_baselines(receipts: set, receipt_frames: dict) -> list[CanData] | None:
+  managed_receipts = EV9_PREINIT_CLAIM_RECEIPTS - {(1, 0x730)}
+  if receipts != EV9_PREINIT_CLAIM_RECEIPTS or set(receipt_frames) != managed_receipts:
+    return None
+  return [receipt_frames[key] for key in EV9_PREINIT_MANAGED_FRAMES]
 
 
 def ev9_preinit_parser_packets(packets: list[list[CanData]], now: float) -> list[tuple[int, list[CanData]]]:

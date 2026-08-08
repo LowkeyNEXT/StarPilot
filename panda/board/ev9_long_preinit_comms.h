@@ -6,40 +6,53 @@
 
 static int ev9_long_preinit_comms_handle(const ControlPacket_t *req, uint8_t *resp) {
 #ifdef PANDA_EV9_LONG_PREINIT
+  if (req->request == EV9_LONG_PREINIT_CONTROL_REQUEST) {
+    if (req->param1 == EV9_LONG_PREINIT_REARM_OFFROAD) {
+      resp[0] = ev9_long_preinit_request_offroad_rearm(
+        req->param2, panda_ignition_line()) ? 1U : 0U;
+      return 1;
+    }
+    return 0;
+  }
+
   if (!ev9_long_preinit_usb_request_allowed(req->request, req->param1, req->param2)) {
     return 0;
   }
 
-  // Pandad writes its complete configuration on every connection. Avoid
-  // resetting live CAN cores when the requested state is already installed.
-  switch (req->request) {
-    case 0xDCU:
-      if ((current_safety_mode == req->param1) && (current_safety_param == (uint16_t)req->param2)) {
-        return 0;
-      }
-      break;
-    case 0xDEU:
-      if ((req->param1 < PANDA_CAN_CNT) && (bus_config[req->param1].can_speed == req->param2)) {
-        return 0;
-      }
-      break;
-    case 0xE5U:
-      if (can_loopback == (req->param1 > 0U)) {
-        return 0;
-      }
-      break;
-    case 0xF9U:
-      if ((req->param1 < PANDA_CAN_CNT) && (bus_config[req->param1].can_data_speed == req->param2)) {
-        return 0;
-      }
-      break;
-    case 0xFCU:
-      if ((req->param1 < PANDA_CAN_CNT) && (bus_config[req->param1].canfd_non_iso == (req->param2 != 0U))) {
-        return 0;
-      }
-      break;
-    default:
-      break;
+  if (ev9_long_preinit_must_preserve()) {
+    // Pandad writes its complete configuration on every connection. Avoid
+    // resetting live CAN cores only while resident ownership must be retained.
+    switch (req->request) {
+      case 0xDCU:
+        if ((current_safety_mode == req->param1) && (current_safety_param == (uint16_t)req->param2)) {
+          return 0;
+        }
+        break;
+      case 0xDEU:
+        if ((req->param1 < PANDA_CAN_CNT) && (bus_config[req->param1].can_speed == req->param2)) {
+          return 0;
+        }
+        break;
+      case 0xE5U:
+        if (((req->param1 > 0U) && can_loopback) || ((req->param1 == 0U) && !can_loopback)) {
+          return 0;
+        }
+        break;
+      case 0xF9U:
+        if ((req->param1 < PANDA_CAN_CNT) && (bus_config[req->param1].can_data_speed == req->param2)) {
+          return 0;
+        }
+        break;
+      case 0xFCU:
+        if ((req->param1 < PANDA_CAN_CNT) &&
+            (((req->param2 > 0U) && bus_config[req->param1].canfd_non_iso) ||
+             ((req->param2 == 0U) && !bus_config[req->param1].canfd_non_iso))) {
+          return 0;
+        }
+        break;
+      default:
+        break;
+    }
   }
 
   if (req->request == 0xE9U) {
@@ -58,13 +71,6 @@ static int ev9_long_preinit_comms_handle(const ControlPacket_t *req, uint8_t *re
     return 0;
   }
 
-  if (req->request == EV9_PREINIT_USB_CONTROL_REQUEST) {
-    if (req->param1 == EV9_PREINIT_USB_RELEASE) {
-      resp[0] = ev9_long_preinit_request_release(req->param2) ? 1U : 0U;
-      return 1;
-    }
-    return 0;
-  }
 #else
   (void)req;
   (void)resp;

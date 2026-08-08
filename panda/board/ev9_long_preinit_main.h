@@ -16,11 +16,17 @@ static bool ev9_long_preinit_preserve_safety_transition(uint16_t mode, uint16_t 
 static bool ev9_long_preinit_handle_heartbeat_loss(bool vehicle_live) {
 #ifdef PANDA_EV9_LONG_PREINIT
   if (ev9_long_preinit_must_preserve()) {
-    if (current_safety_mode != SAFETY_SILENT) {
-      // Controls are already disengaged. Revoke host ownership while retaining
-      // Panda's neutral bridge until firmware proves the vehicle is OFF.
-      ev9_long_preinit_host_watchdog_lost(microsecond_timer_get(), vehicle_live);
+    if (ev9_preinit_state == EV9_PREINIT_HANDOFF) {
+      // Handoff is one-way. Once the host owned every required stream, use
+      // Panda's unchanged heartbeat-loss path: SILENT safety and power save.
+      return false;
     }
+    if (current_safety_mode != SAFETY_NOOUTPUT) {
+      // Before handoff the neutral resident bridge may still be required, but
+      // host actuation must be revoked immediately.
+      set_safety_mode(SAFETY_NOOUTPUT, 0U);
+    }
+    ev9_long_preinit_host_watchdog_lost(microsecond_timer_get(), vehicle_live);
     if (power_save_status != POWER_SAVE_STATUS_DISABLED) {
       set_power_save_state(POWER_SAVE_STATUS_DISABLED);
     }
@@ -52,17 +58,30 @@ static uint16_t ev9_long_preinit_initial_safety_mode(void) {
 static void ev9_long_preinit_main_init(void) {
 #ifdef PANDA_EV9_LONG_PREINIT
   ev9_long_preinit_init();
+  ev9_long_preinit_sample_ignition(microsecond_timer_get(), panda_ignition_line());
+#endif
+}
+
+static void ev9_long_preinit_main_sample_ignition(void) {
+#ifdef PANDA_EV9_LONG_PREINIT
+  ev9_long_preinit_sample_ignition(microsecond_timer_get(), panda_ignition_line());
 #endif
 }
 
 static void ev9_long_preinit_main_tick(void) {
 #ifdef PANDA_EV9_LONG_PREINIT
-  ev9_long_preinit_tick(microsecond_timer_get(), panda_ignition_line());
+  const uint32_t now_us = microsecond_timer_get();
+  ev9_long_preinit_sample_ignition(now_us, panda_ignition_line());
+  ev9_long_preinit_tick(now_us, ev9_preinit_sampled_ignition);
 #endif
 }
 
 static void ev9_long_preinit_main_service_tx_cancel(void) {
 #ifdef PANDA_EV9_LONG_PREINIT
-  ev9_long_preinit_service_tx_cancel(microsecond_timer_get());
+  const uint32_t now_us = microsecond_timer_get();
+  // LED fades can block the outer loop; sample here as well so a short OFF
+  // interval is not limited to Panda's 8 Hz driver tick.
+  ev9_long_preinit_sample_ignition(now_us, panda_ignition_line());
+  ev9_long_preinit_service_tx_cancel(now_us);
 #endif
 }

@@ -28,6 +28,9 @@ EV9_ADRV_PERIODS = (
   (0x1E0, 5),
   (0x38C, 20),
 )
+EV9_COUNTER_PERIODS = dict(EV9_ADRV_PERIODS) | {
+  0x100: 1, 0x12A: 1, 0xCB: 1, 0x161: 5, 0x162: 5, 0x1BA: 5, 0x1E5: 5,
+}
 
 # OFF-to-READY continuity captured immediately before ADAS suppression. These
 # baselines are process-local and reset before every pre-fingerprint attempt.
@@ -41,8 +44,15 @@ def scc_control_baseline_available() -> bool:
   return _SCC_CONTROL_LIVE_TEMPLATE is not None
 
 
-def set_adrv_baselines(messages: list[CanData]) -> None:
+def counter_origins(frame: int, scc_counter: int) -> dict[int, int]:
+  origins = {address: (frame + period - 1) // period for address, period in EV9_COUNTER_PERIODS.items()}
+  origins[0x1A0] = scc_counter
+  return origins
+
+
+def set_adrv_baselines(messages: list[CanData], origins: dict[int, int] | None = None) -> None:
   global _SCC_CONTROL_LIVE_TEMPLATE, _SCC_CONTROL_COUNTER_BASE
+  origins = origins or {}
   _LIVE_TEMPLATES.clear()
   _COUNTER_BASES.clear()
   _SCC_CONTROL_LIVE_TEMPLATE = None
@@ -50,17 +60,17 @@ def set_adrv_baselines(messages: list[CanData]) -> None:
   for msg in messages:
     dat = bytes(msg.dat)
     if msg.src == 0 and msg.address == 0x100 and len(dat) == 24:
-      _COUNTER_BASES[msg.address] = dat[2]
+      _COUNTER_BASES[msg.address] = (dat[2] - origins.get(msg.address, 0)) & 0xFF
     elif msg.src == 1 and msg.address in (0x12A, 0xCB) and len(dat) in (16, 24):
-      _COUNTER_BASES[msg.address] = dat[2]
+      _COUNTER_BASES[msg.address] = (dat[2] - origins.get(msg.address, 0)) & 0xFF
       _LIVE_TEMPLATES[msg.address] = dat
     elif msg.src == 1 and msg.address in EV9_ADRV_TEMPLATES and len(dat) == len(EV9_ADRV_TEMPLATES[msg.address]):
-      _COUNTER_BASES[msg.address] = dat[2]
+      _COUNTER_BASES[msg.address] = (dat[2] - origins.get(msg.address, 0)) & 0xFF
       if msg.address != 0x160:
         _LIVE_TEMPLATES[msg.address] = dat
     elif msg.src == 1 and msg.address == 0x1A0 and len(dat) == 32:
       _SCC_CONTROL_LIVE_TEMPLATE = dat
-      _SCC_CONTROL_COUNTER_BASE = dat[2]
+      _SCC_CONTROL_COUNTER_BASE = (dat[2] - origins.get(msg.address, 0)) & 0xFF
 
 
 def _finalize_message(address: int, dat: bytearray, bus: int) -> CanData:

@@ -94,10 +94,16 @@ void process_can(uint8_t can_number) {
     FDCAN_GlobalTypeDef *FDCANx = CANIF_FROM_CAN_NUM(can_number);
     uint8_t bus_number = BUS_NUM_FROM_CAN_NUM(can_number);
 
+    #ifdef PANDA_EV9_LONG_PREINIT
+    // TFE means the prior FIFO contents left hardware. Confirm claim ownership
+    // only from transmit-occurrence bits; TXBAR admission alone is insufficient.
+    ev9_long_preinit_tx_hw_completed(bus_number, FDCANx->TXBTO, FDCANx->TXBCF);
+    #endif
     FDCANx->IR |= FDCAN_IR_TFE; // Clear Tx FIFO Empty flag
     #ifdef PANDA_EV9_LONG_PREINIT
     if (!ev9_long_preinit_tx_drain_allowed(bus_number)) {
       EXIT_CRITICAL();
+      // cppcheck-suppress misra-c2012-15.5
       return;
     }
     #endif
@@ -134,7 +140,7 @@ void process_can(uint8_t can_number) {
           #ifdef PANDA_EV9_LONG_PREINIT
           // TXBAR is the first hardware-visible ownership boundary. Software
           // queue acceptance alone cannot complete a resident-to-host handoff.
-          ev9_long_preinit_tx_hw_loaded(&to_send, bus_number);
+          ev9_long_preinit_tx_hw_loaded(&to_send, bus_number, (uint8_t)tx_index);
           #endif
 
           // Send back to USB
