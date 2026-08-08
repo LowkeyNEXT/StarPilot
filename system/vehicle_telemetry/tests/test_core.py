@@ -53,6 +53,49 @@ def test_snapshot_uses_generic_fields_and_feature_detects_optional_values():
   assert "distanceToEmptyKilometers" not in fuel_only
 
 
+def test_snapshot_includes_valid_vin_gear_and_gps_without_accepting_bad_identity():
+  state = SimpleNamespace(
+    fuelGauge=0.8,
+    vEgo=10.0,
+    standstill=False,
+    gearShifter="drive",
+  )
+  location = SimpleNamespace(
+    hasFix=True,
+    latitude=41.881832,
+    longitude=-87.623177,
+    horizontalAccuracy=3.2,
+    altitude=181.25,
+    bearingDeg=270.04,
+  )
+
+  snapshot = core.build_vehicle_telemetry_snapshot(
+    state,
+    timestamp=1234.5,
+    vin="5XYABCD12SG123456",
+    location=location,
+  )
+
+  assert snapshot["vin"] == "5XYABCD12SG123456"
+  assert snapshot["gearShifter"] == "drive"
+  assert snapshot["isParked"] is False
+  assert snapshot["latitude"] == pytest.approx(41.881832)
+  assert snapshot["longitude"] == pytest.approx(-87.623177)
+  assert snapshot["elevationMeters"] == 181.2
+  assert snapshot["headingDegrees"] == 270.0
+
+  invalid = core.build_vehicle_telemetry_snapshot(state, timestamp=1234.5, vin="UNKNOWN", location=location)
+  assert "vin" not in invalid
+  unknown = core.build_vehicle_telemetry_snapshot(state, timestamp=1234.5, vin="0" * 17, location=location)
+  assert "vin" not in unknown
+  assert core.validated_vehicle_telemetry_snapshot({
+    "schemaVersion": 1,
+    "updatedAt": 1234.5,
+    "stateOfChargePercent": 80.0,
+    "vin": "INVALID",
+  }, now=1235.0) is None
+
+
 def test_default_zero_car_state_is_not_valid_telemetry():
   assert core.build_vehicle_telemetry_snapshot(SimpleNamespace(fuelGauge=0.0, distanceToEmpty=0.0)) is None
 
@@ -217,6 +260,69 @@ def test_config_modes_are_owner_only_and_secrets_are_redacted(tmp_path):
 
   path.chmod(0o640)
   assert core.load_vehicle_telemetry_config(path)["mode"] == "off"
+
+
+def test_abrp_config_uses_five_second_cadence_and_redacts_both_credentials(tmp_path):
+  config = core.save_vehicle_telemetry_config({
+    "mode": "send",
+    "push": {
+      "enabled": True,
+      "provider": "abrp",
+      "abrpApiKey": "api-key-value",
+      "abrpUserToken": "user-token-value",
+      "abrpCarModel": "kia:ev9:26:100:awd:nativenacs",
+      "drivingIntervalSeconds": 1,
+      "chargingIntervalSeconds": 2,
+      "parkedIntervalSeconds": 3,
+    },
+  }, tmp_path / "config.json")
+
+  assert config["push"]["enabled"]
+  assert config["push"]["drivingIntervalSeconds"] == 5.0
+  assert config["push"]["chargingIntervalSeconds"] == 5.0
+  assert config["push"]["parkedIntervalSeconds"] == 5.0
+  public = core.public_vehicle_telemetry_config(config)["push"]
+  assert public["hasAbrpApiKey"] and public["hasAbrpUserToken"]
+  assert "abrpApiKey" not in public and "abrpUserToken" not in public
+  assert any(field["source"] == "vin" for field in public["availableFields"])
+
+
+def test_custom_schema_selects_fields_and_builds_bounded_nested_json(tmp_path):
+  config = core.save_vehicle_telemetry_config({
+    "mode": "send",
+    "push": {
+      "enabled": True,
+      "provider": "custom",
+      "url": "https://telemetry.example/ingest",
+      "token": "p" * 32,
+      "useCustomSchema": True,
+      "fieldMappings": [
+        {"source": "vin", "target": "vehicle.identity.vin"},
+        {"source": "stateOfChargePercent", "target": "vehicle.battery.soc"},
+        {"source": "speedKilometersPerHour", "target": "vehicle.motion.speed_kph"},
+        {"source": "vin", "target": "duplicate.vin"},
+        {"source": "source", "target": "__proto__.polluted"},
+      ],
+    },
+  }, tmp_path / "config.json")
+  push = config["push"]
+
+  assert push["useCustomSchema"]
+  assert len(push["fieldMappings"]) == 3
+  payload = core.build_custom_push_payload(push, {
+    "schemaVersion": 1,
+    "updatedAt": 1234.5,
+    "vin": "5XYABCD12SG123456",
+    "stateOfChargePercent": 80.0,
+    "speedMetersPerSecond": 10.0,
+  })
+  assert payload == {
+    "vehicle": {
+      "identity": {"vin": "5XYABCD12SG123456"},
+      "battery": {"soc": 80.0},
+      "motion": {"speed_kph": 36.0},
+    },
+  }
 
 
 def test_fetch_requires_long_bearer_token_and_constant_time_comparison(tmp_path):
@@ -489,6 +595,16 @@ class FakeResponse:
     self.closed = True
 
 
+class FakeAbrpResponse(FakeResponse):
+  def __init__(self, payload=b'{"status":"ok","result":{}}'):
+    super().__init__()
+    self.payload = payload
+
+  def iter_content(self, chunk_size=1):
+    for start in range(0, len(self.payload), chunk_size):
+      yield self.payload[start:start + chunk_size]
+
+
 class FakeSession:
   def __init__(self):
     self.trust_env = True
@@ -509,14 +625,84 @@ def test_publisher_disables_redirects_and_keeps_token_in_header_only(tmp_path):
     "token": "t" * 32,
     "vehicleId": "vehicle",
   }
-  success, status = publisher._post(push, {"updatedAt": 1234.5, "stateOfChargePercent": 80.0})
+  success, status = publisher._post(push, {
+    "updatedAt": 1234.5,
+    "vin": "5XYABCD12SG123456",
+    "stateOfChargePercent": 80.0,
+  })
   assert success and status == 202
   assert session.trust_env is False
   assert session.request[1]["allow_redirects"] is False
   assert session.request[1]["stream"] is True
   assert session.request[1]["headers"]["Authorization"] == f"Bearer {'t' * 32}"
   assert "token" not in session.request[1]["json"]
+  assert session.request[1]["json"]["telemetry"]["vin"] == "5XYABCD12SG123456"
   assert session.response.closed
+
+
+def test_abrp_publisher_uses_official_auth_form_and_metric_payload(tmp_path):
+  session = FakeSession()
+  session.response = FakeAbrpResponse()
+  publisher = core.VehicleTelemetryPublisher(status_path=tmp_path / "status.json", session=session)
+  push = core.default_vehicle_telemetry_config()["push"] | {
+    "enabled": True,
+    "provider": "abrp",
+    "abrpApiKey": "api-key",
+    "abrpUserToken": "user-token",
+    "abrpCarModel": "kia:ev9:26:100:awd:nativenacs",
+    "maximumBatteryCapacityKilowattHours": 99.8,
+  }
+  snapshot = {
+    "updatedAt": 1234.5,
+    "stateOfChargePercent": 80.0,
+    "speedMetersPerSecond": 10.0,
+    "isCharging": False,
+    "isParked": False,
+    "latitude": 41.0,
+    "longitude": -87.0,
+    "distanceToEmptyKilometers": 408.0,
+  }
+
+  success, status = publisher._post(push, snapshot)
+
+  assert success and status == 202
+  args, kwargs = session.request
+  assert args == (core.ABRP_TELEMETRY_URL,)
+  assert kwargs["headers"] == {"Authorization": "APIKEY api-key"}
+  assert kwargs["allow_redirects"] is False and kwargs["stream"] is True
+  assert kwargs["data"]["token"] == "user-token"
+  telemetry = json.loads(kwargs["data"]["tlm"])
+  assert telemetry == {
+    "utc": 1234.5,
+    "car_model": "kia:ev9:26:100:awd:nativenacs",
+    "soc": 80.0,
+    "is_charging": False,
+    "is_parked": False,
+    "lat": 41.0,
+    "lon": -87.0,
+    "est_battery_range": 408.0,
+    "speed": 36.0,
+    "capacity": 99.8,
+    "soe": 79.84,
+  }
+  assert "vin" not in telemetry and "power" not in telemetry
+  assert session.response.closed
+
+
+def test_abrp_application_error_is_not_reported_as_success(tmp_path):
+  session = FakeSession()
+  session.response = FakeAbrpResponse(b'{"status":"error","errors":["bad token"]}')
+  publisher = core.VehicleTelemetryPublisher(status_path=tmp_path / "status.json", session=session)
+  push = core.default_vehicle_telemetry_config()["push"] | {
+    "provider": "abrp",
+    "abrpApiKey": "api-key",
+    "abrpUserToken": "user-token",
+    "abrpCarModel": "kia:ev9:26:100:awd:nativenacs",
+  }
+
+  success, status = publisher._post(push, {"updatedAt": 1234.5, "stateOfChargePercent": 80.0})
+
+  assert not success and status == 202
 
 
 def test_live_cache_write_skips_fsync(tmp_path, monkeypatch):

@@ -9,7 +9,7 @@ Panda/CAN receive loop. `vehicle_telemetryd` itself opens neither raw CAN nor Pa
 never writes CAN traffic, and remains independent of controls.
 
 Its complete subscription set is `starpilotCarState`, `pandaStates`, `carParams`,
-and `deviceState`. `deviceState.started` selects exactly one source: onroad never
+`deviceState`, and `gpsLocationExternal`. `deviceState.started` selects exactly one source: onroad never
 uses the PandaState fallback, and offroad never refreshes from stale car state.
 
 Normal onroad vehicle decoding belongs in opendbc and the vehicle port. Route-backed
@@ -23,12 +23,15 @@ validates, caches, and moves normalized values.
 
 The daemon currently consumes:
 
+- `carParams.carVin` when it is a valid 17-character VIN
 - `fuelGauge` as state of charge (`0.0...1.0`)
 - `distanceToEmpty` in meters
 - `charging`
 - `chargingPortConnected`
 - optional `chargingTimeRemaining` in seconds, exposed as whole `minutesToFull`
 - `vEgo` and `standstill` for upload cadence
+- `gearShifter` for an explicit parked state
+- a fresh `gpsLocationExternal` fix for latitude, longitude, elevation, and heading
 
 At least one useful energy value is required. Default all-zero `CarState` values,
 non-finite numbers, SOC outside `0...100%`, and DTE outside `0...900 km` are not
@@ -94,7 +97,7 @@ never exposed to Galaxy JavaScript, page URLs, or logs.
 StarPilot supports six operating modes:
 
 - `off`: cache only.
-- `send`: make outbound-only HTTPS deliveries to a custom backend without
+- `send`: make outbound-only HTTPS deliveries to a configured destination without
   exposing an inbound telemetry API.
 - `local`: serve the authenticated API on the configured LAN port.
 - `tailscale`: bind the API to loopback and publish it with a persistent public
@@ -116,11 +119,14 @@ Create `/data/galaxy/vehicle_telemetry_config.json` as an owner-only file:
   },
   "push": {
     "enabled": true,
+    "provider": "custom",
     "url": "https://telemetry.example.com/v1/telemetry/ingest",
     "token": "replace-with-a-different-32-character-token",
     "vehicleId": "my-ev9",
     "vehicleName": "2026 Kia EV9",
     "maximumBatteryCapacityKilowattHours": 99.8,
+    "useCustomSchema": false,
+    "fieldMappings": [],
     "drivingIntervalSeconds": 60,
     "chargingIntervalSeconds": 120,
     "parkedIntervalSeconds": 900
@@ -224,9 +230,8 @@ legacy auto-connect clients must migrate through the one-time pairing exchange.
 
 ## Custom backend sending
 
-StarPilot sends an authenticated JSON envelope to the configured URL. A live EV9
-validation sample with vehicle name and battery capacity configured produced a
-**465-byte JSON body** and a **651-byte prepared HTTP/1.1 request before TLS**:
+StarPilot sends an authenticated JSON envelope to the configured URL. A typical
+EV9 sample with vehicle name and battery capacity configured looks like:
 
 ```json
 {
@@ -237,6 +242,7 @@ validation sample with vehicle name and battery capacity configured produced a
     "schemaVersion": 1,
     "source": "StarPilot carState",
     "updatedAt": 1784235068.41,
+    "vin": "5XYABCD12SG123456",
     "stateOfChargePercent": 77.5,
     "distanceToEmptyKilometers": 408.0,
     "isCharging": false,
@@ -245,12 +251,28 @@ validation sample with vehicle name and battery capacity configured produced a
 }
 ```
 
-At a 60-second driving interval, this is approximately **27.2 KiB/hour of JSON**
-or **38.1 KiB/hour before TLS**. Including TLS/TCP overhead and connection setup,
-budget roughly **0.1 to 0.2 MB per driving hour**. A 30-second interval doubles the
-JSON body to about 54.5 KiB/hour. Parked at the default 15-minute interval, the
-JSON body is under 2 KiB/hour. Connection behavior and mobile-network
-retransmissions can raise actual on-wire usage.
+Galaxy can instead build a destination-specific JSON object. Enable **Build a
+custom JSON schema**, select the variables to send, and assign each one a JSON
+dot path. For example, mapping `vin` to `vehicle.identity.vin` and
+`stateOfChargePercent` to `vehicle.battery.soc` produces:
+
+```json
+{
+  "vehicle": {
+    "identity": {"vin": "5XY..."},
+    "battery": {"soc": 77.5}
+  }
+}
+```
+
+Only the selected fields are emitted. Missing optional values are omitted rather
+than serialized as `null`. Paths are bounded, reject prototype-related names,
+and cannot overlap one another. Leaving custom schema disabled preserves the
+existing StarPilot envelope.
+
+At a 60-second driving interval, typical custom payload bodies remain well under
+0.1 MB/hour. TLS/TCP setup, selected fields, and mobile-network retransmissions
+can raise actual on-wire usage.
 
 The publisher uses openpilot's on-road state for driving cadence, so traffic lights
 and other momentary stops do not create parked/driving transition uploads. Charging
@@ -267,6 +289,37 @@ deduplication key. Redirects are not followed. Optional vehicle fields may be
 absent, so backends should use `schemaVersion` and field presence rather than
 requiring every example field. The complete envelope, cadence, retry, and timeout
 contract is in the [fork-neutral custom backend guide](vehicle-telemetry-core.md#custom-backend-sending).
+
+## A Better Routeplanner
+
+Select **A Better Routeplanner (ABRP)** as the outbound destination. The
+integration uses Iternio's fixed `https://api.iternio.com/1/tlm/send` endpoint,
+keeps credentials out of the URL, and sends URL-encoded `token` and `tlm` form
+fields with `Authorization: APIKEY ...`. Both an ABRP telemetry API key and a
+user token are required by StarPilot configuration. Obtain the API key through
+[ABRP API resources](https://abetterrouteplanner.com/resources/api); obtain the
+user token through ABRP OAuth2 or the app's Live Data Setup screen. Enter the
+ABRP car-model typecode that matches the vehicle. Current EV9 choices can be
+queried from Iternio's `get_carmodels_list` endpoint.
+
+The official desired cadence is one sample every five seconds, with intervals
+longer than 30 seconds discouraged. StarPilot defaults driving and charging to
+five seconds and parked reporting to 30 seconds. It sends these values when
+available:
+
+- `utc`, `soc`, `speed`, `lat`, `lon`, `elevation`, and `heading`
+- `is_charging`, `is_parked`, and `est_battery_range`
+- configured `car_model` and `capacity`; `soe` is derived from validated SOC
+  and configured capacity
+
+The current HKG telemetry port does not expose validated traction-battery power,
+current, voltage, battery temperature, or DC-fast-charge state. StarPilot does
+not estimate or fabricate them. ABRP therefore receives useful live SOC,
+position, range, and state data, but its individual consumption calibration is
+limited: ABRP documents `speed`, `power`, and `is_charging` at least every ten
+seconds as the minimum set for that calibration. A later vehicle-port change can
+add `power` once a validated battery signal is available without changing the
+transport contract.
 
 ## DBC information required for vehicle support
 

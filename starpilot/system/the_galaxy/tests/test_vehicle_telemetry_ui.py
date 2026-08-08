@@ -22,6 +22,22 @@ def test_galaxy_telemetry_ui_uses_one_time_pairing_without_session_secrets():
   assert "X-Galaxy-LAN-Setup" not in navigation
 
 
+def test_galaxy_telemetry_ui_exposes_custom_schema_and_abrp_without_echoing_secrets():
+  navigation = _source("starpilot/system/the_galaxy/assets/components/navigation/navigation_keys.js")
+
+  assert "Custom JSON API" in navigation
+  assert "A Better Routeplanner (ABRP)" in navigation
+  assert "Build a custom JSON schema from selected telemetry variables" in navigation
+  assert "fieldMappings" in navigation
+  assert "ABRP telemetry API key (leave blank to keep)" in navigation
+  assert "ABRP user token (leave blank to keep)" in navigation
+  assert "Battery power is omitted" in navigation
+  assert "https://web.abetterrouteplanner.com/resources/api" in navigation
+  assert "https://documenter.getpostman.com/view/7396339/SWTK5a8w" in navigation
+  assert "push.abrpApiKey" not in navigation
+  assert "push.abrpUserToken" not in navigation
+
+
 def test_tailscale_controls_use_owner_setup_cookie_flow():
   tailscale = _source("starpilot/system/the_galaxy/assets/components/tailscale/tailscale.js")
 

@@ -22,6 +22,7 @@ from openpilot.system.vehicle_telemetry.tunnel import FRPC_STATUS_FILENAME, FRPT
 MAXIMUM_CACHED_PUBLISH_AGE_SECONDS = 30 * 24 * 60 * 60
 MAXIMUM_SOURCE_SAMPLE_AGE_SECONDS = 1.0
 DEFAULT_CAR_STATE_SERVICE = "carState"
+DEFAULT_LOCATION_SERVICE = "gpsLocationExternal"
 
 
 def _nanos_since_boot():
@@ -84,6 +85,8 @@ def build_clock_valid_vehicle_telemetry_snapshot(
   source_name=None,
   source_mono_time=None,
   monotonic_now_ns=None,
+  vin="",
+  location=None,
 ):
   """Build telemetry only after the comma has a trustworthy wall clock."""
   if not system_time_valid():
@@ -97,7 +100,9 @@ def build_clock_valid_vehicle_telemetry_snapshot(
     )
     if wall_time is None:
       return None
-  return build_vehicle_telemetry_snapshot(car_state, wall_time, vehicle_fingerprint, source_name=source_name)
+  return build_vehicle_telemetry_snapshot(
+    car_state, wall_time, vehicle_fingerprint, source_name=source_name, vin=vin, location=location,
+  )
 
 
 def cached_snapshot_timestamp_is_plausible(snapshot, now=None):
@@ -162,6 +167,7 @@ def vehicle_telemetry_thread(
   offroad_car_state_service=None,
   offroad_state_resolver=None,
   offroad_source_name=None,
+  location_service=DEFAULT_LOCATION_SERVICE,
   config_path=None,
   data_dir=None,
 ):
@@ -172,7 +178,7 @@ def vehicle_telemetry_thread(
   services = [car_state_service]
   if offroad_car_state_service is not None:
     services.append(offroad_car_state_service)
-  services += ["carParams", "deviceState"]
+  services += ["carParams", "deviceState", location_service]
   sm = messaging.SubMaster(services)
   clock_valid = system_time_valid()
   cache = VehicleTelemetryCache()
@@ -186,6 +192,7 @@ def vehicle_telemetry_thread(
   cached_snapshot_pending = cache.latest if clock_valid else cache.load_before_clock_sync()
 
   fingerprint = ""
+  vin = ""
   started = None
   last_source_mono_time = 0
   ratekeeper = Ratekeeper(1.0, None)
@@ -204,6 +211,7 @@ def vehicle_telemetry_thread(
         publisher.set_onroad(started)
       if sm.updated["carParams"] and sm.valid["carParams"]:
         fingerprint = str(sm["carParams"].carFingerprint)
+        vin = str(sm["carParams"].carVin)
 
       selected_service, car_state = select_vehicle_telemetry_state(
         started,
@@ -232,6 +240,8 @@ def vehicle_telemetry_thread(
           fingerprint,
           source_name=selected_source_name,
           source_mono_time=source_mono_time,
+          vin=vin,
+          location=sm[location_service] if sm.seen[location_service] and sm.alive[location_service] and sm.valid[location_service] else None,
         )
         if snapshot is not None:
           if source_mono_time is not None:

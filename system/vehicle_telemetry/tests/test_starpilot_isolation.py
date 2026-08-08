@@ -37,7 +37,7 @@ def test_starpilot_daemon_subscribes_only_to_derived_vehicle_state():
     if isinstance(node, ast.Assign)
     and any(isinstance(target, ast.Name) and target.id == "VEHICLE_TELEMETRY_SERVICES" for target in node.targets)
   )
-  assert services == ["starpilotCarState", "pandaStates", "carParams", "deviceState"]
+  assert services == ["starpilotCarState", "pandaStates", "carParams", "deviceState", "gpsLocationExternal"]
   assert '"can"' not in source
   assert "from panda" not in source
   assert "import panda" not in source

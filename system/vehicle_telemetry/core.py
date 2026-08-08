@@ -39,10 +39,13 @@ VEHICLE_TELEMETRY_HEARTBEAT_SECONDS = 10.0
 VEHICLE_TELEMETRY_DEFAULT_PORT = 7766
 VEHICLE_TELEMETRY_CONFIG_RELOAD_SECONDS = 5.0
 TELEMETRY_MODES = ("off", "send", "local", "tailscale", "frp", "galaxy")
+TELEMETRY_PUSH_PROVIDERS = ("custom", "abrp")
+ABRP_TELEMETRY_URL = "https://api.iternio.com/1/tlm/send"
 
 _TELEMETRY_FIELDS = (
   "source",
   "updatedAt",
+  "vin",
   "vehicleFingerprint",
   "stateOfChargePercent",
   "estimatedRangeKilometers",
@@ -52,21 +55,72 @@ _TELEMETRY_FIELDS = (
   "minutesToFull",
   "speedMetersPerSecond",
   "standstill",
+  "gearShifter",
+  "isParked",
+  "latitude",
+  "longitude",
+  "elevationMeters",
+  "headingDegrees",
 )
 _TELEMETRY_STRING_LIMITS = {
   "source": 80,
+  "vin": 17,
   "vehicleFingerprint": 160,
+  "gearShifter": 24,
 }
 _TELEMETRY_BOOLEAN_FIELDS = (
   "isCharging",
   "isPluggedIn",
   "standstill",
+  "isParked",
 )
+_TELEMETRY_LOCATION_FIELDS = {
+  "latitude": (-90.0, 90.0),
+  "longitude": (-180.0, 180.0),
+  "elevationMeters": (-1000.0, 15000.0),
+  "headingDegrees": (0.0, 360.0),
+}
+_VALID_GEAR_SHIFTERS = {"unknown", "park", "drive", "neutral", "reverse", "sport", "low", "eco", "manumatic", "brake"}
+_VIN_PATTERN = re.compile(r"[A-HJ-NPR-Z0-9]{17}", re.IGNORECASE)
+_JSON_PATH_SEGMENT_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
+_JSON_PATH_BLOCKED_SEGMENTS = {"__proto__", "prototype", "constructor"}
+
+TELEMETRY_PUSH_FIELD_DEFINITIONS = (
+  ("sentAt", "Sent time (milliseconds)", "sentAt"),
+  ("schemaVersion", "Telemetry schema version", "schemaVersion"),
+  ("source", "Source", "telemetry.source"),
+  ("updatedAt", "Sample time (seconds)", "telemetry.updatedAt"),
+  ("vin", "VIN", "telemetry.vin"),
+  ("vehicleId", "Configured vehicle ID", "vehicleId"),
+  ("vehicleName", "Configured vehicle name", "telemetry.vehicleName"),
+  ("vehicleFingerprint", "openpilot vehicle fingerprint", "telemetry.vehicleFingerprint"),
+  ("stateOfChargePercent", "State of charge (%)", "telemetry.stateOfChargePercent"),
+  ("distanceToEmptyKilometers", "Distance to empty (km)", "telemetry.distanceToEmptyKilometers"),
+  ("maximumBatteryCapacityKilowattHours", "Configured battery capacity (kWh)", "telemetry.maximumBatteryCapacityKilowattHours"),
+  ("isCharging", "Charging", "telemetry.isCharging"),
+  ("isPluggedIn", "Charge port connected", "telemetry.isPluggedIn"),
+  ("minutesToFull", "Minutes to full", "telemetry.minutesToFull"),
+  ("speedMetersPerSecond", "Speed (m/s)", "telemetry.speedMetersPerSecond"),
+  ("speedKilometersPerHour", "Speed (km/h)", "telemetry.speedKilometersPerHour"),
+  ("standstill", "Standstill", "telemetry.standstill"),
+  ("gearShifter", "Gear", "telemetry.gearShifter"),
+  ("isParked", "Parked", "telemetry.isParked"),
+  ("latitude", "Latitude", "telemetry.latitude"),
+  ("longitude", "Longitude", "telemetry.longitude"),
+  ("elevationMeters", "Elevation (m)", "telemetry.elevationMeters"),
+  ("headingDegrees", "Heading (degrees)", "telemetry.headingDegrees"),
+)
+_TELEMETRY_PUSH_FIELD_NAMES = {definition[0] for definition in TELEMETRY_PUSH_FIELD_DEFINITIONS}
 
 _data_dir_provider: Callable[[], Path] | None = None
 _legacy_fetch_mode = "local"
 _source_name = "openpilot carState"
 _VEHICLE_TELEMETRY_CONFIG_PROCESS_LOCK = threading.RLock()
+
+
+def _valid_vin(value):
+  vin = str(value or "").strip().upper()
+  return vin if _VIN_PATTERN.fullmatch(vin) and vin != "0" * 17 else ""
 
 
 def reset_vehicle_telemetry_runtime():
@@ -183,7 +237,11 @@ def _validated_vehicle_telemetry_snapshot(snapshot, now=None, *, allow_future_ti
     value = snapshot[field]
     if not isinstance(value, str) or len(value) > maximum_length:
       return None
-    sanitized[field] = value
+    if field == "vin" and not _valid_vin(value):
+      return None
+    if field == "gearShifter" and value not in _VALID_GEAR_SHIFTERS:
+      return None
+    sanitized[field] = value.upper() if field == "vin" else value
 
   state_of_charge = None
   if "stateOfChargePercent" in snapshot:
@@ -215,6 +273,19 @@ def _validated_vehicle_telemetry_snapshot(snapshot, now=None, *, allow_future_ti
     if speed is None or speed < 0.0:
       return None
     sanitized["speedMetersPerSecond"] = speed
+
+  for field, (minimum, maximum) in _TELEMETRY_LOCATION_FIELDS.items():
+    if field not in snapshot:
+      continue
+    value = _telemetry_number(snapshot[field])
+    upper_valid = value is not None and (value < maximum if field == "headingDegrees" else value <= maximum)
+    if not upper_valid or value < minimum:
+      return None
+    sanitized[field] = value
+  if ("latitude" in sanitized) != ("longitude" in sanitized):
+    return None
+  if ("elevationMeters" in sanitized or "headingDegrees" in sanitized) and "latitude" not in sanitized:
+    return None
 
   for field in _TELEMETRY_BOOLEAN_FIELDS:
     if field not in snapshot:
@@ -325,6 +396,41 @@ def _valid_absolute_path(value, default):
   return path if path.startswith("/") and "\x00" not in path else default
 
 
+def _bounded_secret(value, maximum_length=512):
+  secret = str(value or "").strip()
+  if not secret or len(secret) > maximum_length or any(ord(character) < 0x20 for character in secret):
+    return ""
+  return secret
+
+
+def _valid_json_path(value):
+  path = str(value or "").strip()
+  segments = path.split(".")
+  if not path or len(path) > 256 or len(segments) > 8:
+    return ""
+  if any(not _JSON_PATH_SEGMENT_PATTERN.fullmatch(segment) or segment in _JSON_PATH_BLOCKED_SEGMENTS for segment in segments):
+    return ""
+  return path
+
+
+def _normalize_field_mappings(value):
+  mappings = []
+  used_paths = set()
+  raw_mappings = value if isinstance(value, list) else []
+  for raw_mapping in raw_mappings[: len(TELEMETRY_PUSH_FIELD_DEFINITIONS)]:
+    if not isinstance(raw_mapping, dict):
+      continue
+    source = str(raw_mapping.get("source") or "").strip()
+    target = _valid_json_path(raw_mapping.get("target"))
+    if source not in _TELEMETRY_PUSH_FIELD_NAMES or not target or any(mapping["source"] == source for mapping in mappings):
+      continue
+    if any(target == existing or target.startswith(f"{existing}.") or existing.startswith(f"{target}.") for existing in used_paths):
+      continue
+    mappings.append({"source": source, "target": target})
+    used_paths.add(target)
+  return mappings
+
+
 def default_vehicle_telemetry_config():
   return {
     "schemaVersion": VEHICLE_TELEMETRY_SCHEMA_VERSION,
@@ -338,8 +444,14 @@ def default_vehicle_telemetry_config():
     },
     "push": {
       "enabled": False,
+      "provider": "custom",
       "url": "",
       "token": "",
+      "useCustomSchema": False,
+      "fieldMappings": [],
+      "abrpApiKey": "",
+      "abrpUserToken": "",
+      "abrpCarModel": "",
       "vehicleId": "",
       "vehicleName": "",
       "maximumBatteryCapacityKilowattHours": None,
@@ -411,17 +523,39 @@ def _normalize_vehicle_telemetry_config(raw):
 
   push_token = str(push_raw.get("token") or "").strip()
   push_url = _valid_https_url(push_raw.get("url"))
+  push_provider = str(push_raw.get("provider") or "custom").strip().lower()
+  if push_provider not in TELEMETRY_PUSH_PROVIDERS:
+    push_provider = "custom"
+  field_mappings = _normalize_field_mappings(push_raw.get("fieldMappings"))
+  abrp_api_key = _bounded_secret(push_raw.get("abrpApiKey"))
+  abrp_user_token = _bounded_secret(push_raw.get("abrpUserToken"))
+  abrp_car_model = str(push_raw.get("abrpCarModel") or "").strip()[:128]
+  if not re.fullmatch(r"[A-Za-z0-9:_.-]*", abrp_car_model):
+    abrp_car_model = ""
   battery_capacity = _finite_float(push_raw.get("maximumBatteryCapacityKilowattHours"), 0.0)
+  push_ready = bool(
+    push_url and len(push_token) >= 32
+    if push_provider == "custom"
+    else abrp_api_key and abrp_user_token and abrp_car_model
+  )
+  interval_defaults = (5.0, 5.0, 30.0) if push_provider == "abrp" else (60.0, 120.0, 900.0)
+  interval_minimums = (5.0, 5.0, 5.0) if push_provider == "abrp" else (30.0, 60.0, 300.0)
   config["push"] = {
-    "enabled": bool(push_raw.get("enabled", False)) and bool(push_url and len(push_token) >= 32),
+    "enabled": bool(push_raw.get("enabled", False)) and push_ready,
+    "provider": push_provider,
     "url": push_url,
     "token": push_token if len(push_token) >= 32 else "",
+    "useCustomSchema": bool(push_raw.get("useCustomSchema", False)) and bool(field_mappings),
+    "fieldMappings": field_mappings,
+    "abrpApiKey": abrp_api_key,
+    "abrpUserToken": abrp_user_token,
+    "abrpCarModel": abrp_car_model,
     "vehicleId": str(push_raw.get("vehicleId") or "").strip()[:128],
     "vehicleName": str(push_raw.get("vehicleName") or "").strip()[:120],
     "maximumBatteryCapacityKilowattHours": battery_capacity if battery_capacity > 0.0 else None,
-    "drivingIntervalSeconds": _bounded_interval(push_raw.get("drivingIntervalSeconds"), 60.0, 30.0),
-    "chargingIntervalSeconds": _bounded_interval(push_raw.get("chargingIntervalSeconds"), 120.0, 60.0),
-    "parkedIntervalSeconds": _bounded_interval(push_raw.get("parkedIntervalSeconds"), 900.0, 300.0),
+    "drivingIntervalSeconds": _bounded_interval(push_raw.get("drivingIntervalSeconds"), interval_defaults[0], interval_minimums[0]),
+    "chargingIntervalSeconds": _bounded_interval(push_raw.get("chargingIntervalSeconds"), interval_defaults[1], interval_minimums[1]),
+    "parkedIntervalSeconds": _bounded_interval(push_raw.get("parkedIntervalSeconds"), interval_defaults[2], interval_minimums[2]),
   }
 
   tunnel_token = str(tunnel_raw.get("token") or "").strip()
@@ -529,7 +663,18 @@ def public_vehicle_telemetry_config(config):
       "bindAddress": fetch["bindAddress"],
       "port": fetch["port"],
     },
-    "push": {key: value for key, value in push.items() if key != "token"} | {"hasToken": bool(push["token"])},
+    "push": {
+      key: value for key, value in push.items()
+      if key not in ("token", "abrpApiKey", "abrpUserToken")
+    } | {
+      "hasToken": bool(push["token"]),
+      "hasAbrpApiKey": bool(push["abrpApiKey"]),
+      "hasAbrpUserToken": bool(push["abrpUserToken"]),
+      "availableFields": [
+        {"source": source, "label": label, "defaultTarget": default_target}
+        for source, label, default_target in TELEMETRY_PUSH_FIELD_DEFINITIONS
+      ],
+    },
     "tunnel": {key: value for key, value in tunnel.items() if key != "token"} | {"hasToken": bool(tunnel["token"])},
     "tailscale": tailscale,
   }
@@ -548,7 +693,28 @@ def is_fetch_authorized(config, authorization_header):
   return any(expected and hmac.compare_digest(token, expected) for expected in expected_tokens)
 
 
-def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerprint="", source_name=None):
+def _vehicle_location_fields(location):
+  if location is None or not bool(getattr(location, "hasFix", False)):
+    return {}
+  latitude = _finite_float(getattr(location, "latitude", None))
+  longitude = _finite_float(getattr(location, "longitude", None))
+  horizontal_accuracy = _finite_float(getattr(location, "horizontalAccuracy", None))
+  if (not -90.0 <= latitude <= 90.0 or not -180.0 <= longitude <= 180.0 or
+      not 0.0 <= horizontal_accuracy <= 100.0):
+    return {}
+
+  fields = {"latitude": latitude, "longitude": longitude}
+  elevation = _finite_float(getattr(location, "altitude", None))
+  if -1000.0 <= elevation <= 15000.0:
+    fields["elevationMeters"] = round(elevation, 1)
+  heading = _finite_float(getattr(location, "bearingDeg", None))
+  if 0.0 <= heading < 360.0:
+    fields["headingDegrees"] = round(heading, 1)
+  return fields
+
+
+def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerprint="", source_name=None,
+                                     vin="", location=None):
   """Normalize validated generic CarState fields into the transport schema."""
   fuel_gauge = _finite_float(getattr(car_state, "fuelGauge", None))
   distance_to_empty_meters = _finite_float(getattr(car_state, "distanceToEmpty", None))
@@ -567,10 +733,15 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
     return None
 
   distance_to_empty_km = round(distance_to_empty_meters / 1000.0, 1) if has_dte else None
+  normalized_vin = _valid_vin(vin)
+  gear_shifter = str(getattr(car_state, "gearShifter", ""))
+  if gear_shifter not in _VALID_GEAR_SHIFTERS:
+    gear_shifter = ""
   payload = {
     "schemaVersion": VEHICLE_TELEMETRY_SCHEMA_VERSION,
     "source": str(source_name or _source_name)[:80],
     "updatedAt": time.time() if timestamp is None else float(timestamp),  # noqa: TID251
+    "vin": normalized_vin or None,
     "vehicleFingerprint": str(vehicle_fingerprint or "")[:160],
     "stateOfChargePercent": round(max(0.0, min(100.0, fuel_gauge * 100.0)), 1) if has_soc else None,
     "distanceToEmptyKilometers": distance_to_empty_km,
@@ -579,6 +750,9 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
     "minutesToFull": int(round(charging_time_remaining / 60.0)) if has_charging_time else None,
     "speedMetersPerSecond": round(max(0.0, _finite_float(getattr(car_state, "vEgo", 0.0), 0.0)), 3),
     "standstill": bool(getattr(car_state, "standstill", False)),
+    "gearShifter": gear_shifter or None,
+    "isParked": gear_shifter == "park" if gear_shifter else None,
+    **_vehicle_location_fields(location),
   }
   return {key: value for key, value in payload.items() if value is not None}
 
@@ -667,6 +841,93 @@ class VehicleTelemetryCache:
     return True
 
 
+def _push_source_values(push_config, snapshot):
+  values = dict(snapshot)
+  values.update({
+    "sentAt": int(time.time() * 1000),  # noqa: TID251
+    "vehicleId": push_config["vehicleId"],
+    "vehicleName": push_config["vehicleName"],
+    "maximumBatteryCapacityKilowattHours": push_config["maximumBatteryCapacityKilowattHours"],
+  })
+  if "speedMetersPerSecond" in snapshot:
+    values["speedKilometersPerHour"] = round(float(snapshot["speedMetersPerSecond"]) * 3.6, 3)
+  return values
+
+
+def _set_json_path(payload, path, value):
+  current = payload
+  segments = path.split(".")
+  for segment in segments[:-1]:
+    current = current.setdefault(segment, {})
+  current[segments[-1]] = value
+
+
+def build_custom_push_payload(push_config, snapshot):
+  values = _push_source_values(push_config, snapshot)
+  if push_config["useCustomSchema"]:
+    payload = {}
+    for mapping in push_config["fieldMappings"]:
+      value = values.get(mapping["source"])
+      if value is not None:
+        _set_json_path(payload, mapping["target"], value)
+    return payload
+
+  telemetry = dict(snapshot)
+  if push_config["vehicleName"]:
+    telemetry["vehicleName"] = push_config["vehicleName"]
+  if push_config["maximumBatteryCapacityKilowattHours"] is not None:
+    telemetry["maximumBatteryCapacityKilowattHours"] = push_config["maximumBatteryCapacityKilowattHours"]
+  return {
+    "schemaVersion": VEHICLE_TELEMETRY_SCHEMA_VERSION,
+    "vehicleId": push_config["vehicleId"],
+    "sentAt": values["sentAt"],
+    "telemetry": telemetry,
+  }
+
+
+def build_abrp_telemetry_payload(push_config, snapshot):
+  payload = {
+    "utc": float(snapshot["updatedAt"]),
+    "car_model": push_config["abrpCarModel"],
+  }
+  mappings = {
+    "stateOfChargePercent": "soc",
+    "isCharging": "is_charging",
+    "isParked": "is_parked",
+    "latitude": "lat",
+    "longitude": "lon",
+    "elevationMeters": "elevation",
+    "headingDegrees": "heading",
+    "distanceToEmptyKilometers": "est_battery_range",
+  }
+  for source, target in mappings.items():
+    if source in snapshot:
+      payload[target] = snapshot[source]
+  if "speedMetersPerSecond" in snapshot:
+    payload["speed"] = round(float(snapshot["speedMetersPerSecond"]) * 3.6, 3)
+  capacity = push_config["maximumBatteryCapacityKilowattHours"]
+  if capacity is not None:
+    payload["capacity"] = capacity
+    if "stateOfChargePercent" in snapshot:
+      payload["soe"] = round(float(snapshot["stateOfChargePercent"]) * capacity / 100.0, 3)
+  return payload
+
+
+def _abrp_response_ok(response, maximum_bytes=8192):
+  if not 200 <= response.status_code < 300:
+    return False
+  try:
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=4096):
+      body.extend(chunk)
+      if len(body) > maximum_bytes:
+        return False
+    result = json.loads(bytes(body).decode("utf-8"))
+    return isinstance(result, dict) and result.get("status") == "ok"
+  except Exception:
+    return False
+
+
 class VehicleTelemetryPublisher:
   """Low-bandwidth HTTPS publisher for the latest normalized snapshot."""
 
@@ -713,23 +974,26 @@ class VehicleTelemetryPublisher:
       self._condition.wait(timeout=max(1.0, min(float(timeout), 30.0)))
 
   def _post(self, push_config, snapshot):
-    telemetry = dict(snapshot)
-    if push_config["vehicleName"]:
-      telemetry["vehicleName"] = push_config["vehicleName"]
-    if push_config["maximumBatteryCapacityKilowattHours"] is not None:
-      telemetry["maximumBatteryCapacityKilowattHours"] = push_config["maximumBatteryCapacityKilowattHours"]
-
     response = None
     try:
+      if push_config["provider"] == "abrp":
+        response = self.session.post(
+          ABRP_TELEMETRY_URL,
+          headers={"Authorization": f"APIKEY {push_config['abrpApiKey']}"},
+          data={
+            "token": push_config["abrpUserToken"],
+            "tlm": json.dumps(build_abrp_telemetry_payload(push_config, snapshot), separators=(",", ":")),
+          },
+          timeout=(3.0, 5.0),
+          allow_redirects=False,
+          stream=True,
+        )
+        return _abrp_response_ok(response), response.status_code
+
       response = self.session.post(
         push_config["url"],
         headers={"Authorization": f"Bearer {push_config['token']}", "Content-Type": "application/json"},
-        json={
-          "schemaVersion": VEHICLE_TELEMETRY_SCHEMA_VERSION,
-          "vehicleId": push_config["vehicleId"],
-          "sentAt": int(time.time() * 1000),  # noqa: TID251
-          "telemetry": telemetry,
-        },
+        json=build_custom_push_payload(push_config, snapshot),
         timeout=(3.0, 5.0),
         allow_redirects=False,
         stream=True,
@@ -742,7 +1006,7 @@ class VehicleTelemetryPublisher:
         response.close()
 
   def _write_status(self, success, status_code, push_config, activity):
-    parsed_url = urlsplit(push_config.get("url") or "")
+    parsed_url = urlsplit(ABRP_TELEMETRY_URL if push_config.get("provider") == "abrp" else push_config.get("url") or "")
     _atomic_write_json(
       self.status_path,
       {
@@ -751,6 +1015,7 @@ class VehicleTelemetryPublisher:
         "success": bool(success),
         "statusCode": status_code,
         "activity": activity,
+        "provider": push_config.get("provider", "custom"),
         "endpointHost": parsed_url.hostname or "",
       },
     )

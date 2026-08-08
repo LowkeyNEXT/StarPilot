@@ -159,6 +159,13 @@ def test_ev9_preinit_write_requires_panda_firmware_confirmation(monkeypatch):
   assert not fake_params.get_bool("EV9LongPreinitPanda")
 
 
+def test_ev9_preinit_uses_guarded_reboot_instead_of_generic_flash():
+  source = (MODULE_DIR / "the_galaxy.py").read_text()
+  handler = source[source.index('if key in PANDA_FIRMWARE_TOGGLE_KEYS:'):source.index('if key == "RemapCancelToDistance"')]
+  assert 'key == "EV9LongPreinitPanda"' in handler
+  assert "_reboot_for_guarded_panda_update if guarded_preinit_update else _flash_panda_then_reboot" in handler
+
+
 def test_params_compat_accepts_json_strings_for_json_keys():
   backend = FakeParamsBackend(
     key_types={"FavoriteDestinations": ParamKeyType.JSON},
@@ -594,6 +601,45 @@ def test_vehicle_telemetry_config_route_uses_atomic_update(monkeypatch, tmp_path
   assert config["fetch"]["enabled"] is True
   assert config["fetch"]["port"] == 17766
   assert len(config["fetch"]["token"]) >= 32
+
+
+def test_vehicle_telemetry_merge_preserves_blank_secrets_and_accepts_abrp_schema():
+  current = {
+    "mode": "send",
+    "fetch": {},
+    "push": {
+      "enabled": True,
+      "provider": "custom",
+      "token": "custom-secret",
+      "abrpApiKey": "stored-api-key",
+      "abrpUserToken": "stored-user-token",
+    },
+    "tunnel": {},
+    "tailscale": {},
+  }
+  merged, generated = the_galaxy._merge_vehicle_telemetry_config(current, {
+    "mode": "send",
+    "pushToken": "",
+    "abrpApiKey": "",
+    "abrpUserToken": "",
+    "push": {
+      "enabled": True,
+      "provider": "abrp",
+      "abrpCarModel": "kia:ev9:26:100:awd:nativenacs",
+      "useCustomSchema": True,
+      "fieldMappings": [{"source": "vin", "target": "vehicle.vin"}],
+      "drivingIntervalSeconds": 5,
+    },
+  })
+
+  assert generated == ""
+  assert merged["push"]["provider"] == "abrp"
+  assert merged["push"]["token"] == "custom-secret"
+  assert merged["push"]["abrpApiKey"] == "stored-api-key"
+  assert merged["push"]["abrpUserToken"] == "stored-user-token"
+  assert merged["push"]["abrpCarModel"] == "kia:ev9:26:100:awd:nativenacs"
+  assert merged["push"]["fieldMappings"] == [{"source": "vin", "target": "vehicle.vin"}]
+  assert merged["push"]["drivingIntervalSeconds"] == 5
 
 
 def _poison_direct_vehicle_hardware(monkeypatch):

@@ -12,8 +12,8 @@ interface MCU does not keep this Python service running.
 
 The daemon is always available—including while the vehicle is onroad—but defaults
 to `off`: it keeps the latest valid
-snapshot locally and exposes nothing on the network until configured. Custom
-backend sending is independent and can also be enabled alongside any fetch mode.
+snapshot locally and exposes nothing on the network until configured. Outbound
+sending is independent and can also be enabled alongside any fetch mode.
 
 StarPilot registers its adapter daemon with `system/manager/process_config.py`.
 On stock openpilot, run the fork-neutral daemon directly with:
@@ -34,7 +34,7 @@ PythonProcess("vehicle_telemetryd", "system.vehicle_telemetry.daemon", always_ru
 | Mode | HTTP owner | Intended use |
 | --- | --- | --- |
 | `off` | none | Cache only |
-| `send` | none | Outbound-only HTTPS delivery to a custom backend |
+| `send` | none | Outbound-only HTTPS delivery to a configured destination |
 | `local` | telemetry daemon | Bearer-authenticated LAN fetch |
 | `tailscale` | telemetry daemon + personal Tailscale Funnel | Stable public HTTPS URL owned by the device owner |
 | `frp` | telemetry daemon + `frpc` | Stable authenticated remote URL through an FRP gateway |
@@ -57,10 +57,13 @@ the directory for development.
   },
   "push": {
     "enabled": false,
+    "provider": "custom",
     "url": "https://telemetry.example/v1/ingest",
     "token": "replace-with-a-different-32-character-token",
     "vehicleId": "my-vehicle",
     "vehicleName": "My vehicle",
+    "useCustomSchema": false,
+    "fieldMappings": [],
     "drivingIntervalSeconds": 60,
     "chargingIntervalSeconds": 120,
     "parkedIntervalSeconds": 900
@@ -87,17 +90,26 @@ shape is:
   "fetch": {"enabled": false},
   "push": {
     "enabled": true,
+    "provider": "custom",
     "url": "https://telemetry.example/v1/ingest",
     "token": "replace-with-at-least-32-random-characters",
     "vehicleId": "my-vehicle",
     "vehicleName": "My EV",
     "maximumBatteryCapacityKilowattHours": 99.8,
+    "useCustomSchema": false,
+    "fieldMappings": [],
     "drivingIntervalSeconds": 60,
     "chargingIntervalSeconds": 120,
     "parkedIntervalSeconds": 900
   }
 }
 ```
+
+Set `useCustomSchema` to `true` and provide `fieldMappings` to send only selected
+variables under destination-specific dot paths. For example,
+`{"source":"vin","target":"vehicle.vin"}` emits the current VIN as
+`{"vehicle":{"vin":"..."}}` when a valid VIN is available. Empty optional
+values are omitted, and unsafe or overlapping target paths are rejected.
 
 The backend contract is intentionally small:
 
@@ -139,6 +151,16 @@ exponential backoff up to five minutes. Each request uses three-second connect
 and five-second response timeouts, closes the response, follows no redirects,
 and never places the token in the JSON body or status file. No inbound port,
 listener, DNS record, or relay is needed in `send` mode.
+
+The alternative `abrp` provider sends form-encoded telemetry to Iternio's fixed
+ABRP endpoint. It requires the owner's ABRP telemetry API key, user token, and
+car-model typecode, keeps those credentials out of the URL and public status,
+and uses a five-second minimum cadence. The portable core maps available SOC,
+range, charging, parked, speed, and GPS fields. It deliberately omits traction
+battery power until the vehicle port supplies a validated signal, so ABRP route
+planning can work while consumption calibration remains limited. See
+`docs/vehicle-telemetry.md` for the StarPilot/Galaxy configuration UI and full
+provider example.
 
 The reference cache uses a 10-second unchanged-value heartbeat so a freshly observed
 sample remains inside the 15-second `live` contract. These live-cache writes are
@@ -370,8 +392,13 @@ signal. For complete EV telemetry, the DBC/port needs:
 | Displayed distance to empty | `distanceToEmpty` | Meters | SOC or DTE; optional schema extension on openpilot v0.11.1 |
 | Actively charging | `charging` | Boolean | Recommended |
 | Charge cable/port connected | `chargingPortConnected` | Boolean | Recommended; optional schema extension on openpilot v0.11.1 |
-| Vehicle speed | `vEgo` | Meters per second | Cadence only |
+| Vehicle speed | `vEgo` | Meters per second | Cadence and ABRP |
 | Standstill state | `standstill` | Boolean | Cadence only |
+| Gear selection | `gearShifter` | Generic gear enum | Recommended for parked state |
+
+VIN and position do not require additional vehicle CAN decoding. The daemon
+reads a valid 17-character VIN from `CarParams.carVin` and fixed GPS data from
+`gpsLocationExternal`; either is simply omitted until available.
 
 Each new DBC signal definition must identify the correct CAN message and bus,
 start bit, bit length, byte order, signedness, factor, offset, valid range, and

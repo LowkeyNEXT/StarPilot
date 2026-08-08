@@ -185,6 +185,12 @@ def _flash_panda_then_reboot() -> None:
     HARDWARE.reboot()
 
 
+def _reboot_for_guarded_panda_update() -> None:
+  """Let pandad apply resident-aware firmware selection after restart."""
+  with _PANDA_FLASH_REBOOT_LOCK:
+    HARDWARE.reboot()
+
+
 def _is_comma_device_runtime() -> bool:
   """Robust runtime device check.
 
@@ -771,21 +777,34 @@ def _merge_vehicle_telemetry_config(current, update):
   push_update = update.get("push") if isinstance(update.get("push"), dict) else {}
   push = merged.setdefault("push", {})
   push["enabled"] = _json_bool(push_update.get("enabled"), push.get("enabled", False))
-  for key in ("url", "vehicleId", "vehicleName"):
+  provider = str(push_update.get("provider") or push.get("provider") or "custom").strip().lower()
+  push["provider"] = provider if provider in ("custom", "abrp") else "custom"
+  for key in ("url", "vehicleId", "vehicleName", "abrpCarModel"):
     if key in push_update:
       push[key] = str(push_update.get(key) or "").strip()
+  if "useCustomSchema" in push_update:
+    push["useCustomSchema"] = _json_bool(push_update.get("useCustomSchema"))
+  if "fieldMappings" in push_update:
+    push["fieldMappings"] = push_update.get("fieldMappings") if isinstance(push_update.get("fieldMappings"), list) else []
   if "maximumBatteryCapacityKilowattHours" in push_update:
     push["maximumBatteryCapacityKilowattHours"] = push_update.get("maximumBatteryCapacityKilowattHours")
+  minimum_intervals = (5, 5, 5) if push["provider"] == "abrp" else (30, 60, 300)
   for key, default, minimum in (
-    ("drivingIntervalSeconds", 60, 30),
-    ("chargingIntervalSeconds", 120, 60),
-    ("parkedIntervalSeconds", 900, 300),
+    ("drivingIntervalSeconds", 60, minimum_intervals[0]),
+    ("chargingIntervalSeconds", 120, minimum_intervals[1]),
+    ("parkedIntervalSeconds", 900, minimum_intervals[2]),
   ):
     if key in push_update:
       push[key] = _bounded_json_int(push_update.get(key), push.get(key, default), minimum, 3600)
   supplied_push_token = str(update.get("pushToken") or "").strip()
   if supplied_push_token:
     push["token"] = supplied_push_token
+  supplied_abrp_api_key = str(update.get("abrpApiKey") or "").strip()
+  if supplied_abrp_api_key:
+    push["abrpApiKey"] = supplied_abrp_api_key
+  supplied_abrp_user_token = str(update.get("abrpUserToken") or "").strip()
+  if supplied_abrp_user_token:
+    push["abrpUserToken"] = supplied_abrp_user_token
 
   tunnel_update = update.get("tunnel") if isinstance(update.get("tunnel"), dict) else {}
   tunnel = merged.setdefault("tunnel", {})
@@ -5247,8 +5266,12 @@ def setup(app):
       response = {"message": f"Parameter '{key}' updated successfully."}
       updated = {}
       if key in PANDA_FIRMWARE_TOGGLE_KEYS:
-        threading.Thread(target=_flash_panda_then_reboot, daemon=True).start()
-        response["message"] = f"Parameter '{key}' updated successfully. Panda flashing started; device will reboot when finished."
+        guarded_preinit_update = key == "EV9LongPreinitPanda"
+        target = _reboot_for_guarded_panda_update if guarded_preinit_update else _flash_panda_then_reboot
+        threading.Thread(target=target, daemon=True).start()
+        action = "Panda update will be applied safely during reboot" if guarded_preinit_update else \
+          "Panda flashing started; device will reboot when finished"
+        response["message"] = f"Parameter '{key}' updated successfully. {action}."
       if key == "RemapCancelToDistance" and params.get_bool("RemapCancelToDistance"):
         updated["RemapCancelToDistance"] = True
         response["message"] = "Remap Cancel Button enabled."

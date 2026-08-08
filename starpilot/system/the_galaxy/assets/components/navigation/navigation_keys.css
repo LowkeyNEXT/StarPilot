@@ -206,6 +206,19 @@
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+.navkeys-telemetry-mappings {
+  display: grid;
+  gap: var(--gap-xs);
+  margin-top: var(--margin-base);
+}
+
+.navkeys-telemetry-mapping-row {
+  align-items: center;
+  display: grid;
+  gap: var(--gap-sm);
+  grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr);
+}
+
 .navkeys-telemetry-section {
   border-top: var(--border-width-thin) solid var(--sidebar-border-color);
   margin-top: var(--margin-base);

@@ -37,8 +37,16 @@ export function NavKeys() {
     telemetryFetchHasToken: false,
     telemetryGeneratedFetchToken: "",
     telemetryPushEnabled: false,
+    telemetryPushProvider: "custom",
     telemetryPushUrl: "",
     telemetryPushToken: "",
+    telemetryUseCustomSchema: false,
+    telemetryFieldMappings: [],
+    telemetryAbrpApiKey: "",
+    telemetryAbrpUserToken: "",
+    telemetryAbrpHasApiKey: false,
+    telemetryAbrpHasUserToken: false,
+    telemetryAbrpCarModel: "",
     telemetryVehicleId: "",
     telemetryVehicleName: "",
     telemetryBatteryCapacity: "",
@@ -212,7 +220,18 @@ export function NavKeys() {
       state.telemetryFetchPort = Number(fetchConfig.port || 7766)
       state.telemetryFetchHasToken = !!fetchConfig.hasToken
       state.telemetryPushEnabled = !!push.enabled
+      state.telemetryPushProvider = push.provider || "custom"
       state.telemetryPushUrl = push.url || ""
+      state.telemetryUseCustomSchema = !!push.useCustomSchema
+      const storedMappings = new Map((push.fieldMappings || []).map(mapping => [mapping.source, mapping.target]))
+      state.telemetryFieldMappings = (push.availableFields || []).map(field => ({
+        ...field,
+        enabled: storedMappings.has(field.source),
+        target: storedMappings.get(field.source) || field.defaultTarget,
+      }))
+      state.telemetryAbrpHasApiKey = !!push.hasAbrpApiKey
+      state.telemetryAbrpHasUserToken = !!push.hasAbrpUserToken
+      state.telemetryAbrpCarModel = push.abrpCarModel || ""
       state.telemetryVehicleId = push.vehicleId || ""
       state.telemetryVehicleName = push.vehicleName || ""
       state.telemetryBatteryCapacity = push.maximumBatteryCapacityKilowattHours ?? ""
@@ -254,9 +273,17 @@ export function NavKeys() {
           bindAddress: state.telemetryMode === "local" ? "0.0.0.0" : "127.0.0.1",
         },
         pushToken: state.telemetryPushToken,
+        abrpApiKey: state.telemetryAbrpApiKey,
+        abrpUserToken: state.telemetryAbrpUserToken,
         push: {
           enabled: state.telemetryMode === "send" || state.telemetryPushEnabled,
+          provider: state.telemetryPushProvider,
           url: state.telemetryPushUrl,
+          useCustomSchema: state.telemetryUseCustomSchema,
+          fieldMappings: state.telemetryFieldMappings
+            .filter(mapping => mapping.enabled)
+            .map(mapping => ({ source: mapping.source, target: mapping.target })),
+          abrpCarModel: state.telemetryAbrpCarModel,
           vehicleId: state.telemetryVehicleId,
           vehicleName: state.telemetryVehicleName,
           maximumBatteryCapacityKilowattHours: state.telemetryBatteryCapacity || null,
@@ -285,6 +312,8 @@ export function NavKeys() {
         return showMessage("error", data.error || "Could not save EV Vehicle Telemetry...", "telemetry")
       }
       state.telemetryPushToken = ""
+      state.telemetryAbrpApiKey = ""
+      state.telemetryAbrpUserToken = ""
       state.telemetryTunnelToken = ""
       api.applyTelemetry(data)
       showMessage("message", rotateFetchToken ? "New fetch token generated." : "EV Vehicle Telemetry saved.", "telemetry")
@@ -608,6 +637,37 @@ export function NavKeys() {
     `
   }
 
+  function updateTelemetryMapping(index, update) {
+    state.telemetryFieldMappings = state.telemetryFieldMappings.map((mapping, mappingIndex) => (
+      mappingIndex === index ? { ...mapping, ...update } : mapping
+    ))
+  }
+
+  function renderTelemetryMappings() {
+    return html`
+      <div class="navkeys-telemetry-mappings">
+        ${() => state.telemetryFieldMappings.map((mapping, index) => html`
+          <div class="navkeys-telemetry-mapping-row">
+            <label class="navkeys-checkbox-row">
+              <input
+                type="checkbox"
+                :checked="${() => state.telemetryFieldMappings[index]?.enabled}"
+                @change="${(event) => updateTelemetryMapping(index, { enabled: !!event.target.checked })}" />
+              <span>${mapping.label}</span>
+            </label>
+            <input
+              class="navkeys-input"
+              type="text"
+              aria-label="${mapping.label} JSON path"
+              placeholder="${mapping.defaultTarget}"
+              value="${() => state.telemetryFieldMappings[index]?.target || ""}"
+              @input="${(event) => updateTelemetryMapping(index, { target: event.target.value })}" />
+          </div>
+        `)}
+      </div>
+    `
+  }
+
   function renderTelemetryConfig() {
     return html`
       <div class="navkeys-title">EV Vehicle Telemetry</div>
@@ -697,12 +757,27 @@ export function NavKeys() {
             :checked="${() => state.telemetryMode === "send" || state.telemetryPushEnabled}"
             @change="${(event) => state.telemetryPushEnabled = !!event.target.checked}"
             disabled="${() => state.telemetryMode === "send"}" />
-          <span>Send snapshots to a custom HTTPS backend</span>
+          <span>Send snapshots to an HTTPS destination</span>
         </label>
         ${() => state.telemetryMode === "send" || state.telemetryPushEnabled ? html`
           <div class="navkeys-telemetry-grid">
-            <div>${telemetryInput("Backend URL", "telemetryPushUrl", { placeholder: "https://telemetry.example/ingest" })}</div>
-            <div>${telemetryInput("Backend bearer token (leave blank to keep)", "telemetryPushToken", { secret: true, placeholder: "••••••••" })}</div>
+            <div>
+              <label class="navkeys-label">Destination type</label>
+              <select
+                class="navkeys-input navkeys-select"
+                value="${() => state.telemetryPushProvider}"
+                @change="${(event) => {
+                  state.telemetryPushProvider = event.target.value
+                  if (state.telemetryPushProvider === "abrp") {
+                    state.telemetryDrivingInterval = 5
+                    state.telemetryChargingInterval = 5
+                    state.telemetryParkedInterval = 30
+                  }
+                }}">
+                <option value="custom">Custom JSON API</option>
+                <option value="abrp">A Better Routeplanner (ABRP)</option>
+              </select>
+            </div>
             <div>${telemetryInput("Vehicle ID or VIN", "telemetryVehicleId")}</div>
             <div>${telemetryInput("Vehicle name", "telemetryVehicleName")}</div>
             <div>${telemetryInput("Battery capacity (kWh)", "telemetryBatteryCapacity", { type: "number" })}</div>
@@ -710,6 +785,49 @@ export function NavKeys() {
             <div>${telemetryInput("Charging interval (seconds)", "telemetryChargingInterval", { type: "number" })}</div>
             <div>${telemetryInput("Parked interval (seconds)", "telemetryParkedInterval", { type: "number" })}</div>
           </div>
+          ${() => state.telemetryPushProvider === "custom" ? html`
+            <div class="navkeys-telemetry-grid">
+              <div>${telemetryInput("Backend URL", "telemetryPushUrl", { placeholder: "https://telemetry.example/ingest" })}</div>
+              <div>${telemetryInput("Backend bearer token (leave blank to keep)", "telemetryPushToken", { secret: true, placeholder: "••••••••" })}</div>
+            </div>
+            <label class="navkeys-checkbox-row">
+              <input
+                type="checkbox"
+                :checked="${() => state.telemetryUseCustomSchema}"
+                @change="${(event) => state.telemetryUseCustomSchema = !!event.target.checked}" />
+              <span>Build a custom JSON schema from selected telemetry variables</span>
+            </label>
+            ${() => state.telemetryUseCustomSchema ? html`
+              <div class="navkeys-subtitle">
+                Select fields and enter their destination JSON paths. Dot paths create nested objects, for example <code>vehicle.battery.soc</code>.
+              </div>
+              ${renderTelemetryMappings()}
+            ` : ""}
+          ` : html`
+            <div class="navkeys-telemetry-grid">
+              <div>${telemetryInput("ABRP telemetry API key (leave blank to keep)", "telemetryAbrpApiKey", { secret: true, placeholder: state.telemetryAbrpHasApiKey ? "••••••••" : "Required" })}</div>
+              <div>${telemetryInput("ABRP user token (leave blank to keep)", "telemetryAbrpUserToken", { secret: true, placeholder: state.telemetryAbrpHasUserToken ? "••••••••" : "Required" })}</div>
+              <div>
+                <label class="navkeys-label">ABRP car model typecode</label>
+                <input
+                  autocomplete="off"
+                  class="navkeys-input"
+                  type="text"
+                  list="abrp-ev9-models"
+                  placeholder="kia:ev9:26:100:awd:nativenacs"
+                  value="${() => state.telemetryAbrpCarModel}"
+                  @input="${(event) => state.telemetryAbrpCarModel = event.target.value}" />
+                <datalist id="abrp-ev9-models">
+                  <option value="kia:ev9:26:100:awd:nativenacs"></option>
+                  <option value="kia:ev9:26:100:awd"></option>
+                  <option value="kia:ev9:23:100:awd"></option>
+                </datalist>
+              </div>
+            </div>
+            <div class="navkeys-subtitle">
+              ABRP receives UTC, SOC, speed, GPS, charging/parked state, range, capacity, heading, and elevation when available. Battery power is omitted until the vehicle port exposes a validated traction-battery power signal, so ABRP consumption calibration will be limited. A telemetry API key and user token are both required; see <a href="https://web.abetterrouteplanner.com/resources/api" target="_blank" rel="noopener noreferrer">ABRP API resources</a> and the <a href="https://documenter.getpostman.com/view/7396339/SWTK5a8w" target="_blank" rel="noopener noreferrer">Telemetry API specification</a>.
+            </div>
+          `}
         ` : ""}
       </div>
 

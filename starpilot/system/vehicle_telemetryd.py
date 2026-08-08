@@ -10,7 +10,7 @@ from openpilot.system.vehicle_telemetry.daemon import (  # noqa: F401
 )
 
 
-VEHICLE_TELEMETRY_SERVICES = ["starpilotCarState", "pandaStates", "carParams", "deviceState"]
+VEHICLE_TELEMETRY_SERVICES = ["starpilotCarState", "pandaStates", "carParams", "deviceState", "gpsLocationExternal"]
 
 
 def resolve_ev9_offroad_vehicle_telemetry(panda_states):
