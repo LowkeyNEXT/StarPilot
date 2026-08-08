@@ -65,12 +65,12 @@ class NavButton(Widget):
 
 
 class NetworkUI(Widget):
-  def __init__(self, wifi_manager: WifiManager):
+  def __init__(self, wifi_manager: WifiManager, advanced_items=None):
     super().__init__()
     self._wifi_manager = wifi_manager
     self._current_panel: PanelType = PanelType.WIFI
     self._wifi_panel = self._child(WifiManagerUI(wifi_manager))
-    self._advanced_panel = self._child(AdvancedNetworkSettings(wifi_manager))
+    self._advanced_panel = self._child(AdvancedNetworkSettings(wifi_manager, advanced_items))
     self._nav_button = self._child(NavButton(tr("Advanced")))
     self._nav_button.set_click_callback(self._cycle_panel)
 
@@ -104,7 +104,7 @@ class NetworkUI(Widget):
 
 
 class AdvancedNetworkSettings(Widget):
-  def __init__(self, wifi_manager: WifiManager):
+  def __init__(self, wifi_manager: WifiManager, extra_items=None):
     super().__init__()
     self._wifi_manager = wifi_manager
     self._wifi_manager.add_callbacks(networks_updated=self._on_network_updated)
@@ -142,6 +142,7 @@ class AdvancedNetworkSettings(Widget):
                                 action_item=self._wifi_metered_action)
 
     items: list[Widget] = [
+      *(extra_items or []),
       tethering_btn,
       tethering_password_btn,
       text_item(lambda: tr("IP Address"), lambda: self._wifi_manager.ipv4_address),

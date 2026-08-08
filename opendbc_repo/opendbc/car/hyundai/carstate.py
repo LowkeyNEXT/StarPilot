@@ -11,11 +11,13 @@ from opendbc.car.hyundai.ev9_bsm import decode_canfd_blinker_stalks, initialize_
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.hkg_telemetry import HKGEnergyTelemetry, get_can_ev_cluster_dte, \
                                                  get_canfd_ev_energy_telemetry, populate_vehicle_telemetry
-from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, CAR, DBC, Buttons, CarControllerParams, \
+from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, CAR, DBC, Buttons, CarControllerParams, \
                                        CANFD_ANGLE_LONGITUDINAL_CAR, CANFD_CORNER_RADAR_BSM_CAR, \
                                        hyundai_cancel_button_enables_cruise, hyundai_cancel_button_resume_requires_set, \
                                        ALT_BUS_LDA_BUTTON_CARS, ALT_BUS_LDA_BUTTON_SWL_STAT_CARS, \
-                                       CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_CHARGING_TELEMETRY_CAR, CANFD_EV_TELEMETRY_CAR
+                                       CAN_EV_CLUSTER_DTE_CAR, CANFD_EV_BATTERY_POWER_TELEMETRY_CAR, \
+                                       CANFD_EV_BATTERY_TEMPERATURE_TELEMETRY_CAR, CANFD_EV_CHARGING_TELEMETRY_CAR, \
+                                       CANFD_EV_TELEMETRY_CAR
 from opendbc.car.interfaces import CarStateBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -353,7 +355,8 @@ class CarState(CarStateBase):
     # cruise state
     no_scc = bool(self.CP.flags & HyundaiFlags.NON_SCC)
     if no_scc:
-      cruise_available_msg, cruise_available_sig, cruise_enabled_msg, cruise_enabled_sig, cruise_speed_msg, cruise_speed_sig = get_non_scc_cruise_signals(self.CP)
+      cruise_available_msg, cruise_available_sig, cruise_enabled_msg, cruise_enabled_sig, cruise_speed_msg, cruise_speed_sig = \
+        get_non_scc_cruise_signals(self.CP)
       ret.cruiseState.available = cp.vl[cruise_available_msg][cruise_available_sig] != 0
       ret.cruiseState.enabled = cp.vl[cruise_enabled_msg][cruise_enabled_sig] != 0
       ret.cruiseState.standstill = False
@@ -506,6 +509,8 @@ class CarState(CarStateBase):
         cp,
         require_redundant_soc=self.CP.carFingerprint in CANFD_EV_CHARGING_TELEMETRY_CAR,
         enable_charging=self.CP.carFingerprint in CANFD_EV_CHARGING_TELEMETRY_CAR,
+        enable_battery_power=self.CP.carFingerprint in CANFD_EV_BATTERY_POWER_TELEMETRY_CAR,
+        enable_battery_temperature=self.CP.carFingerprint in CANFD_EV_BATTERY_TEMPERATURE_TELEMETRY_CAR,
       )
       ret.fuelGauge = energy_telemetry.fuel_gauge
       ret.distanceToEmpty = energy_telemetry.distance_to_empty
@@ -720,6 +725,13 @@ class CarState(CarStateBase):
           ("EV_CHARGE_STATUS", 0),
           ("EV_ENERGY_STATUS", 0),
         ]
+      if CP.carFingerprint in CANFD_EV_BATTERY_POWER_TELEMETRY_CAR:
+        msgs += [
+          ("EV_BATTERY_VOLTAGE", 0),
+          ("EV_BATTERY_ENERGY", 0),
+        ]
+      if CP.carFingerprint in CANFD_EV_BATTERY_TEMPERATURE_TELEMETRY_CAR:
+        msgs.append(("EV_BATTERY_TEMPERATURES", 0))
     msgs.append(("STEERING_WHEEL_MEDIA_BUTTONS", 0))  # optional: absent or slower on some CAN-FD variants
     cam_msgs.append(("ADAS_0x380", 0))  # optional: dashboard stop-sign signal, only on ADAS-equipped HKG CANFD
     return {

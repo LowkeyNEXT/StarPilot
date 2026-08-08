@@ -29,6 +29,9 @@ The daemon currently consumes:
 - `charging`
 - `chargingPortConnected`
 - optional `chargingTimeRemaining` in seconds, exposed as whole `minutesToFull`
+- optional passive high-voltage battery current and voltage
+- optional passive minimum/maximum battery temperature
+- optional passive remaining usable battery energy in kWh
 - `vEgo` and `standstill` for upload cadence
 - `gearShifter` for an explicit parked state
 - a fresh `gpsLocationExternal` fix for latitude, longitude, elevation, and heading
@@ -37,13 +40,17 @@ At least one useful energy value is required. Default all-zero `CarState` values
 non-finite numbers, SOC outside `0...100%`, and DTE outside `0...900 km` are not
 published as valid telemetry.
 
-The shared CAN-FD path publishes route-validated SOC and range. EV9 additionally
-publishes plug and active-charging state only when its redundant sources agree. Its
-four inputs run at 10 Hz; samples older than 500 ms and redundant sources more than
-150 ms apart are invalid. The daemon additionally requires an advancing source
-monotonic timestamp no older than one second and an updated, alive, valid source
-message. Candidate 0x2FA charge-time bytes remain intentionally unassigned, so
-`minutesToFull` is omitted until another capture validates that signal.
+The shared CAN-FD path publishes route-validated SOC and range. Public Ioniq 5,
+Ioniq 6, EV6, Genesis GV60, and Genesis Electrified GV70 routes plus EV9 captures
+also validate passive pack current (`0x2FA`), pack voltage (`0x235`), and remaining
+usable energy (`0x25A`). Battery temperatures (`0x150`) remain EV9-only because
+that frame was absent from the other public routes. EV9 additionally publishes
+plug and active-charging state only when its redundant sources agree. Samples older
+than 500 ms and paired sources more than 150 ms apart are invalid. The daemon
+additionally requires an advancing source monotonic timestamp no older than one
+second and an updated, alive, valid source message. Candidate 0x2FA charge-time
+bytes remain intentionally unassigned, so `minutesToFull` is omitted until another
+capture validates that signal.
 
 ## Persistent cache
 
@@ -60,6 +67,20 @@ live cache to limit flash cost. Stale source frames never refresh the timestamp,
 the first fresh sample after a daemon restart refreshes even unchanged data. Older
 valid snapshots remain available as `cached` after the vehicle turns off or the
 daemon restarts.
+
+CommaOBD keeps SAE J1979 PIDs live-only, so a generic OBD client cannot mistake
+old SOC for a current vehicle reading. Its documented read-only virtual ECU
+(`7E6` request, `7EE` response) can serve the last validated snapshot for up to
+30 days. `22D100` reports flags and sample age, `22D101` SOC, `22D102` DTE,
+`22D103` speed, `22D104` minutes to full, and `22D105` the collection time as
+unsigned big-endian Unix seconds. A client can therefore label cached values
+with their exact collection time instead of presenting them as live.
+
+For ABRP compatibility, CommaOBD locally synthesizes the Hyundai/Kia BMS
+`22 0101` and `22 0105` responses from the same normalized snapshot. Phone
+diagnostic requests are never forwarded to Panda or vehicle CAN, and unavailable
+measurements remain unavailable rather than being filled with `0xFF` sentinel
+values that applications can misinterpret as real data.
 
 Before wall-clock synchronization, startup may retain an owner-only cache that passes
 all schema, type, range, and energy checks while deferring only the future-time test.

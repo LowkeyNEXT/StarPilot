@@ -253,4 +253,7 @@ procs += [
   PythonProcess("adj_spot_monitor_vision", "starpilot.system.adj_spot_monitor_vision", run_v_asm, nice=19),
 ]
 
+if device_type in ("tici", "tizi", "mici"):
+  procs.append(PythonProcess("obd_gatewayd", "starpilot.system.obd_gatewayd", always_run, nice=19))
+
 managed_processes = {p.name: p for p in procs}

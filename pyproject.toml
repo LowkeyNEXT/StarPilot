@@ -76,6 +76,7 @@ dependencies = [
   "raylib < 5.5.0.3", # TODO: unpin when they fix https://github.com/electronstudio/raylib-python-cffi/issues/186
   "qrcode",
   "mapbox-earcut",
+  "dbus-next",
   "jeepney",
 ]
 
@@ -109,7 +110,6 @@ dev = [
   "av",
   "azure-identity",
   "azure-storage-blob",
-  "dbus-next", # TODO: remove once we moved everything to jeepney
   "dictdiffer",
   "matplotlib",
   "parameterized >=0.8, <0.9",

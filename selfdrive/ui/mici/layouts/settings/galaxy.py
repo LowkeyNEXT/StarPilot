@@ -1,4 +1,6 @@
 import hashlib
+import json
+import math
 import secrets
 import string
 from pathlib import Path
@@ -8,12 +10,16 @@ import pyray as rl
 import qrcode
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigConfirmationDialog, BigInputDialog, BigMultiOptionDialog
 from openpilot.system.hardware import PC
 from openpilot.system.hardware.hw import Paths
+from openpilot.system.vehicle_telemetry.obd import DEFAULT_OBD_BLE_NAME, normalize_obd_ble_name
+from openpilot.system.vehicle_telemetry.obd_bluez import PAIRING_WINDOW_SECONDS
 from openpilot.system.vehicle_telemetry.setup import launch_vehicle_telemetry_setup
 from openpilot.system.ui.lib.application import FontWeight, gui_app
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.nav_widget import NavWidget
 
@@ -173,3 +179,163 @@ class TelemetrySetupBigButton(BigButton):
     except Exception as error:
       cloudlog.warning(f"Vehicle telemetry setup launch failed: {error}")
       gui_app.push_widget(BigDialog("", str(error)))
+
+
+class ObdBlePairingDialog(NavWidget):
+  def __init__(self):
+    super().__init__()
+    self._params = ui_state.params
+    self._remaining = PAIRING_WINDOW_SECONDS
+    self.set_back_callback(self._cancel_pairing)
+
+  @staticmethod
+  def _text(value):
+    if isinstance(value, bytes):
+      return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+  def _draw_centered(self, rect, text, y, size, color, weight=FontWeight.NORMAL):
+    font = gui_app.font(weight)
+    dimensions = measure_text_cached(font, text, size)
+    while size > 16 and dimensions.x > rect.width - 32:
+      size -= 2
+      dimensions = measure_text_cached(font, text, size)
+    rl.draw_text_ex(font, text, rl.Vector2(rect.x + (rect.width - dimensions.x) / 2, y), size, 0, color)
+
+  def _cancel_pairing(self):
+    self._params.put_bool("ObdBlePairingCancelRequested", True)
+
+  def _retry_pairing(self):
+    self._params.put_bool("ObdBlePairingCancelRequested", False)
+    self._params.put_bool("ObdBleEnabled", True)
+    self._params.put_bool("ObdBlePairingRequested", True)
+    self._remaining = PAIRING_WINDOW_SECONDS
+
+  def _handle_mouse_release(self, mouse_pos):
+    if self._remaining > 0:
+      return
+    if self._drag_start_pos is not None and mouse_pos.y - self._drag_start_pos.y > 40:
+      return
+    self._retry_pairing()
+
+  @staticmethod
+  def _draw_progress_border(rect, progress):
+    thickness = 8.0
+    inset = thickness / 2 + 2
+    left = rect.x + inset
+    top = rect.y + inset
+    right = rect.x + rect.width - inset
+    bottom = rect.y + rect.height - inset
+    width = right - left
+    height = bottom - top
+    remaining = max(0.0, min(1.0, progress)) * (2 * width + 2 * height)
+    color = rl.Color(180, 150, 230, 255)
+    segments = (
+      (rl.Vector2(left, top), rl.Vector2(right, top), width),
+      (rl.Vector2(right, top), rl.Vector2(right, bottom), height),
+      (rl.Vector2(right, bottom), rl.Vector2(left, bottom), width),
+      (rl.Vector2(left, bottom), rl.Vector2(left, top), height),
+    )
+    for start, end, length in segments:
+      if remaining <= 0:
+        break
+      drawn = min(remaining, length)
+      ratio = drawn / length
+      endpoint = rl.Vector2(start.x + (end.x - start.x) * ratio, start.y + (end.y - start.y) * ratio)
+      rl.draw_line_ex(start, endpoint, thickness, color)
+      remaining -= drawn
+
+  def show_event(self):
+    super().show_event()
+    device.set_override_interactive_timeout(PAIRING_WINDOW_SECONDS + 30)
+
+  def hide_event(self):
+    super().hide_event()
+    device.set_override_interactive_timeout(None)
+
+  def _render(self, rect):
+    rl.clear_background(rl.BLACK)
+    remaining = 0
+    status = {}
+    try:
+      raw_status = self._params.get("ObdBleStatus")
+      status = raw_status if isinstance(raw_status, dict) else json.loads(self._text(raw_status) or "{}")
+      remaining = int(status.get("pairingRemainingSeconds") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError):
+      pass
+    self._remaining = max(0, remaining)
+
+    local_name = normalize_obd_ble_name(self._params.get("ObdBleName") or DEFAULT_OBD_BLE_NAME)
+    passkey = self._text(self._params.get("ObdBlePasskey")).strip()
+    self._draw_centered(rect, local_name, rect.y + 22, 30, rl.WHITE, FontWeight.BOLD)
+    if status.get("state") == "paired":
+      pulse = int(205 + 50 * (0.5 + 0.5 * math.sin(rl.get_time() * 6)))
+      self._draw_centered(rect, "BLUETOOTH", rect.y + 55, 19, rl.GRAY, FontWeight.BOLD)
+      self._draw_centered(rect, "PAIRED", rect.y + 84, 72, rl.Color(180, 150, pulse, 255), FontWeight.BOLD)
+      self._draw_centered(rect, "READY TO USE", rect.y + 177, 24, rl.WHITE, FontWeight.BOLD)
+    elif self._remaining == 0:
+      self._draw_centered(rect, "PAIRING WINDOW CLOSED", rect.y + 58, 19, rl.GRAY, FontWeight.BOLD)
+      self._draw_centered(rect, "TAP TO", rect.y + 84, 50, rl.Color(180, 150, 230, 255), FontWeight.BOLD)
+      self._draw_centered(rect, "PAIR AGAIN", rect.y + 137, 50, rl.WHITE, FontWeight.BOLD)
+    elif len(passkey) == 6 and passkey.isdigit():
+      self._draw_centered(rect, "PAIRING CODE", rect.y + 55, 19, rl.GRAY, FontWeight.BOLD)
+      self._draw_centered(rect, f"{passkey[:3]} {passkey[3:]}", rect.y + 80, 82, rl.Color(180, 150, 230, 255), FontWeight.BOLD)
+      self._draw_centered(rect, "ENTER THIS CODE ON YOUR IPHONE", rect.y + 177, 24, rl.WHITE, FontWeight.BOLD)
+    else:
+      self._draw_centered(rect, "PAIRING", rect.y + 55, 19, rl.GRAY, FontWeight.BOLD)
+      self._draw_centered(rect, "WAITING", rect.y + 84, 72, rl.Color(180, 150, 230, 255), FontWeight.BOLD)
+      self._draw_centered(rect, "SELECT THIS DEVICE IN YOUR OBD APP", rect.y + 177, 23, rl.WHITE, FontWeight.BOLD)
+
+    progress = 1.0 if status.get("state") == "paired" else self._remaining / PAIRING_WINDOW_SECONDS
+    self._draw_progress_border(rect, progress)
+
+
+class ObdBleBigButton(BigButton):
+  def __init__(self):
+    super().__init__("pairing & devices", "", gui_app.texture("icons_mici/settings/network/bluetooth.png", 64, 64))
+    self._params = ui_state.params
+
+  def _start_pairing(self):
+    self._params.put_bool("ObdBlePairingCancelRequested", False)
+    self._params.put_bool("ObdBleEnabled", True)
+    self._params.put_bool("ObdBlePairingRequested", True)
+    gui_app.push_widget(ObdBlePairingDialog())
+
+  def _forget(self):
+    self._params.put_bool("ObdBleForgetDevicesRequested", True)
+
+  def _rename(self, value):
+    self._params.put("ObdBleName", normalize_obd_ble_name(value))
+
+  def _handle_mouse_release(self, mouse_pos):
+    super()._handle_mouse_release(mouse_pos)
+    if not self._params.get_bool("ObdBleEnabled"):
+      self._start_pairing()
+      return
+
+    holder = {}
+
+    def on_confirm():
+      selection = holder["dialog"].get_selected_option()
+      if selection == "pair new phone":
+        self._start_pairing()
+      elif selection == "rename adapter":
+        local_name = normalize_obd_ble_name(self._params.get("ObdBleName") or DEFAULT_OBD_BLE_NAME)
+        gui_app.push_widget(BigInputDialog("Bluetooth OBD name...", local_name, minimum_length=1, confirm_callback=self._rename))
+      elif selection == "forget phones":
+        gui_app.push_widget(BigConfirmationDialog(
+          "slide to\nforget phones",
+          gui_app.texture("icons_mici/settings/device/uninstall.png", 64, 64),
+          self._forget,
+          red=True,
+        ))
+    dialog = BigMultiOptionDialog(
+      options=["pair new phone", "rename adapter", "forget phones"],
+      default="pair new phone",
+      right_btn_callback=on_confirm,
+    )
+    holder["dialog"] = dialog
+    gui_app.push_widget(dialog)
+
+  def _update_state(self):
+    self.set_value("manage")

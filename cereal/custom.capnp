@@ -111,6 +111,14 @@ struct StarPilotCarState @0xf35cc4560bbf6ec2 {
   vehicleTelemetryDteValid @40 :Bool;
   vehicleTelemetryChargingValid @41 :Bool;
   vehicleTelemetryChargePortValid @42 :Bool;
+  batteryCurrentAmps @43 :Float32;
+  batteryVoltageVolts @44 :Float32;
+  minimumBatteryTemperatureCelsius @45 :Float32;
+  maximumBatteryTemperatureCelsius @46 :Float32;
+  remainingEnergyKilowattHours @47 :Float32;
+  vehicleTelemetryBatteryPowerValid @48 :Bool;
+  vehicleTelemetryBatteryTemperatureValid @49 :Bool;
+  vehicleTelemetryRemainingEnergyValid @50 :Bool;
 }
 
 struct StarPilotDeviceState @0xda96579883444c35 {

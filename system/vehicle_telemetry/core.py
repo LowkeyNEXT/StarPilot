@@ -53,6 +53,11 @@ _TELEMETRY_FIELDS = (
   "isCharging",
   "isPluggedIn",
   "minutesToFull",
+  "batteryCurrentAmps",
+  "batteryVoltageVolts",
+  "minimumBatteryTemperatureCelsius",
+  "maximumBatteryTemperatureCelsius",
+  "remainingEnergyKilowattHours",
   "speedMetersPerSecond",
   "standstill",
   "gearShifter",
@@ -80,6 +85,13 @@ _TELEMETRY_LOCATION_FIELDS = {
   "elevationMeters": (-1000.0, 15000.0),
   "headingDegrees": (0.0, 360.0),
 }
+_TELEMETRY_NUMBER_RANGES = {
+  "batteryCurrentAmps": (-1000.0, 1000.0),
+  "batteryVoltageVolts": (400.0, 1000.0),
+  "minimumBatteryTemperatureCelsius": (-40.0, 100.0),
+  "maximumBatteryTemperatureCelsius": (-40.0, 100.0),
+  "remainingEnergyKilowattHours": (0.001, 120.0),
+}
 _VALID_GEAR_SHIFTERS = {"unknown", "park", "drive", "neutral", "reverse", "sport", "low", "eco", "manumatic", "brake"}
 _VIN_PATTERN = re.compile(r"[A-HJ-NPR-Z0-9]{17}", re.IGNORECASE)
 _JSON_PATH_SEGMENT_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
@@ -100,6 +112,11 @@ TELEMETRY_PUSH_FIELD_DEFINITIONS = (
   ("isCharging", "Charging", "telemetry.isCharging"),
   ("isPluggedIn", "Charge port connected", "telemetry.isPluggedIn"),
   ("minutesToFull", "Minutes to full", "telemetry.minutesToFull"),
+  ("batteryCurrentAmps", "Battery current (A)", "telemetry.batteryCurrentAmps"),
+  ("batteryVoltageVolts", "Battery voltage (V)", "telemetry.batteryVoltageVolts"),
+  ("minimumBatteryTemperatureCelsius", "Minimum battery temperature (C)", "telemetry.minimumBatteryTemperatureCelsius"),
+  ("maximumBatteryTemperatureCelsius", "Maximum battery temperature (C)", "telemetry.maximumBatteryTemperatureCelsius"),
+  ("remainingEnergyKilowattHours", "Remaining energy (kWh)", "telemetry.remainingEnergyKilowattHours"),
   ("speedMetersPerSecond", "Speed (m/s)", "telemetry.speedMetersPerSecond"),
   ("speedKilometersPerHour", "Speed (km/h)", "telemetry.speedKilometersPerHour"),
   ("standstill", "Standstill", "telemetry.standstill"),
@@ -285,6 +302,19 @@ def _validated_vehicle_telemetry_snapshot(snapshot, now=None, *, allow_future_ti
   if ("latitude" in sanitized) != ("longitude" in sanitized):
     return None
   if ("elevationMeters" in sanitized or "headingDegrees" in sanitized) and "latitude" not in sanitized:
+    return None
+
+  for field, (minimum, maximum) in _TELEMETRY_NUMBER_RANGES.items():
+    if field not in snapshot:
+      continue
+    value = _telemetry_number(snapshot[field])
+    if value is None or not minimum <= value <= maximum:
+      return None
+    sanitized[field] = value
+
+  minimum_temperature = sanitized.get("minimumBatteryTemperatureCelsius")
+  maximum_temperature = sanitized.get("maximumBatteryTemperatureCelsius")
+  if minimum_temperature is not None and maximum_temperature is not None and minimum_temperature > maximum_temperature:
     return None
 
   for field in _TELEMETRY_BOOLEAN_FIELDS:
@@ -723,6 +753,9 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
   dte_valid = bool(getattr(car_state, "vehicleTelemetryDteValid", True))
   charging_valid = bool(getattr(car_state, "vehicleTelemetryChargingValid", True))
   charge_port_valid = bool(getattr(car_state, "vehicleTelemetryChargePortValid", True))
+  battery_power_valid = bool(getattr(car_state, "vehicleTelemetryBatteryPowerValid", False))
+  battery_temperature_valid = bool(getattr(car_state, "vehicleTelemetryBatteryTemperatureValid", False))
+  remaining_energy_valid = bool(getattr(car_state, "vehicleTelemetryRemainingEnergyValid", False))
   has_soc = soc_valid and math.isfinite(fuel_gauge) and 0.0 <= fuel_gauge <= 1.0
   has_dte = dte_valid and math.isfinite(distance_to_empty_meters) and 0.0 < distance_to_empty_meters < 900000.0
   has_charging_time = math.isfinite(charging_time_remaining) and 0.0 < charging_time_remaining < 7 * 24 * 60 * 60
@@ -748,6 +781,17 @@ def build_vehicle_telemetry_snapshot(car_state, timestamp=None, vehicle_fingerpr
     "isCharging": bool(getattr(car_state, "charging", False)) if charging_valid else None,
     "isPluggedIn": bool(getattr(car_state, "chargingPortConnected", False)) if charge_port_valid else None,
     "minutesToFull": int(round(charging_time_remaining / 60.0)) if has_charging_time else None,
+    "batteryCurrentAmps": round(_finite_float(getattr(car_state, "batteryCurrentAmps", None)), 1) if battery_power_valid else None,
+    "batteryVoltageVolts": round(_finite_float(getattr(car_state, "batteryVoltageVolts", None)), 1) if battery_power_valid else None,
+    "minimumBatteryTemperatureCelsius": (
+      round(_finite_float(getattr(car_state, "minimumBatteryTemperatureCelsius", None)), 1) if battery_temperature_valid else None
+    ),
+    "maximumBatteryTemperatureCelsius": (
+      round(_finite_float(getattr(car_state, "maximumBatteryTemperatureCelsius", None)), 1) if battery_temperature_valid else None
+    ),
+    "remainingEnergyKilowattHours": (
+      round(_finite_float(getattr(car_state, "remainingEnergyKilowattHours", None)), 3) if remaining_energy_valid else None
+    ),
     "speedMetersPerSecond": round(max(0.0, _finite_float(getattr(car_state, "vEgo", 0.0), 0.0)), 3),
     "standstill": bool(getattr(car_state, "standstill", False)),
     "gearShifter": gear_shifter or None,

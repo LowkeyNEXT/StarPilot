@@ -3,8 +3,11 @@
 #include <algorithm>
 
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QScrollBar>
 #include <QStyle>
+#include <QTimer>
 
 #include "selfdrive/ui/qt/qt_window.h"
 #include "selfdrive/ui/qt/util.h"
@@ -12,6 +15,80 @@
 #include "selfdrive/ui/qt/widgets/scrollview.h"
 
 static const int ICON_WIDTH = 49;
+
+static QString obdBleName(Params &params) {
+  QString name = QString::fromStdString(params.get("ObdBleName")).simplified();
+  if (name.isEmpty() || name.compare("StarPilot OBD", Qt::CaseInsensitive) == 0) {
+    name = "CommaOBD";
+  }
+  while (name.toUtf8().size() > 24) {
+    name.chop(1);
+  }
+  return name;
+}
+
+class ObdBlePairingPopup : public DialogBase {
+public:
+  explicit ObdBlePairingPopup(QWidget *parent) : DialogBase(parent) {
+    setStyleSheet("ObdBlePairingPopup { background-color: #1a1a30; }");
+    auto *layout = new QVBoxLayout(this);
+    layout->setAlignment(Qt::AlignCenter);
+    layout->setSpacing(35);
+    layout->setContentsMargins(60, 60, 60, 60);
+
+    auto *title = new QLabel(tr("Secure Bluetooth pairing"), this);
+    title->setStyleSheet("font-size: 52px; font-weight: bold; color: white;");
+    title->setAlignment(Qt::AlignCenter);
+    layout->addWidget(title);
+
+    auto *instructions = new QLabel(
+      tr("Select %1 in your OBD app, then enter the passkey shown here in the phone's system pairing dialog.").arg(obdBleName(params)), this);
+    instructions->setStyleSheet("font-size: 30px; color: #d0d0df;");
+    instructions->setAlignment(Qt::AlignCenter);
+    instructions->setWordWrap(true);
+    layout->addWidget(instructions);
+
+    passkey_label = new QLabel(tr("Waiting for the phone…"), this);
+    passkey_label->setStyleSheet("font-size: 112px; font-weight: bold; color: #b496e6;");
+    passkey_label->setAlignment(Qt::AlignCenter);
+    layout->addWidget(passkey_label, 1);
+
+    status_label = new QLabel(this);
+    status_label->setStyleSheet("font-size: 28px; color: #8a8aa0;");
+    status_label->setAlignment(Qt::AlignCenter);
+    layout->addWidget(status_label);
+
+    auto *hint = new QLabel(tr("Tap anywhere to cancel"), this);
+    hint->setStyleSheet("font-size: 28px; color: #7e7e98;");
+    hint->setAlignment(Qt::AlignCenter);
+    layout->addWidget(hint);
+
+    auto *timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this]() { refresh(); });
+    timer->start(250);
+    refresh();
+  }
+
+protected:
+  void mousePressEvent(QMouseEvent *event) override {
+    params.putBool("ObdBlePairingCancelRequested", true);
+    reject();
+    DialogBase::mousePressEvent(event);
+  }
+
+private:
+  void refresh() {
+    const QString passkey = QString::fromStdString(params.get("ObdBlePasskey")).trimmed();
+    passkey_label->setText(passkey.size() == 6 ? passkey : tr("Waiting for the phone…"));
+
+    const QJsonObject status = QJsonDocument::fromJson(QByteArray::fromStdString(params.get("ObdBleStatus"))).object();
+    status_label->setText(tr("Pairing window: %1 seconds").arg(status.value("pairingRemainingSeconds").toInt()));
+  }
+
+  Params params;
+  QLabel *passkey_label;
+  QLabel *status_label;
+};
 
 // Networking functions
 
@@ -130,6 +207,53 @@ AdvancedNetworking::AdvancedNetworking(QWidget* parent, WifiManager* wifi): QWid
   main_layout->addWidget(back, 0, Qt::AlignLeft);
 
   ListWidget *list = new ListWidget(this);
+  // Bluetooth
+  const bool bluetoothEnabled = params.getBool("ObdBleEnabled");
+  auto *bluetoothToggle = new ToggleControl(
+    tr("Bluetooth"),
+    tr("Secure ELM327-compatible BLE telemetry. Pairing requires physical access to the comma."),
+    "", bluetoothEnabled);
+  auto *bluetoothSettingsButton = new ButtonControl(tr("Pairing & Devices"), tr("MANAGE"));
+  bluetoothSettingsButton->setVisible(bluetoothEnabled);
+
+  auto startBluetoothPairing = [=]() {
+    params.putBool("ObdBlePairingCancelRequested", false);
+    params.putBool("ObdBleEnabled", true);
+    params.putBool("ObdBlePairingRequested", true);
+    bluetoothSettingsButton->setVisible(true);
+    ObdBlePairingPopup popup(this);
+    popup.exec();
+  };
+  QObject::connect(bluetoothToggle, &ToggleControl::toggleFlipped, [=](bool enabled) {
+    if (enabled) {
+      startBluetoothPairing();
+    } else {
+      params.putBool("ObdBlePairingCancelRequested", true);
+      params.putBool("ObdBleEnabled", false);
+      bluetoothSettingsButton->setVisible(false);
+    }
+  });
+  connect(bluetoothSettingsButton, &ButtonControl::clicked, [=]() {
+    const QString pair = tr("Pair new device");
+    const QString rename = tr("Rename adapter");
+    const QString forget = tr("Forget bonded devices");
+    const QString selection = MultiOptionDialog::getSelection(tr("Bluetooth"), {pair, rename, forget}, pair, this);
+    if (selection == pair) {
+      startBluetoothPairing();
+    } else if (selection == rename) {
+      QString name = InputDialog::getText(
+        tr("Bluetooth name"), this, tr("Shown to nearby phones and OBD apps."), false, 1, obdBleName(params), 24).simplified();
+      if (!name.isEmpty()) {
+        params.put("ObdBleName", name.toStdString());
+      }
+    } else if (selection == forget && ConfirmationDialog::confirm(
+                 tr("Forget all devices bonded to %1?").arg(obdBleName(params)), tr("Forget"), this)) {
+      params.putBool("ObdBleForgetDevicesRequested", true);
+    }
+  });
+  list->addItem(bluetoothToggle);
+  list->addItem(bluetoothSettingsButton);
+
   // Enable tethering layout
   std::vector<QString> tetheringSelection{tr("Off"), tr("Always"), tr("Only Onroad"), tr("Until Reboot")};
   tetheringToggle = new ButtonParamControl("TetheringEnabled", tr("Enable Tethering"),

@@ -18,6 +18,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              direct_angle_request_allowed, get_angle_smoothing_alpha, \
                                              should_use_ev6_gt_line_stop_direct_tracking
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state
+from opendbc.car.hyundai.hkg_telemetry import get_canfd_ev_energy_telemetry
 from opendbc.car.hyundai.interface import CarInterface, KIA_EV9_ACCEL_MAX
 from opendbc.car.hyundai import ev9_canfd, hyundaican, hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
@@ -28,6 +29,7 @@ from opendbc.car.hyundai.values import CAMERA_SCC_CAR, CANFD_CAR, CAN_GEARS, CAR
                                          UNSUPPORTED_LONGITUDINAL_CAR, PLATFORM_CODE_ECUS, HYUNDAI_VERSION_REQUEST_LONG, \
                                          LEGACY_LONGITUDINAL_CAR, DBC, HyundaiFlags, get_platform_codes, HyundaiSafetyFlags, \
                                          HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, Buttons, CarControllerParams, kia_ev6_gt_line_longitudinal_tuning
+from opendbc.car.hyundai.values import CANFD_EV_BATTERY_POWER_TELEMETRY_CAR, CANFD_EV_BATTERY_TEMPERATURE_TELEMETRY_CAR
 
 LongCtrlState = CarControl.Actuators.LongControlState
 from opendbc.car.hyundai.fingerprints import FW_VERSIONS
@@ -118,6 +120,57 @@ ANGLE_STEERING_CARS = (
 
 def get_test_toggles() -> SimpleNamespace:
   return SimpleNamespace(always_on_lateral_lkas=False, force_torque_controller=False, nnff=False, nnff_lite=False)
+
+
+class TestHKGBatteryTelemetry:
+  def test_route_validated_platform_allowlists(self):
+    assert CAR.KIA_EV9 in CANFD_EV_BATTERY_POWER_TELEMETRY_CAR
+    assert CANFD_EV_BATTERY_TEMPERATURE_TELEMETRY_CAR == {CAR.KIA_EV9}
+
+  def test_ev9_passive_battery_signals_require_fresh_samples(self):
+    dbc = DBC[CAR.KIA_EV9][Bus.pt]
+    packer = CANPacker(dbc)
+    parser = CANParser(dbc, [
+      ("EV_ENERGY_STATUS_REDUNDANT", 0),
+      ("EV_BATTERY_VOLTAGE", 0),
+      ("EV_BATTERY_ENERGY", 0),
+      ("EV_BATTERY_TEMPERATURES", 0),
+      ("EV_RANGE_STATUS", 0),
+    ], 1)
+    parser.update([(1_000_000_000, [
+      packer.make_can_msg("EV_ENERGY_STATUS_REDUNDANT", 1, {
+        "BATTERY_SOC_REDUNDANT": 75.0,
+        "BATTERY_CURRENT": -42.3,
+      }),
+      packer.make_can_msg("EV_BATTERY_VOLTAGE", 1, {"BATTERY_VOLTAGE": 728.4}),
+      packer.make_can_msg("EV_BATTERY_ENERGY", 1, {"REMAINING_ENERGY": 72.804}),
+      packer.make_can_msg("EV_BATTERY_TEMPERATURES", 1, {
+        "BATTERY_MODULE_TEMPERATURE_1": 21,
+        "BATTERY_MODULE_TEMPERATURE_2": 22,
+        "BATTERY_MODULE_TEMPERATURE_3": 24,
+        "BATTERY_MODULE_TEMPERATURE_4": 23,
+      }),
+      packer.make_can_msg("EV_RANGE_STATUS", 1, {"DISTANCE_TO_EMPTY": 321}),
+    ])])
+
+    telemetry = get_canfd_ev_energy_telemetry(
+      parser, enable_battery_power=True, enable_battery_temperature=True,
+    )
+    assert telemetry.battery_power_valid
+    assert telemetry.battery_temperature_valid
+    assert telemetry.remaining_energy_valid
+    assert telemetry.battery_current_amps == pytest.approx(-42.3)
+    assert telemetry.battery_voltage_volts == pytest.approx(728.4)
+    assert telemetry.minimum_battery_temperature_celsius == 21
+    assert telemetry.maximum_battery_temperature_celsius == 24
+    assert telemetry.remaining_energy_kwh == pytest.approx(72.804)
+
+    stale = get_canfd_ev_energy_telemetry(
+      parser, enable_battery_power=True, enable_battery_temperature=True, now_nanos=2_000_000_000,
+    )
+    assert not stale.battery_power_valid
+    assert not stale.battery_temperature_valid
+    assert not stale.remaining_energy_valid
 
 
 class TestHyundaiFingerprint:
@@ -2859,11 +2912,12 @@ class TestHyundaiFingerprint:
     captured = {}
 
     def capture_status_messages(*args, **kwargs):
-      captured["steering_available"] = kwargs["steering_available"]
-      captured["steering_active"] = kwargs["steering_active"]
+      captured["steering_available"] = kwargs["steering_available"] if kwargs else args[9]
+      captured["steering_active"] = kwargs["steering_active"] if kwargs else args[10]
       return []
 
     monkeypatch.setattr(ev9_canfd, "create_angle_long_status_messages", capture_status_messages)
+    monkeypatch.setattr(hyundaicanfd, "create_ccnc_angle_long_status_messages", capture_status_messages)
     monkeypatch.setattr(
       "opendbc.car.hyundai.carcontroller.get_ev9_blindspot_warning_inputs",
       lambda *_args: SimpleNamespace(left_detected=False, right_detected=False,

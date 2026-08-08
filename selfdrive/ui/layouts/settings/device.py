@@ -82,9 +82,11 @@ class GalaxyQRDialog(Widget):
   def _handle_mouse_release(self, _):
     gui_app.pop_widget()
 
-  def _render_centered_text(self, rect: rl.Rectangle, text: str, y: float, font_size: int, color: rl.Color, font_weight: FontWeight = FontWeight.NORMAL) -> None:
+  def _render_centered_text(
+    self, rect: rl.Rectangle, text: str, y: float, font_size: int, color: rl.Color, font_weight: FontWeight = FontWeight.NORMAL,
+  ) -> None:
     font = gui_app.font(font_weight)
-    size = rl.measure_text_ex(font, text, font_size, 0)
+    size = measure_text_cached(font, text, font_size)
     rl.draw_text_ex(font, text, rl.Vector2(rect.x + (rect.width - size.x) / 2, y), font_size, 0, color)
 
   def _render(self, rect: rl.Rectangle):
@@ -216,7 +218,6 @@ class DeviceLayout(Widget):
       callback=self._start_telemetry_setup,
       enabled=ui_state.is_offroad,
     )
-
     self._reset_calib_btn = button_item(lambda: tr("Reset Calibration"), lambda: tr("RESET"), lambda: tr(DESCRIPTIONS['reset_calibration']),
                                         callback=self._reset_calibration_prompt)
     self._reset_calib_btn.set_description_opened_callback(self._update_calib_description)

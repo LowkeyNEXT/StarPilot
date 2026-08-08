@@ -15,16 +15,26 @@ class HKGEnergyTelemetry:
   dte_valid: bool = False
   charging_valid: bool = False
   charge_port_valid: bool = False
+  battery_power_valid: bool = False
+  battery_temperature_valid: bool = False
+  remaining_energy_valid: bool = False
   fuel_gauge: float = 0.0
   distance_to_empty: float = 0.0
   charging: bool = False
   charging_port_connected: bool = False
   charging_time_remaining: float = 0.0
+  battery_current_amps: float = 0.0
+  battery_voltage_volts: float = 0.0
+  minimum_battery_temperature_celsius: float = 0.0
+  maximum_battery_temperature_celsius: float = 0.0
+  remaining_energy_kwh: float = 0.0
   source_mono_time: int = 0
 
 
 def get_canfd_ev_energy_telemetry(cp: CANParser, *, require_redundant_soc: bool = False,
                                   enable_charging: bool = False,
+                                  enable_battery_power: bool = False,
+                                  enable_battery_temperature: bool = False,
                                   now_nanos: int | None = None) -> HKGEnergyTelemetry:
   if now_nanos is None:
     now_nanos = int(cp._last_update_nanos)
@@ -83,7 +93,53 @@ def get_canfd_ev_energy_telemetry(cp: CANParser, *, require_redundant_soc: bool 
     if charging_valid:
       charging_timestamps += [primary_charging_ts, redundant_charging_ts]
 
-  source_timestamps = [*soc_timestamps, *charging_timestamps]
+  battery_power_valid = False
+  battery_temperature_valid = False
+  remaining_energy_valid = False
+  battery_current_amps = 0.0
+  battery_voltage_volts = 0.0
+  minimum_battery_temperature_celsius = 0.0
+  maximum_battery_temperature_celsius = 0.0
+  remaining_energy_kwh = 0.0
+  battery_timestamps = []
+  if enable_battery_power:
+    battery_current_amps = cp.vl["EV_ENERGY_STATUS_REDUNDANT"]["BATTERY_CURRENT"]
+    battery_voltage_volts = cp.vl["EV_BATTERY_VOLTAGE"]["BATTERY_VOLTAGE"]
+    remaining_energy_kwh = cp.vl["EV_BATTERY_ENERGY"]["REMAINING_ENERGY"]
+    current_ts = cp.ts_nanos["EV_ENERGY_STATUS_REDUNDANT"]["BATTERY_CURRENT"]
+    voltage_ts = cp.ts_nanos["EV_BATTERY_VOLTAGE"]["BATTERY_VOLTAGE"]
+    remaining_energy_ts = cp.ts_nanos["EV_BATTERY_ENERGY"]["REMAINING_ENERGY"]
+    battery_power_valid = (
+      fresh(current_ts) and fresh(voltage_ts) and aligned(current_ts, voltage_ts) and
+      -1000.0 <= battery_current_amps <= 1000.0 and
+      400.0 <= battery_voltage_volts <= 1000.0
+    )
+    remaining_energy_valid = fresh(remaining_energy_ts) and 0.0 < remaining_energy_kwh < 120.0
+    if battery_power_valid:
+      battery_timestamps += [current_ts, voltage_ts]
+    if remaining_energy_valid:
+      battery_timestamps.append(remaining_energy_ts)
+
+  if enable_battery_temperature:
+    temperatures = [
+      cp.vl["EV_BATTERY_TEMPERATURES"][f"BATTERY_MODULE_TEMPERATURE_{index}"]
+      for index in range(1, 5)
+    ]
+    temperature_timestamps = [
+      cp.ts_nanos["EV_BATTERY_TEMPERATURES"][f"BATTERY_MODULE_TEMPERATURE_{index}"]
+      for index in range(1, 5)
+    ]
+    battery_temperature_valid = (
+      all(fresh(timestamp) for timestamp in temperature_timestamps) and
+      max(temperature_timestamps) - min(temperature_timestamps) <= ENERGY_MAX_SOURCE_SKEW_NS and
+      all(-40.0 <= temperature <= 100.0 for temperature in temperatures)
+    )
+    if battery_temperature_valid:
+      minimum_battery_temperature_celsius = min(temperatures)
+      maximum_battery_temperature_celsius = max(temperatures)
+      battery_timestamps += temperature_timestamps
+
+  source_timestamps = [*soc_timestamps, *charging_timestamps, *battery_timestamps]
   if dte_valid:
     source_timestamps.append(dte_ts)
 
@@ -93,10 +149,18 @@ def get_canfd_ev_energy_telemetry(cp: CANParser, *, require_redundant_soc: bool 
     dte_valid=dte_valid,
     charging_valid=charging_valid,
     charge_port_valid=charge_port_valid,
+    battery_power_valid=battery_power_valid,
+    battery_temperature_valid=battery_temperature_valid,
+    remaining_energy_valid=remaining_energy_valid,
     fuel_gauge=fuel_gauge,
     distance_to_empty=distance_to_empty,
     charging=charging,
     charging_port_connected=charging_port_connected,
+    battery_current_amps=battery_current_amps,
+    battery_voltage_volts=battery_voltage_volts,
+    minimum_battery_temperature_celsius=minimum_battery_temperature_celsius,
+    maximum_battery_temperature_celsius=maximum_battery_temperature_celsius,
+    remaining_energy_kwh=remaining_energy_kwh,
     source_mono_time=max(source_timestamps, default=0),
   )
 
@@ -120,5 +184,13 @@ def populate_vehicle_telemetry(fp_ret, ret: structs.CarState, telemetry: HKGEner
   fp_ret.vehicleTelemetryDteValid = telemetry.dte_valid
   fp_ret.vehicleTelemetryChargingValid = telemetry.charging_valid
   fp_ret.vehicleTelemetryChargePortValid = telemetry.charge_port_valid
+  fp_ret.vehicleTelemetryBatteryPowerValid = telemetry.battery_power_valid
+  fp_ret.vehicleTelemetryBatteryTemperatureValid = telemetry.battery_temperature_valid
+  fp_ret.vehicleTelemetryRemainingEnergyValid = telemetry.remaining_energy_valid
+  fp_ret.batteryCurrentAmps = telemetry.battery_current_amps
+  fp_ret.batteryVoltageVolts = telemetry.battery_voltage_volts
+  fp_ret.minimumBatteryTemperatureCelsius = telemetry.minimum_battery_temperature_celsius
+  fp_ret.maximumBatteryTemperatureCelsius = telemetry.maximum_battery_temperature_celsius
+  fp_ret.remainingEnergyKilowattHours = telemetry.remaining_energy_kwh
   fp_ret.vEgo = ret.vEgo
   fp_ret.standstill = ret.standstill

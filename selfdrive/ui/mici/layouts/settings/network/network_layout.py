@@ -1,6 +1,7 @@
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.layouts.settings.network import WifiNetworkButton
 from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
+from openpilot.selfdrive.ui.mici.layouts.settings.galaxy import ObdBleBigButton, ObdBlePairingDialog
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl, BigToggle
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -64,6 +65,18 @@ class NetworkLayoutMici(NavScroller):
     self._wifi_button = WifiNetworkButton(self._wifi_manager)
     self._wifi_button.set_click_callback(lambda: gui_app.push_widget(self._wifi_ui))
 
+    # ******** Bluetooth ********
+    def bluetooth_toggle_callback(checked: bool):
+      ui_state.params.put_bool("ObdBlePairingCancelRequested", not checked)
+      if checked:
+        ui_state.params.put_bool("ObdBleEnabled", True)
+        ui_state.params.put_bool("ObdBlePairingRequested", True)
+        gui_app.push_widget(ObdBlePairingDialog())
+
+    self._bluetooth_toggle_btn = BigParamControl("Bluetooth", "ObdBleEnabled", toggle_callback=bluetooth_toggle_callback)
+    self._bluetooth_settings_btn = ObdBleBigButton()
+    self._bluetooth_settings_btn.set_visible(lambda: ui_state.params.get_bool("ObdBleEnabled"))
+
     # ******** Advanced settings ********
     # ******** Roaming toggle ********
     self._roaming_btn = BigParamControl("enable roaming", "GsmRoaming", toggle_callback=self._toggle_roaming)
@@ -78,6 +91,8 @@ class NetworkLayoutMici(NavScroller):
     # Main scroller ----------------------------------
     self._scroller.add_widgets([
       self._wifi_button,
+      self._bluetooth_toggle_btn,
+      self._bluetooth_settings_btn,
       self._network_metered_btn,
       self._tethering_toggle_btn,
       self._tethering_password_btn,
@@ -105,6 +120,7 @@ class NetworkLayoutMici(NavScroller):
 
   def show_event(self):
     super().show_event()
+    self._bluetooth_toggle_btn.refresh()
     self._wifi_manager.set_active(True)
 
     # Process wifi callbacks while at any point in the nav stack

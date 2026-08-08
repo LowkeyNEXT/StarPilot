@@ -122,6 +122,29 @@ def test_snapshot_honors_optional_per_field_validity():
   assert snapshot["isPluggedIn"] is False
 
 
+def test_snapshot_preserves_validated_passive_battery_details():
+  snapshot = core.build_vehicle_telemetry_snapshot(
+    SimpleNamespace(
+      fuelGauge=0.995,
+      vehicleTelemetryBatteryPowerValid=True,
+      vehicleTelemetryBatteryTemperatureValid=True,
+      vehicleTelemetryRemainingEnergyValid=True,
+      batteryCurrentAmps=2.8,
+      batteryVoltageVolts=627.1,
+      minimumBatteryTemperatureCelsius=27.0,
+      maximumBatteryTemperatureCelsius=28.0,
+      remainingEnergyKilowattHours=97.208,
+    ),
+    timestamp=1234.5,
+  )
+
+  assert snapshot["batteryCurrentAmps"] == 2.8
+  assert snapshot["batteryVoltageVolts"] == 627.1
+  assert snapshot["minimumBatteryTemperatureCelsius"] == 27.0
+  assert snapshot["maximumBatteryTemperatureCelsius"] == 28.0
+  assert snapshot["remainingEnergyKilowattHours"] == 97.208
+
+
 def test_stock_daemon_defaults_to_car_state():
   assert daemon.DEFAULT_CAR_STATE_SERVICE == "carState"
 

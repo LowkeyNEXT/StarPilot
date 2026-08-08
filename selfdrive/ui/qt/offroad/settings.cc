@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QRandomGenerator>
+#include <QTimer>
 #include <QUrl>
 #include <QrCode.hpp>
 

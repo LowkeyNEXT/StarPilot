@@ -60,3 +60,41 @@ def test_all_device_settings_launch_temporary_telemetry_setup():
   assert "telemetry_setup_btn.set_enabled(lambda: ui_state.is_offroad())" in c4_settings
   assert '"openpilot.system.vehicle_telemetry.setup", "launch"' in qt
   assert 'galaxy_dir + "/telemetry_setup_session.json"' in qt
+
+
+def test_all_network_settings_use_standard_secure_bluetooth_obd_pairing():
+  c3 = _source("selfdrive/ui/layouts/settings/bluetooth.py")
+  c3_settings = _source("selfdrive/ui/layouts/settings/settings.py")
+  c4 = _source("selfdrive/ui/mici/layouts/settings/galaxy.py")
+  c4_settings = _source("selfdrive/ui/mici/layouts/settings/settings.py")
+  c4_network = _source("selfdrive/ui/mici/layouts/settings/network/network_layout.py")
+  qt = _source("selfdrive/ui/qt/network/networking.cc")
+  process_config = _source("system/manager/process_config.py")
+
+  for source in (c3, c4, qt):
+    assert "ObdBlePairingRequested" in source
+    assert "ObdBlePasskey" in source
+    assert "ObdBleName" in source
+    assert "passkey" in source.lower()
+    assert "token" not in source[source.index("ObdBlePairingRequested"):source.index("ObdBlePairingRequested") + 1500].lower()
+
+  assert "BluetoothNetworkSettings" in c3_settings
+  assert "ObdBleBigButton" in c4_network
+  assert "ObdBleBigButton" not in c4_settings
+  assert "DEFAULT_OBD_BLE_NAME" in c3
+  assert "DEFAULT_OBD_BLE_NAME" in c4
+  assert 'name = "CommaOBD"' in qt
+  assert 'BigParamControl("Bluetooth", "ObdBleEnabled"' in c4_network
+  assert 'icons_mici/settings/network/bluetooth.png' in c4
+  assert "Park before changing Bluetooth settings" not in c3
+  assert 'self._bluetooth_toggle_btn.set_enabled(lambda: ui_state.is_offroad())' not in c4_network
+  assert 'self._bluetooth_settings_btn.set_enabled(lambda: ui_state.is_offroad())' not in c4_network
+  assert 'PythonProcess("obd_gatewayd", "starpilot.system.obd_gatewayd", always_run' in process_config
+  for source in (c3, c4):
+    assert "set_override_interactive_timeout" in source
+    assert "PAIRING CODE" in source
+    assert "PAIRED" in source
+    assert "PAIR AGAIN" in source
+    assert "_draw_progress_border" in source
+  assert "ObdBleEnabled" not in _source("selfdrive/ui/layouts/settings/device.py")
+  assert "ObdBleEnabled" not in _source("selfdrive/ui/qt/offroad/settings.cc")
