@@ -9,6 +9,7 @@ from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.ev9_preinit import EV9PandaPreinitFlags, EV9PandaPreinitHandoff, EV9PandaPreinitOwner, \
                                               EV9PandaPreinitState, attempt_ev9_pre_fingerprint_suppression, \
                                               update_ev9_panda_preinit_handoff
+from opendbc.car.hyundai.values import CAR
 from openpilot.selfdrive.car import ev9_preinit_coordinator as coordinator_module
 from openpilot.selfdrive.car.ev9_preinit import EV9_PREINIT_MANAGED_FRAMES, EV9PreinitFaultHistory, EV9PreinitOffSample, \
                                                 EV9PreinitTakeoverState, \
@@ -1474,3 +1475,17 @@ def test_timing_read_failure_vetoes_uds_without_adoptable_handoff():
   assert handoff.owner == EV9PandaPreinitOwner.PANDA_PENDING
   assert handoff.host_uds_veto
   assert not handoff.adoptable
+
+
+def test_aol_state_reaches_ev9_controller_without_preinit_enabled():
+  coordinator = SimpleNamespace(
+    CP=SimpleNamespace(carFingerprint=CAR.KIA_EV9),
+    CI=SimpleNamespace(CS=SimpleNamespace()),
+    ev9_preinit_enabled=False,
+  )
+
+  coordinator_module.EV9PreinitCoordinator.update_aol_state(
+    coordinator, SimpleNamespace(alwaysOnLateralEnabled=True),
+  )
+
+  assert coordinator.CI.CS.ev9_always_on_lateral_enabled

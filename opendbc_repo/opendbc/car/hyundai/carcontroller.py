@@ -8,7 +8,8 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_an
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ev9_bsm import get_ev9_blindspot_warning_inputs
-from opendbc.car.hyundai.ev9_dash_controller import EV9DashController, ev9_dynamic_steering_icons
+from opendbc.car.hyundai.ev9_dash_controller import EV9DashController, ev9_dynamic_steering_icons, \
+                                                        ev9_reconstructed_steering_available
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.ev9_preinit_controller import EV9PreinitController
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
@@ -880,7 +881,16 @@ class CarController(CarControllerBase):
         self.frame, CC, CS, ev9_main_mode, ev9_preinit_steering_active, ev9_actuation_permitted,
       ))
     elif self.frame % 5 == 0 and not self.long_active_ecu:
-      can_sends.extend(self.ev9_dash.create_aol_lane_change_status(now_nanos, CS))
+      aol_steering_available = ev9_reconstructed_steering_available(
+        CC.latActive, CC.enabled, bool(getattr(CS, "ev9_always_on_lateral_enabled", False)),
+      )
+      aol_steering_active = bool(
+        steering_msg_active and apply_steer_req and not getattr(CS.out, "steeringPressed", False) and
+        not getattr(CS, "angle_steering_fault", False)
+      )
+      can_sends.extend(self.ev9_dash.create_aol_lateral_status(
+        now_nanos, CS, aol_steering_available, aol_steering_active, CC.hudControl,
+      ))
 
     # blinkers
     if lka_steering and self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:

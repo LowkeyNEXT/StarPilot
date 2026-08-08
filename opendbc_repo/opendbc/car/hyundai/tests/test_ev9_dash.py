@@ -738,9 +738,11 @@ def test_ccnc_lane_change_uses_existing_lane_arrow_and_icon_states(side, left_ar
   ("left", 2, 0),
   ("right", 0, 2),
 ])
-def test_aol_lane_change_overlays_only_missing_stock_animation(side, left_arrow, right_arrow):
+def test_aol_lateral_status_overlays_only_openpilot_lateral_fields(side, left_arrow, right_arrow):
   CP = CarParams.new_message()
   CP.carFingerprint = CAR.KIA_EV9
+  CP.wheelbase = 3.1
+  CP.steerRatio = 14.0
   packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
   can_bus = CanBus(CP)
   parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
@@ -759,8 +761,15 @@ def test_aol_lane_change_overlays_only_missing_stock_animation(side, left_arrow,
     "LANELINE_RIGHT_POSITION": 18,
     "LANELINE_CURVATURE": 17,
   })
+  scene = Ev9DashScene(
+    lane_outline=Ev9LaneOutline(True, True, 0.0),
+    lane_change_direction=side,
+  )
+  hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False)
 
-  message = ev9_canfd.create_aol_lane_change_status(packer, can_bus, stock_values, side)
+  message = ev9_canfd.create_aol_lateral_status(
+    packer, CP, can_bus, stock_values, True, True, hud, scene,
+  )
   parser.update([(1, [message])])
   status = parser.vl["CCNC_0x161"]
 
@@ -772,9 +781,9 @@ def test_aol_lane_change_overlays_only_missing_stock_animation(side, left_arrow,
   assert status["TARGET"] == 3
   assert status["TARGET_DISTANCE"] == pytest.approx(42.0)
   assert status["SETSPEED_SPEED"] == 65
-  assert status["LANELINE_LEFT_POSITION"] == 12
-  assert status["LANELINE_RIGHT_POSITION"] == 18
-  assert status["LANELINE_CURVATURE"] == 17
+  assert status["LANELINE_LEFT_POSITION"] == 15
+  assert status["LANELINE_RIGHT_POSITION"] == 15
+  assert status["LANELINE_CURVATURE"] == 15
   assert status["LFA_ICON"] == 2
   assert status["LANELINE_LEFT"] == 6
   assert status["LANELINE_RIGHT"] == 6
@@ -784,7 +793,36 @@ def test_aol_lane_change_overlays_only_missing_stock_animation(side, left_arrow,
   assert status["LCA_RIGHT_ARROW"] == right_arrow
 
 
-def test_aol_lane_change_overlay_follows_each_fresh_stock_counter_once():
+@pytest.mark.parametrize(("steering_active", "expected_icon"), [(False, 1), (True, 2)])
+def test_aol_lateral_status_matches_alpha_steering_icon(steering_active, expected_icon):
+  CP = CarParams.new_message()
+  CP.carFingerprint = CAR.KIA_EV9
+  CP.wheelbase = 3.1
+  CP.steerRatio = 14.0
+  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+  can_bus = CanBus(CP)
+  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
+  stock_values = {name: 0 for name in packer.dbc.name_to_msg["CCNC_0x161"].sigs}
+  stock_values.update({"COUNTER": 9, "HBA_ICON": 2, "HDA_ICON": 1, "LCA_LEFT_ICON": 1, "LCA_RIGHT_ICON": 1})
+  scene = Ev9DashScene(lane_outline=Ev9LaneOutline(True, True, 0.01))
+
+  message = ev9_canfd.create_aol_lateral_status(
+    packer, CP, can_bus, stock_values, True, steering_active,
+    SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False), scene,
+  )
+  parser.update([(1, [message])])
+  status = parser.vl["CCNC_0x161"]
+
+  assert status["LFA_ICON"] == expected_icon
+  assert status["LANELINE_LEFT"] == 2
+  assert status["LANELINE_RIGHT"] == 2
+  assert status["LCA_LEFT_ICON"] == 1
+  assert status["LCA_RIGHT_ICON"] == 1
+  assert status["HBA_ICON"] == 2
+  assert status["HDA_ICON"] == 1
+
+
+def test_aol_lateral_status_follows_each_fresh_stock_counter_once():
   CP = CarParams.new_message()
   CP.carFingerprint = CAR.KIA_EV9
   packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
@@ -800,16 +838,18 @@ def test_aol_lane_change_overlay_follows_each_fresh_stock_counter_once():
     msg_161_ts=now_nanos,
   )
 
-  assert len(controller.create_aol_lane_change_status(now_nanos, CS)) == 1
-  assert controller.create_aol_lane_change_status(now_nanos, CS) == []
+  hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False)
+  assert len(controller.create_aol_lateral_status(now_nanos, CS, True, True, hud)) == 1
+  assert controller.create_aol_lateral_status(now_nanos, CS, True, True, hud) == []
 
   stock_values["COUNTER"] += 1
-  assert len(controller.create_aol_lane_change_status(now_nanos, CS)) == 1
+  assert len(controller.create_aol_lateral_status(now_nanos, CS, True, True, hud)) == 1
 
-  CS.ev9_dash_scene = Ev9DashScene()
-  assert controller.create_aol_lane_change_status(now_nanos, CS) == []
+  assert controller.create_aol_lateral_status(now_nanos, CS, False, False, hud) == []
   CS.ev9_dash_scene = Ev9DashScene(lane_change_direction="left")
-  assert controller.create_aol_lane_change_status(now_nanos + EV9_STOCK_STATUS_STALE_NS + 1, CS) == []
+  assert controller.create_aol_lateral_status(
+    now_nanos + EV9_STOCK_STATUS_STALE_NS + 1, CS, True, True, hud,
+  ) == []
 
 
 @pytest.mark.parametrize(("steering_angle", "expected"), [

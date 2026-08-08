@@ -228,7 +228,7 @@ class EV9PreinitCoordinator:
                               (self.ev9_preinit_takeover_state == EV9PreinitTakeoverState.FAULTED or panda_faulted))
 
   def update_aol_state(self, FPCS) -> None:
-    if self.ev9_preinit_enabled:
+    if self.CP.carFingerprint == CAR.KIA_EV9:
       self.CI.CS.ev9_always_on_lateral_enabled = bool(FPCS.alwaysOnLateralEnabled)
 
   def handle_control_step(self, CS, initialized: bool) -> bool:

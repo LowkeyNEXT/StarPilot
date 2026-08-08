@@ -190,7 +190,13 @@ class EV9DashCoordinator:
 
     model_valid = self.sm.seen['modelV2'] and self.sm.alive['modelV2'] and self.sm.valid['modelV2']
     model = self.sm['modelV2']
-    display_active = bool(CS.cruiseState.available and CS.gearShifter == structs.CarState.GearShifter.drive)
+    lateral_display_available = bool(
+      CC.latActive or CC.enabled or getattr(self.CI.CS, "ev9_always_on_lateral_enabled", False)
+    )
+    display_active = bool(
+      (CS.cruiseState.available or lateral_display_available) and
+      CS.gearShifter == structs.CarState.GearShifter.drive
+    )
 
     # Match the stock EV9 headway marker: it represents the speed-based desired
     # following distance. The planner-derived stop/follow target switched

@@ -78,12 +78,12 @@ class EV9DashController:
     ))
     return messages
 
-  def create_aol_lane_change_status(self, now_nanos: int, CS) -> list[CanData]:
-    direction = getattr(getattr(CS, "ev9_dash_scene", None), "lane_change_direction", None)
+  def create_aol_lateral_status(self, now_nanos: int, CS, steering_available: bool,
+                                steering_active: bool, hud) -> list[CanData]:
     stock_values = getattr(CS, "msg_161", {})
     stock_timestamp = int(getattr(CS, "msg_161_ts", 0))
     stock_fresh = 0 <= now_nanos - stock_timestamp <= EV9_STOCK_STATUS_STALE_NS
-    if direction not in ("left", "right") or not stock_values or not stock_fresh:
+    if not steering_available or not stock_values or not stock_fresh:
       self._aol_stock_counter = None
       return []
 
@@ -91,4 +91,7 @@ class EV9DashController:
     if stock_counter == self._aol_stock_counter:
       return []
     self._aol_stock_counter = stock_counter
-    return [ev9_canfd.create_aol_lane_change_status(self.packer, self.CAN, stock_values, direction)]
+    return [ev9_canfd.create_aol_lateral_status(
+      self.packer, self.CP, self.CAN, stock_values, steering_available, steering_active,
+      hud, getattr(CS, "ev9_dash_scene", None),
+    )]
