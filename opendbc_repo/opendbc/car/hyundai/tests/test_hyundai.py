@@ -2057,6 +2057,50 @@ class TestHyundaiFingerprint:
 
     assert calls == [123]
 
+  def test_ev9_failed_longitudinal_fallback_emits_only_the_stock_status_overlay(self, monkeypatch):
+    CP = CarParams.new_message()
+    CP.carFingerprint = CAR.KIA_EV9
+    CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CCNC |
+                   HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_LKA_STEERING |
+                   HyundaiFlags.CANFD_LKA_STEERING_ALT)
+    CP.openpilotLongitudinalControl = True
+
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    controller.frame = 5
+    controller.ecu_disable_failed = True
+    controller.long_active_ecu = False
+    calls = []
+    monkeypatch.setattr(controller.ev9_dash, "create_status_messages", lambda *_args: pytest.fail("full dash reconstruction used"))
+    monkeypatch.setattr(controller.ev9_preinit, "create_status_messages", lambda *_args: pytest.fail("preinit reconstruction used"))
+    monkeypatch.setattr(controller.ev9_dash, "create_aol_lane_change_status", lambda now_nanos, _CS: calls.append(now_nanos) or [])
+    cc = SimpleNamespace(
+      enabled=False,
+      latActive=True,
+      actuators=SimpleNamespace(longControlState=LongCtrlState.off),
+      leftBlinker=False,
+      rightBlinker=False,
+      hudControl=SimpleNamespace(),
+    )
+    lfa_block_msg = {f"BYTE{i}": 0 for i in range(3, 32) if i != 7}
+    lfa_block_msg["COUNTER"] = 0
+    cs = SimpleNamespace(
+      angle_steering_fault=False,
+      lfa_block_msg=lfa_block_msg,
+      stock_lfa_msg=None,
+      stock_lkas_msg={},
+      out=SimpleNamespace(
+        cruiseState=SimpleNamespace(available=False),
+        gearShifter=structs.CarState.GearShifter.drive,
+        standstill=False,
+        steeringAngleDeg=0.0,
+      ),
+    )
+
+    controller.create_canfd_msgs(456, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                 get_test_toggles(), lka_icon=2, lfa_icon=2)
+
+    assert calls == [456]
+
   def test_ev9_high_steering_angle_keeps_active_status_and_gain(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9

@@ -234,6 +234,8 @@ def create_angle_long_status_messages(packer, CP, CAN, counter: int, enabled: bo
 def create_aol_lane_change_status(packer, CAN, stock_values: dict, direction: str) -> CanData:
   values = dict(stock_values)
   values.update({
+    # Occupy the next alive-counter slot so the overlay replaces one stock update
+    # without starting a second counter stream alongside the resident ADAS ECU.
     "COUNTER": (int(stock_values["COUNTER"]) + 1) & 0xFF,
     "LFA_ICON": 2,
     "LANELINE_LEFT": 6,
