@@ -33,6 +33,10 @@ can_ring *tx1_q = &can_tx1_q;
 can_ring *tx2_q = &can_tx2_q;
 can_ring *tx3_q = &can_tx3_q;
 
+bool can_send_with_result(CANPacket_t *packet, uint8_t bus_number, bool skip_tx_hook) {
+  return can_send_with_feature_result(packet, bus_number, skip_tx_hook, false);
+}
+
 static bool ev9_test_rx_idle[3] = {true, true, true};
 static uint32_t ev9_test_cancel_count[3] = {0U, 0U, 0U};
 static uint32_t ev9_test_freeze_count = 0U;
@@ -144,6 +148,7 @@ uint16_t ev9_test_current_safety_mode(void) {
 
 void ev9_test_tick(uint32_t now_us, bool ignition) {
   MICROSECOND_TIMER->CNT = now_us;
+  ev9_long_preinit_sample_ignition(now_us, ignition);
   ev9_long_preinit_tick(now_us, ignition);
   // Firmware main spins continuously. A second zero-elapsed pass lets the fake
   // staged reset consume a request raised by the first pass without pretending
@@ -153,6 +158,7 @@ void ev9_test_tick(uint32_t now_us, bool ignition) {
 
 void ev9_test_tick_once(uint32_t now_us, bool ignition) {
   MICROSECOND_TIMER->CNT = now_us;
+  ev9_long_preinit_sample_ignition(now_us, ignition);
   ev9_long_preinit_tick(now_us, ignition);
 }
 
@@ -169,10 +175,16 @@ void ev9_test_service_tx_cancel(uint32_t now_us) {
   ev9_long_preinit_service_tx_cancel(now_us);
 }
 
+static void ev9_test_complete_hw_tx(CANPacket_t *packet) {
+  const uint8_t tx_index = 0U;
+  ev9_long_preinit_tx_hw_loaded(packet, packet->bus, tx_index);
+  ev9_long_preinit_tx_hw_completed(packet->bus, 1UL << tx_index, 0U);
+}
+
 void ev9_test_host_tx(CANPacket_t *packet, uint32_t now_us) {
   MICROSECOND_TIMER->CNT = now_us;
   ev9_long_preinit_host_tx_hook(packet);
-  ev9_long_preinit_tx_hw_loaded(packet, packet->bus);
+  ev9_test_complete_hw_tx(packet);
 }
 
 bool ev9_test_prepare_host_tx(CANPacket_t *packet, uint8_t bus_number,
@@ -183,12 +195,11 @@ bool ev9_test_prepare_host_tx(CANPacket_t *packet, uint8_t bus_number,
 
 void ev9_test_hw_tx(CANPacket_t *packet, uint32_t now_us) {
   MICROSECOND_TIMER->CNT = now_us;
-  ev9_long_preinit_tx_hw_loaded(packet, packet->bus);
+  ev9_test_complete_hw_tx(packet);
 }
 
-bool ev9_test_request_release(uint16_t cycle_token, uint32_t now_us) {
-  MICROSECOND_TIMER->CNT = now_us;
-  return ev9_long_preinit_request_release(cycle_token);
+bool ev9_test_request_offroad_rearm(uint16_t cycle_token, bool ignition) {
+  return ev9_long_preinit_request_offroad_rearm(cycle_token, ignition);
 }
 
 bool ev9_test_usb_request_allowed(uint8_t request, uint16_t param1, uint16_t param2) {

@@ -1199,6 +1199,7 @@ def test_early_host_frame_is_silently_deferred_until_stream_phase_is_due():
   # The takeover tolerance permits the host at 90% of the 10 ms period.
   lpp.ev9_test_set_time(89_000)
   assert lpp.can_send_with_result(host, 1, False)
+  lpp.ev9_test_hw_tx(host, 89_000)
   assert timing().last_host_tx_us == 89_000
   assert len([frame for frame in pop_bus(1) if frame[0] == 0x12A]) == 1
 
@@ -1374,6 +1375,7 @@ def test_host_tester_present_inherits_resident_phase_without_duplicate():
 
   lpp.ev9_test_set_time(920_000)
   assert lpp.can_send_with_result(tester_present, 1, False)
+  lpp.ev9_test_hw_tx(tester_present, 920_000)
   assert timing().last_tester_present_us == 920_000
   queued = [frame for frame in pop_bus(1) if frame[0] == 0x730]
   assert len(queued) == 1
@@ -1429,6 +1431,7 @@ def test_dynamic_host_bodies_resume_with_safe_resident_fallbacks():
     host.data[3] ^= 0x80
     lpp.ev9_test_update_crc(host)
     assert lpp.can_send_with_result(host, 1, False)
+    lpp.ev9_test_hw_tx(host, 130_000)
 
   host_frames = {addr: dat for addr, dat, _ in pop_bus(1) if addr in FORCED_NEUTRAL_TEMPLATES}
   assert set(host_frames) == set(FORCED_NEUTRAL_TEMPLATES)
@@ -1503,7 +1506,7 @@ def test_161_icons_are_canonicalized_only_before_one_way_handoff():
   assert queued_live[0][4] == 0xFF
 
 
-def test_handoff_preserves_only_counter_crc_continuity():
+def test_handoff_preserves_host_counter_and_body_after_observation_window():
   enter_handoff()
   assert lpp.set_safety_hooks(SAFETY_ALLOUTPUT, 0) == 0
 
@@ -1534,9 +1537,8 @@ def test_handoff_preserves_only_counter_crc_continuity():
     assert len(queued) == 1
     bodies.append(queued[0])
 
-  assert bodies[1][2] == (bodies[0][2] + 1) & 0xFF
-  assert bodies[0][2] != 7
-  assert bodies[1][2] != 201
+  assert bodies[0][2] == 7
+  assert bodies[1][2] == 201
   assert bodies[0][3:] == bytes(host_cb.data)[3:24]
   assert bodies[1][3:] == bytes(host_cb.data)[3:24]
   for body in bodies:
@@ -1579,6 +1581,8 @@ def test_production_shaped_heartbeat_and_dynamic_status_resume_as_canfd():
   lpp.ev9_test_update_crc(dynamic_1da)
   assert lpp.can_send_with_result(heartbeat, 0, False)
   assert lpp.can_send_with_result(dynamic_1da, 1, False)
+  lpp.ev9_test_hw_tx(heartbeat, 1_100_000)
+  lpp.ev9_test_hw_tx(dynamic_1da, 1_100_000)
 
   host_heartbeat = [frame for frame in pop_bus(0) if frame[0] == 0x100]
   host_1da = [frame for frame in pop_bus(1) if frame[0] == 0x1DA]
@@ -2586,7 +2590,7 @@ def test_fresh_stock_convergence_also_proves_warm_rearm():
   assert status().fingerprint == 0x04
 
 
-def test_warm_rise_before_cleanup_p2_is_not_deferred():
+def test_warm_rise_before_cleanup_p2_is_consumed_after_cleanup():
   ignition_fall_us = enter_off_restore_from_handoff()
   response_us = prove_off_restore_exact(ignition_fall_us)
   cancels = (lpp.ev9_test_get_cancel_count(0), lpp.ev9_test_get_cancel_count(1))
@@ -2595,10 +2599,10 @@ def test_warm_rise_before_cleanup_p2_is_not_deferred():
   assert (lpp.ev9_test_get_cancel_count(0), lpp.ev9_test_get_cancel_count(1)) == cancels
   lpp.ev9_test_tick(response_us + 60_000, True)
   assert status().state == ABORTED
-  assert (lpp.ev9_test_get_cancel_count(0), lpp.ev9_test_get_cancel_count(1)) == cancels
+  assert lpp.ev9_test_get_cancel_count(0) == cancels[0] + 1
+  assert lpp.ev9_test_get_cancel_count(1) == cancels[1] + 1
 
-  # Holding high past P2 must not remember the rejected rise. A fresh,
-  # debounced low followed by another rise is required.
+  # The qualified rise is consumed exactly once after restore and cleanup converge.
   lpp.ev9_test_tick(response_us + 60_001, False)
   lpp.ev9_test_tick(response_us + 80_001, False)
   lpp.ev9_test_tick(response_us + 80_002, True)
@@ -2606,7 +2610,7 @@ def test_warm_rise_before_cleanup_p2_is_not_deferred():
   assert lpp.ev9_test_get_cancel_count(1) == cancels[1] + 1
 
 
-def test_rise_before_restore_proof_requires_a_second_real_edge():
+def test_rise_before_restore_proof_is_consumed_after_cleanup():
   ignition_fall_us = enter_off_restore_from_handoff()
   restore_request_us = ignition_fall_us + 50_000
   lpp.ev9_test_tick(restore_request_us, False)
@@ -2621,11 +2625,6 @@ def test_rise_before_restore_proof_requires_a_second_real_edge():
   lpp.ev9_test_rx(diag(2, 0x68, 0x00), proof_us)
   assert status().state == ABORTED
   lpp.ev9_test_tick(proof_us + 50_000, True)
-  assert (lpp.ev9_test_get_cancel_count(0), lpp.ev9_test_get_cancel_count(1)) == cancels
-
-  lpp.ev9_test_tick(proof_us + 50_001, False)
-  lpp.ev9_test_tick(proof_us + 70_001, False)
-  lpp.ev9_test_tick(proof_us + 70_002, True)
   assert lpp.ev9_test_get_cancel_count(0) == cancels[0] + 1
   assert lpp.ev9_test_get_cancel_count(1) == cancels[1] + 1
 
@@ -2764,25 +2763,24 @@ def test_door_wake_is_passive_until_brake_plus_ignition_confirm_start():
   assert status().state == ACTIVE
 
 
-def test_graceful_release_is_cycle_bound_and_requires_exact_stock_proof():
+def test_offroad_rearm_is_cycle_bound_and_requires_exact_stock_proof():
   enter_handoff()
   cycle_started_us = timing().cycle_started_us
   live_us = 200_001
   lpp.ev9_test_tick(live_us, True)
 
   # A cycle token is authentication, not a safe mid-drive restore boundary.
-  assert not lpp.ev9_test_request_release((cycle_started_us + 1) & 0xFFFF, live_us)
-  assert not lpp.ev9_test_request_release(cycle_started_us & 0xFFFF, live_us)
+  assert not lpp.ev9_test_request_offroad_rearm((cycle_started_us + 1) & 0xFFFF, True)
+  assert not lpp.ev9_test_request_offroad_rearm(cycle_started_us & 0xFFFF, True)
   assert status().state == HANDOFF
 
   lpp.ev9_test_tick(live_us + 1, False)
   release_us = live_us + 20_001
   lpp.ev9_test_tick(release_us, False)
   assert status().state == RESTORING
-  assert lpp.ev9_test_request_release(cycle_started_us & 0xFFFF, release_us)
+  assert lpp.ev9_test_request_offroad_rearm(cycle_started_us & 0xFFFF, False)
   assert lpp.ev9_test_must_preserve()
-  assert timing().reserved & LIFECYCLE_RELEASE_REQUESTED
-  assert not timing().reserved & LIFECYCLE_RELEASE_COMPLETE
+  assert timing().reserved == 0
 
   lpp.ev9_test_tick(release_us + 50_000, False)
   pop_single_diag(b"\x03\x28\x00\x01")
@@ -2792,9 +2790,9 @@ def test_graceful_release_is_cycle_bound_and_requires_exact_stock_proof():
   lpp.ev9_test_rx(diag(2, 0x68, 0x00), proof_us)
   assert status().state == ABORTED
   pop_single_diag(b"\x02\x10\x01")
-  assert lpp.ev9_test_must_preserve()
+  assert not lpp.ev9_test_must_preserve()
   lpp.ev9_test_tick(proof_us + 50_000, False)
-  assert timing().reserved & LIFECYCLE_RELEASE_COMPLETE
+  assert timing().reserved == 0
   assert not lpp.ev9_test_must_preserve()
 
 
@@ -2805,7 +2803,7 @@ def test_firmware_usb_gate_blocks_disruptive_mutations_until_release():
   for request, param1, param2 in (
     (0xC5, 0, 0), (0xD1, 1, 0), (0xD8, 0, 0), (0xDB, 1, 0),
     (0xDC, SAFETY_HYUNDAI_CANFD, 0x8494), (0xDC, 36, 0x8495), (0xDE, 0, 2500),
-    (0xE5, 1, 0), (0xE7, 1, 0), (0xE8, 0, 1), (0xF1, 0, 0), (0xF1, 1, 0),
+    (0xE5, 1, 0), (0xE7, 1, 0), (0xF1, 0, 0), (0xF1, 1, 0),
     (0xF8, 0, 0), (0xF9, 1, 50000), (0xFC, 1, 1),
   ):
     assert not lpp.ev9_test_usb_request_allowed(request, param1, param2)
@@ -2818,6 +2816,7 @@ def test_firmware_usb_gate_blocks_disruptive_mutations_until_release():
   assert not lpp.ev9_test_preserve_can_on_safety_transition(36, 0x8495)
   assert lpp.ev9_test_usb_request_allowed(0xDE, 0, 5000)
   assert lpp.ev9_test_usb_request_allowed(0xE8, 0, 0)
+  assert lpp.ev9_test_usb_request_allowed(0xE8, 0, 1)
   assert lpp.ev9_test_usb_request_allowed(0xF1, 0xFFFF, 0)
   assert lpp.ev9_test_usb_request_allowed(0xF1, 2, 0)
   assert lpp.ev9_test_usb_request_allowed(0xEA, 1, 0)
@@ -2960,7 +2959,7 @@ def test_production_led_fades_service_only_pending_tx_cancel():
   main = (Path(__file__).parents[1] / "board" / "main.c").read_text()
   integration = (Path(__file__).parents[1] / "board" / "ev9_long_preinit_main.h").read_text()
   assert main.count("ev9_long_preinit_main_service_tx_cancel();") == 2
-  assert integration.count("ev9_long_preinit_service_tx_cancel(microsecond_timer_get())") == 1
+  assert integration.count("ev9_long_preinit_service_tx_cancel(now_us)") == 1
 
 
 def test_ready_missing_adas_after_panda_reset_runs_restore_only_recovery():

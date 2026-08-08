@@ -125,7 +125,7 @@ void ev9_test_service_tx_cancel(uint32_t now_us);
 void ev9_test_host_tx(CANPacket_t *packet, uint32_t now_us);
 bool ev9_test_prepare_host_tx(CANPacket_t *packet, uint8_t bus_number, bool forwarded, uint32_t now_us);
 void ev9_test_hw_tx(CANPacket_t *packet, uint32_t now_us);
-bool ev9_test_request_release(uint16_t cycle_token, uint32_t now_us);
+bool ev9_test_request_offroad_rearm(uint16_t cycle_token, bool ignition);
 bool ev9_test_usb_request_allowed(uint8_t request, uint16_t param1, uint16_t param2);
 bool ev9_test_must_preserve(void);
 bool ev9_test_preserve_can_on_safety_transition(uint16_t mode, uint16_t param);
