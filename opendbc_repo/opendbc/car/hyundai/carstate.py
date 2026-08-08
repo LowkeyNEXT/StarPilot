@@ -142,6 +142,7 @@ class CarState(CarStateBase):
 
     self.cruise_info = {}
     self.msg_161 = {}
+    self.msg_161_ts = 0
     self.msg_162 = {}
     self.msg_1b5 = {}
     self.msg_364 = {}
@@ -539,10 +540,14 @@ class CarState(CarStateBase):
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
     if ccnc_non_hda2:
       self.msg_161 = copy.copy(cp_cam.vl["CCNC_0x161"])
+      self.msg_161_ts = cp_cam.ts_nanos["CCNC_0x161"]["CHECKSUM"]
       self.msg_162 = copy.copy(cp_cam.vl["CCNC_0x162"])
       self.msg_1b5 = copy.copy(cp_cam.vl["FR_CMR_03_50ms"])
       cp_cruise_info = cp_cam if self.CP.flags & HyundaiFlags.CANFD_CAMERA_SCC else cp
       self.cruise_info = copy.copy(cp_cruise_info.vl["SCC_CONTROL"])
+    elif self.CP.carFingerprint == CAR.KIA_EV9 and cp.ts_nanos["CCNC_0x161"]["CHECKSUM"] > 0:
+      self.msg_161 = copy.copy(cp.vl["CCNC_0x161"])
+      self.msg_161_ts = cp.ts_nanos["CCNC_0x161"]["CHECKSUM"]
 
     use_alt_lamp = cp.vl["BLINKERS"]["USE_ALT_LAMP"] == 1 or bool(self.CP.flags & HyundaiFlags.CCNC)
     left_blinker_sig, right_blinker_sig = self.get_canfd_blinker_sig_names(self.CP.carFingerprint, use_alt_lamp)
@@ -700,6 +705,8 @@ class CarState(CarStateBase):
     if CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR:
       msgs.append(("BLINDSPOTS_FRONT_CORNER_2", 0))
       msgs.append(("FR_CMR_01_10ms", 0))
+    if CP.carFingerprint == CAR.KIA_EV9:
+      msgs.append(("CCNC_0x161", 0))
     if CP.flags & HyundaiFlags.EV:
       msgs.append(("DRIVE_MODE_EV", 0))  # optional: not all CAN-FD EV variants publish drive mode
       msgs.append(("MANUAL_SPEED_LIMIT_ASSIST", 0))  # optional: used for non-adaptive cruise state and Ioniq 6 i-Pedal latch detection

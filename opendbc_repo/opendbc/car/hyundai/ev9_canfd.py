@@ -229,3 +229,18 @@ def create_angle_long_status_messages(packer, CP, CAN, counter: int, enabled: bo
     _message_with_signals(packer, CAN, 0x161, counter, "CCNC_0x161", values_161),
     _message_with_signals(packer, CAN, 0x162, counter, "CCNC_0x162", values_162),
   ]
+
+
+def create_aol_lane_change_status(packer, CAN, stock_values: dict, direction: str) -> CanData:
+  values = dict(stock_values)
+  values.update({
+    "COUNTER": (int(stock_values["COUNTER"]) + 1) & 0xFF,
+    "LFA_ICON": 2,
+    "LANELINE_LEFT": 6,
+    "LANELINE_RIGHT": 6,
+    "LCA_LEFT_ICON": 2,
+    "LCA_RIGHT_ICON": 2,
+    "LCA_LEFT_ARROW": 2 if direction == "left" else 0,
+    "LCA_RIGHT_ARROW": 2 if direction == "right" else 0,
+  })
+  return packer.make_can_msg("CCNC_0x161", CAN.ECAN, values)

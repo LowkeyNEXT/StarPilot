@@ -879,6 +879,8 @@ class CarController(CarControllerBase):
       can_sends.extend(self.ev9_preinit.create_status_messages(
         self.frame, CC, CS, ev9_main_mode, ev9_preinit_steering_active, ev9_actuation_permitted,
       ))
+    elif self.frame % 5 == 0 and not self.long_active_ecu:
+      can_sends.extend(self.ev9_dash.create_aol_lane_change_status(now_nanos, CS))
 
     # blinkers
     if lka_steering and self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:
