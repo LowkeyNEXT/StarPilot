@@ -892,6 +892,22 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
+  def test_ev9_lka_alt_aol_standstill_allows_angle_and_status_overlay(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd,
+                                 self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG)
+    self.safety.init_tests()
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(False)
+    self._toggle_aol(True)
+    self._rx(self._gear_msg(5))
+    self._reset_speed_measurement(0)
+    self._reset_angle_measurement(0)
+    self._set_prev_desired_angle(0)
+
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
+    self.assertTrue(self._tx(common.make_msg(1, 0x161, 32)))
+    self.assertFalse(self._tx(common.make_msg(1, 0x12A, 16)))
+
   def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
     self.safety.set_controls_allowed(False)
@@ -932,12 +948,13 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
       with self.subTest(address=address):
         self.assertFalse(self._tx(common.make_msg(1 if address != 0x51 else 0, address, length)))
 
-  def test_ccnc_angle_fallback_allows_lfa_status_without_longitudinal_control(self):
+  def test_ccnc_angle_fallback_allows_only_stock_status_overlay_without_longitudinal_control(self):
     fallback_param = (self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG) | HyundaiSafetyFlags.CCNC
     self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, fallback_param)
     self.safety.init_tests()
 
-    self.assertTrue(self._tx(common.make_msg(1, 0x12A, 16)))
+    self.assertTrue(self._tx(common.make_msg(1, 0x161, 32)))
+    self.assertFalse(self._tx(common.make_msg(1, 0x12A, 16)))
     self.assertFalse(self._tx(common.make_msg(1, 0x1A0, 32)))
 
   def test_ccnc_angle_long_uses_second_mdps_angle(self):

@@ -61,6 +61,7 @@ static bool hyundai_canfd_alt_buttons = false;
 static bool hyundai_canfd_lka_steering_alt = false;
 static bool hyundai_canfd_angle_steering = false;
 static bool hyundai_ccnc = false;
+static bool hyundai_canfd_ccnc_angle_steering = false;
 static bool hyundai_canfd_ccnc_angle_long = false;
 static bool hyundai_canfd_lka_alt_drive_gear = false;
 static uint8_t hyundai_canfd_inactive_accel_tx_count = 0U;
@@ -89,9 +90,9 @@ static bool hyundai_canfd_lka_alt_forward_addr(int addr) {
 }
 
 static bool hyundai_canfd_lka_alt_openpilot_allowed(void) {
-  // The CCNC angle-long profile is currently EV9-only and explicitly opts in
-  // through CarParams.steerAtStandstill. Preserve the moving gate elsewhere.
-  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving || hyundai_canfd_ccnc_angle_long;
+  // The CCNC LKA_ALT angle profile is currently EV9-only and explicitly opts in
+  // to standstill steering. Preserve the moving gate elsewhere.
+  const bool angle_steering_allowed = !hyundai_canfd_angle_steering || vehicle_moving || hyundai_canfd_ccnc_angle_steering;
   return (aol_allowed || controls_allowed) && angle_steering_allowed &&
          (!hyundai_ev_gas_signal || hyundai_canfd_lka_alt_drive_gear);
 }
@@ -130,7 +131,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       update_sample(&torque_driver, torque_driver_new);
 
       // CCNC angle-long platforms publish the usable angle in STEERING_ANGLE_2.
-      const unsigned int angle_offset = hyundai_canfd_ccnc_angle_long ? 16U : 12U;
+      const unsigned int angle_offset = hyundai_canfd_ccnc_angle_steering ? 16U : 12U;
       int angle_meas_new = (msg->data[angle_offset + 1U] << 8U) | msg->data[angle_offset];
       angle_meas_new = to_signed(angle_meas_new, 16);
       update_sample(&angle_meas, angle_meas_new);
@@ -469,7 +470,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
 
   static const CanMsg HYUNDAI_CANFD_CCNC_ANGLE_FALLBACK_TX_MSGS[] = {
     HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(0, 1)
-    {0x12A, 1, 16, .check_relay = false},  // LFA status
+    {0x161, 1, 32, .check_relay = false},  // CCNC stock-status overlay
   };
 
   static const CanMsg HYUNDAI_CANFD_LFA_STEERING_TX_MSGS[] = {
@@ -511,8 +512,9 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   hyundai_canfd_lka_steering_alt = GET_FLAG(param, HYUNDAI_PARAM_CANFD_LKA_STEERING_ALT);
   hyundai_canfd_angle_steering = GET_FLAG(param, HYUNDAI_PARAM_CANFD_ANGLE_STEERING);
   hyundai_ccnc = GET_FLAG(param, HYUNDAI_PARAM_CCNC);
-  hyundai_canfd_ccnc_angle_long = hyundai_longitudinal && hyundai_canfd_lka_steering &&
-                                  hyundai_canfd_lka_steering_alt && hyundai_canfd_angle_steering && hyundai_ccnc;
+  hyundai_canfd_ccnc_angle_steering = hyundai_canfd_lka_steering && hyundai_canfd_lka_steering_alt &&
+                                      hyundai_canfd_angle_steering && hyundai_ccnc;
+  hyundai_canfd_ccnc_angle_long = hyundai_longitudinal && hyundai_canfd_ccnc_angle_steering;
   hyundai_canfd_lka_alt_drive_gear = false;
   hyundai_canfd_inactive_accel_tx_count = 0U;
 

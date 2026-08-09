@@ -1018,6 +1018,23 @@ def test_controls_update_reuses_early_interface_initialization():
   assert initialized == []
 
 
+def test_ev9_alpha_long_initializes_interface_before_controls_without_panda_preinit():
+  from openpilot.selfdrive.car.card import Car
+
+  card_instance = Car.__new__(Car)
+  card_instance.CP = SimpleNamespace(
+    passive=False, carFingerprint=CAR.KIA_EV9, openpilotLongitudinalControl=True,
+  )
+  card_instance.params = FakeParams()
+  initialized = []
+  card_instance._initialize_ev9_interface_early = lambda: initialized.append(True)
+
+  card_instance.start_early_control(None)
+
+  assert initialized == [True]
+  assert not card_instance.ev9_preinit_enabled
+
+
 def test_cached_params_tolerate_missing_and_corrupt_values():
   assert load_cached_car_params(FakeParams()) is None
   assert load_cached_starpilot_car_params(FakeParams()) is None

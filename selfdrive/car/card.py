@@ -203,7 +203,7 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
 
     # Write CarParams for controls and radard
     cp_bytes = self.CP.to_bytes()
-    defer_controls_params = self.early_control_requested()
+    defer_controls_params = self.early_interface_initialization_requested()
     if not defer_controls_params:
       self.params.put("CarParams", cp_bytes)
     self.params.put_nonblocking("CarParamsCache", cp_bytes)

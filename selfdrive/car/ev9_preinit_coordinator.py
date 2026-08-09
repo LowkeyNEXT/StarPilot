@@ -143,22 +143,28 @@ class EV9PreinitCoordinator:
     )
 
   def early_control_requested(self) -> bool:
-    return bool(ev9_panda_preinit_armed(self.params) and not self.CP.passive and
-                self.CP.carFingerprint == CAR.KIA_EV9 and self.CP.openpilotLongitudinalControl)
+    return bool(ev9_panda_preinit_armed(self.params) and self.early_interface_initialization_requested())
+
+  def early_interface_initialization_requested(self) -> bool:
+    return bool(not self.CP.passive and self.CP.carFingerprint == CAR.KIA_EV9 and
+                self.CP.openpilotLongitudinalControl)
 
   def start_early_control(self, handoff: EV9PandaPreinitHandoff | None) -> None:
     requested = self.early_control_requested()
     self.ev9_preinit_enabled = requested
+    if not self.early_interface_initialization_requested():
+      return
+
+    cloudlog.warning("EV9 synchronous interface initialization requested")
+    self._initialize_ev9_interface_early()
     if not requested:
       return
 
-    cloudlog.warning("EV9 production early interface initialization requested")
     refreshed_handoff = handoff or EV9PandaPreinitHandoff()
     if self.params.get_bool("EV9LongPreinitPanda"):
       refreshed_handoff = revalidate_ev9_panda_preinit_handoff(self.sm)
       if not refreshed_handoff.adoptable:
         cloudlog.error(f"EV9 Panda preinit changed before host takeover: {refreshed_handoff.reason}")
-    self._initialize_ev9_interface_early()
     self.ev9_early_control_active = self.CP.openpilotLongitudinalControl and not self.params.get_bool("EcuDisableFailed")
     self.CI.CS.ev9_preinit_active = self.ev9_early_control_active
     takeover = ev9_preinit_refreshed_takeover_allowed(
