@@ -153,7 +153,7 @@ class StarPilotCard:
           if starpilot_toggles.main_cruise_aol_toggle:
             if hyundai_aol_needs_engagement:
               self.hyundai_aol_ready = True
-            self.always_on_lateral_allowed = not self.always_on_lateral_allowed
+            self.always_on_lateral_allowed = True
           elif starpilot_toggles.main_cruise_slc_adopt and starpilot_toggles.speed_limit_controller:
             self.params_memory.put_bool("SLCAdoptSpeedLimit", True)
 

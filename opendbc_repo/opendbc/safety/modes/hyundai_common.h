@@ -195,7 +195,9 @@ void hyundai_common_cruise_buttons_check(const int cruise_button, const bool mai
   }
 
   if (main_button && !main_button_prev) {
-    if (!hyundai_aol_main_lkas_sync) {
+    if ((alternative_experience & ALT_EXP_AOL_MAIN_LKAS_SYNC) != 0) {
+      lkas_on = true;
+    } else if (!hyundai_aol_main_lkas_sync) {
       acc_main_on = !acc_main_on;
     }
     if (hyundai_cancel_button_resume_requires_set && !acc_main_on) {

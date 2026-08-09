@@ -131,7 +131,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       update_sample(&torque_driver, torque_driver_new);
 
       // CCNC angle-long platforms publish the usable angle in STEERING_ANGLE_2.
-      const unsigned int angle_offset = hyundai_canfd_ccnc_angle_steering ? 16U : 12U;
+      const unsigned int angle_offset = hyundai_canfd_ccnc_angle_long ? 16U : 12U;
       int angle_meas_new = (msg->data[angle_offset + 1U] << 8U) | msg->data[angle_offset];
       angle_meas_new = to_signed(angle_meas_new, 16);
       update_sample(&angle_meas, angle_meas_new);
@@ -470,7 +470,6 @@ static safety_config hyundai_canfd_init(uint16_t param) {
 
   static const CanMsg HYUNDAI_CANFD_CCNC_ANGLE_FALLBACK_TX_MSGS[] = {
     HYUNDAI_CANFD_LKA_STEERING_ALT_COMMON_TX_MSGS(0, 1)
-    {0x161, 1, 32, .check_relay = false},  // CCNC stock-status overlay
   };
 
   static const CanMsg HYUNDAI_CANFD_LFA_STEERING_TX_MSGS[] = {

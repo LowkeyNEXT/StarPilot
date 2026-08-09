@@ -353,7 +353,7 @@ def test_hyundai_canfd_lkas_button_wrapped_enum_can_toggle_aol(monkeypatch, tmp_
   assert ret.alwaysOnLateralEnabled is False
 
 
-def test_kia_forte_non_scc_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path):
+def test_kia_forte_non_scc_main_cruise_button_enables_aol_immediately(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
@@ -383,7 +383,7 @@ def test_kia_forte_non_scc_main_cruise_button_toggles_aol_immediately(monkeypatc
   assert ret.alwaysOnLateralEnabled is True
 
 
-def test_genesis_g90_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path):
+def test_genesis_g90_main_cruise_button_enables_aol_immediately(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
@@ -410,7 +410,7 @@ def test_genesis_g90_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("fingerprint", [spc.HYUNDAI_CAR.GENESIS_G70_2020, spc.HYUNDAI_CAR.HYUNDAI_PALISADE])
-def test_legacy_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path, fingerprint):
+def test_legacy_hyundai_main_cruise_button_enables_aol_one_way(monkeypatch, tmp_path, fingerprint):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
@@ -432,11 +432,11 @@ def test_legacy_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, 
 
   car_state.buttonEvents = [SimpleNamespace(type=spc.ButtonType.mainCruise, pressed=True)]
   ret = card.update(car_state, starpilot_car_state, sm, toggles)
-  assert ret.alwaysOnLateralAllowed is False
-  assert ret.alwaysOnLateralEnabled is False
+  assert ret.alwaysOnLateralAllowed is True
+  assert ret.alwaysOnLateralEnabled is True
 
 
-def test_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path):
+def test_hyundai_main_cruise_button_enables_aol_one_way(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
@@ -449,7 +449,7 @@ def test_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_pat
   car_state = make_car_state(button_events=[SimpleNamespace(type=spc.ButtonType.mainCruise, pressed=True)])
   starpilot_car_state = SimpleNamespace(distancePressed=False)
   sm = make_sm()
-  toggles = make_toggles(always_on_lateral=True, main_cruise_aol_toggle=True)
+  toggles = make_toggles(always_on_lateral=True, always_on_lateral_lkas=True, main_cruise_aol_toggle=True)
 
   ret = card.update(car_state, starpilot_car_state, sm, toggles)
   assert ret.alwaysOnLateralAllowed is True
@@ -457,11 +457,16 @@ def test_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_pat
 
   car_state.buttonEvents = [SimpleNamespace(type=spc.ButtonType.mainCruise, pressed=True)]
   ret = card.update(car_state, starpilot_car_state, sm, toggles)
+  assert ret.alwaysOnLateralAllowed is True
+  assert ret.alwaysOnLateralEnabled is True
+
+  car_state.buttonEvents = [SimpleNamespace(type=spc.ButtonType.lkas, pressed=True)]
+  ret = card.update(car_state, starpilot_car_state, sm, toggles)
   assert ret.alwaysOnLateralAllowed is False
   assert ret.alwaysOnLateralEnabled is False
 
 
-def test_hyundai_main_cruise_button_wrapped_enum_can_toggle_aol(monkeypatch, tmp_path):
+def test_hyundai_main_cruise_button_wrapped_enum_enables_aol_one_way(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
@@ -490,8 +495,8 @@ def test_hyundai_main_cruise_button_wrapped_enum_can_toggle_aol(monkeypatch, tmp
 
   car_state.buttonEvents = [make_wrapped_button_event(spc.ButtonType.mainCruise, True)]
   ret = card.update(car_state, starpilot_car_state, sm, toggles)
-  assert ret.alwaysOnLateralAllowed is False
-  assert ret.alwaysOnLateralEnabled is False
+  assert ret.alwaysOnLateralAllowed is True
+  assert ret.alwaysOnLateralEnabled is True
 
 
 def test_hyundai_lda_platform_main_aol_waits_for_engagement_without_lkas_mapping(monkeypatch, tmp_path):
@@ -517,7 +522,7 @@ def test_hyundai_lda_platform_main_aol_waits_for_engagement_without_lkas_mapping
   assert ret.alwaysOnLateralEnabled is True
 
 
-def test_honda_mapped_main_cruise_button_keeps_immediate_toggle(monkeypatch, tmp_path):
+def test_honda_mapped_main_cruise_button_enables_aol_immediately(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)

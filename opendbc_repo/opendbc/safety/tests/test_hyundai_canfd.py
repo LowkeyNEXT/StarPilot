@@ -892,7 +892,7 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
     self.assertTrue(self._tx(common.make_msg(0, 0x362, 32)))
 
-  def test_ev9_lka_alt_aol_standstill_allows_angle_and_status_overlay(self):
+  def test_ev9_lka_alt_aol_standstill_allows_angle_only(self):
     self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd,
                                  self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG)
     self.safety.init_tests()
@@ -905,8 +905,41 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
     self._set_prev_desired_angle(0)
 
     self.assertTrue(self._tx(self._angle_cmd_msg(0, enabled=True)))
-    self.assertTrue(self._tx(common.make_msg(1, 0x161, 32)))
+    self.assertFalse(self._tx(common.make_msg(1, 0x161, 32)))
     self.assertFalse(self._tx(common.make_msg(1, 0x12A, 16)))
+
+  def test_ev9_aol_main_button_sync_survives_stock_main_off(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd,
+                                 self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG)
+    self.safety.init_tests()
+    self.safety.set_alternative_experience(
+      ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL | ALTERNATIVE_EXPERIENCE.AOL_MAIN_LKAS_SYNC,
+    )
+    self.safety.set_controls_allowed(False)
+
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self.assertTrue(self.safety.get_lkas_on())
+
+    for _ in range(5):
+      self._rx(self.packer.make_can_msg_safety("SCC_CONTROL", self.SCC_BUS, {
+        "MainMode_ACC": 0,
+        "ACCMode": 0,
+      }))
+    self.assertFalse(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_aol_allowed())
+
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self.assertTrue(self.safety.get_lkas_on())
+    self.assertTrue(self.safety.get_aol_allowed())
+
+    lkas_pressed = bytearray(8)
+    lkas_pressed[2] = 1 << 7
+    self._rx(libsafety_py.make_CANPacket(0x1CF, self.PT_BUS, bytes(lkas_pressed)))
+    self._rx(libsafety_py.make_CANPacket(0x1CF, self.PT_BUS, b"\x00" * 8))
+    self.assertFalse(self.safety.get_lkas_on())
+    self.assertFalse(self.safety.get_aol_allowed())
 
   def test_lka_alt_aol_non_drive_gear_forwards_stock_and_blocks_openpilot_tx(self):
     self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
@@ -948,14 +981,30 @@ class TestHyundaiCanfdLKASteeringAltAngleLongEV(HyundaiLongitudinalBase, TestHyu
       with self.subTest(address=address):
         self.assertFalse(self._tx(common.make_msg(1 if address != 0x51 else 0, address, length)))
 
-  def test_ccnc_angle_fallback_allows_only_stock_status_overlay_without_longitudinal_control(self):
+  def test_ccnc_angle_fallback_rejects_resident_status_messages(self):
     fallback_param = (self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG) | HyundaiSafetyFlags.CCNC
     self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, fallback_param)
     self.safety.init_tests()
 
-    self.assertTrue(self._tx(common.make_msg(1, 0x161, 32)))
+    self.assertFalse(self._tx(common.make_msg(1, 0x161, 32)))
     self.assertFalse(self._tx(common.make_msg(1, 0x12A, 16)))
     self.assertFalse(self._tx(common.make_msg(1, 0x1A0, 32)))
+
+  def test_ccnc_angle_fallback_uses_primary_mdps_angle(self):
+    fallback_param = (self.SAFETY_PARAM & ~HyundaiSafetyFlags.LONG) | HyundaiSafetyFlags.CCNC
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, fallback_param)
+    self.safety.init_tests()
+
+    angle = -38.5
+    for _ in range(common.MAX_SAMPLE_VALS):
+      self._rx(self.packer.make_can_msg_safety("MDPS", self.PT_BUS, {
+        "STEERING_ANGLE": angle,
+        "STEERING_ANGLE_2": 0.0,
+      }))
+
+    expected = round(angle * self.DEG_TO_CAN)
+    self.assertEqual(self.safety.get_angle_meas_min(), expected)
+    self.assertEqual(self.safety.get_angle_meas_max(), expected)
 
   def test_ccnc_angle_long_uses_second_mdps_angle(self):
     self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, self.SAFETY_PARAM | HyundaiSafetyFlags.CCNC)

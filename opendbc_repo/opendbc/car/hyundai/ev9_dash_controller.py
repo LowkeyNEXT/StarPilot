@@ -4,8 +4,6 @@ from opendbc.car import CanData, structs
 from opendbc.car.hyundai import ev9_canfd
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 
-EV9_STOCK_STATUS_STALE_NS = 200_000_000
-
 
 def ev9_dynamic_steering_icons(CP, lat_active: bool, steering_active: bool,
                                legacy_lka_icon: int, legacy_lfa_icon: int) -> tuple[int, int, bool | None]:
@@ -30,7 +28,6 @@ class EV9DashController:
   CP: object
   packer: object
   CAN: object
-  _aol_stock_counter: int | None = None
 
   @property
   def enabled(self) -> bool:
@@ -77,21 +74,3 @@ class EV9DashController:
       0, frame, CS.out.brakePressed, CS.out.gasPressed,
     ))
     return messages
-
-  def create_aol_lateral_status(self, now_nanos: int, CS, steering_available: bool,
-                                steering_active: bool, hud) -> list[CanData]:
-    stock_values = getattr(CS, "msg_161", {})
-    stock_timestamp = int(getattr(CS, "msg_161_ts", 0))
-    stock_fresh = 0 <= now_nanos - stock_timestamp <= EV9_STOCK_STATUS_STALE_NS
-    if not steering_available or not stock_values or not stock_fresh:
-      self._aol_stock_counter = None
-      return []
-
-    stock_counter = int(stock_values["COUNTER"])
-    if stock_counter == self._aol_stock_counter:
-      return []
-    self._aol_stock_counter = stock_counter
-    return [ev9_canfd.create_aol_lateral_status(
-      self.packer, self.CP, self.CAN, stock_values, steering_available, steering_active,
-      hud, getattr(CS, "ev9_dash_scene", None),
-    )]

@@ -2072,13 +2072,7 @@ class TestHyundaiFingerprint:
     assert parser.vl["CAM_0x362"]["LEFT_LANE_LINE"] == 0
     assert parser.vl["CAM_0x362"]["RIGHT_LANE_LINE"] == 0
 
-  @pytest.mark.parametrize(("apply_steer_req", "steering_pressed", "expected_active"), [
-    (False, False, False),
-    (True, False, True),
-    (True, True, False),
-  ])
-  def test_ev9_aol_path_emits_only_the_stock_status_overlay(self, monkeypatch, apply_steer_req,
-                                                            steering_pressed, expected_active):
+  def test_ev9_aol_path_preserves_resident_status_messages(self):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CCNC |
@@ -2088,11 +2082,6 @@ class TestHyundaiFingerprint:
 
     controller = CarController(DBC[CP.carFingerprint], CP)
     controller.frame = 5
-    calls = []
-    monkeypatch.setattr(
-      controller.ev9_dash, "create_aol_lateral_status",
-      lambda now_nanos, _CS, available, active, _hud: calls.append((now_nanos, available, active)) or [],
-    )
     cc = SimpleNamespace(
       enabled=False,
       latActive=True,
@@ -2113,16 +2102,17 @@ class TestHyundaiFingerprint:
         gearShifter=structs.CarState.GearShifter.drive,
         standstill=False,
         steeringAngleDeg=0.0,
-        steeringPressed=steering_pressed,
+        steeringPressed=False,
       ),
     )
 
-    controller.create_canfd_msgs(123, apply_steer_req, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
-                                 get_test_toggles(), lka_icon=2, lfa_icon=2)
+    msgs = controller.create_canfd_msgs(123, True, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
+                                        get_test_toggles(), lka_icon=2, lfa_icon=2)
 
-    assert calls == [(123, True, expected_active)]
+    assert any(msg[0] == 0x110 for msg in msgs)
+    assert all(msg[0] not in (0x12A, 0x161) for msg in msgs)
 
-  def test_ev9_failed_longitudinal_fallback_emits_only_the_stock_status_overlay(self, monkeypatch):
+  def test_ev9_failed_longitudinal_fallback_preserves_resident_status_messages(self, monkeypatch):
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_EV9
     CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CCNC |
@@ -2134,13 +2124,8 @@ class TestHyundaiFingerprint:
     controller.frame = 5
     controller.ecu_disable_failed = True
     controller.long_active_ecu = False
-    calls = []
     monkeypatch.setattr(controller.ev9_dash, "create_status_messages", lambda *_args: pytest.fail("full dash reconstruction used"))
     monkeypatch.setattr(controller.ev9_preinit, "create_status_messages", lambda *_args: pytest.fail("preinit reconstruction used"))
-    monkeypatch.setattr(
-      controller.ev9_dash, "create_aol_lateral_status",
-      lambda now_nanos, _CS, available, active, _hud: calls.append((now_nanos, available, active)) or [],
-    )
     cc = SimpleNamespace(
       enabled=False,
       latActive=True,
@@ -2167,9 +2152,8 @@ class TestHyundaiFingerprint:
     msgs = controller.create_canfd_msgs(456, False, 0.0, 0.0, 0.0, 0.0, False, cc.hudControl, cs, cc,
                                         get_test_toggles(), lka_icon=2, lfa_icon=2)
 
-    assert calls == [(456, True, False)]
     assert any(msg[0] == 0x110 for msg in msgs)
-    assert all(msg[0] != 0x12A for msg in msgs)
+    assert all(msg[0] not in (0x12A, 0x161) for msg in msgs)
 
   def test_ev9_high_steering_angle_keeps_active_status_and_gain(self):
     CP = CarParams.new_message()

@@ -316,6 +316,7 @@ extern bool gm_remote_start_boots_comma;
 
 #define ALT_EXP_ALWAYS_ON_LATERAL 32
 #define ALT_EXP_GM_REMAP_CANCEL_TO_DISTANCE 64
+#define ALT_EXP_AOL_MAIN_LKAS_SYNC 128
 
 extern int alternative_experience;
 

@@ -231,6 +231,8 @@ class Car(EV9PreinitCoordinator, EV9DashCoordinator):
     if self.starpilot_toggles.always_on_lateral:
       self.CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL
       self.FPCP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL
+      if self.starpilot_toggles.always_on_lateral_lkas and self.starpilot_toggles.main_cruise_aol_toggle:
+        self.FPCP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.AOL_MAIN_LKAS_SYNC
     if getattr(self.starpilot_toggles, "remap_cancel_to_distance", False):
       self.CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.GM_REMAP_CANCEL_TO_DISTANCE
       self.FPCP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.GM_REMAP_CANCEL_TO_DISTANCE

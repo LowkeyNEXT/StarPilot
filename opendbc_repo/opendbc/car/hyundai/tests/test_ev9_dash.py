@@ -13,7 +13,6 @@ from opendbc.car.hyundai.ev9_dash import ClusterObject, ClusterObjectSlots, Ev9D
                                              radar_backed_object, select_ev9_lane_boundaries, select_lane_change_direction, \
                                              resolve_ev9_raw_blindspot_state, select_target_line_distance, update_ev9_raw_blindspot_gate, \
                                              validate_slots_for_output
-from opendbc.car.hyundai.ev9_dash_controller import EV9DashController, EV9_STOCK_STATUS_STALE_NS
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.ev9_radar import dash_display_candidate as ev9_dash_display_candidate, \
                                             dash_side_candidate as ev9_dash_side_candidate, \
@@ -732,124 +731,6 @@ def test_ccnc_lane_change_uses_existing_lane_arrow_and_icon_states(side, left_ar
   assert status["LCA_RIGHT_ARROW"] == right_arrow
   assert status["LANELINE_LEFT"] == 6
   assert status["LANELINE_RIGHT"] == 6
-
-
-@pytest.mark.parametrize(("side", "left_arrow", "right_arrow"), [
-  ("left", 2, 0),
-  ("right", 0, 2),
-])
-def test_aol_lateral_status_overlays_only_openpilot_lateral_fields(side, left_arrow, right_arrow):
-  CP = CarParams.new_message()
-  CP.carFingerprint = CAR.KIA_EV9
-  CP.wheelbase = 3.1
-  CP.steerRatio = 14.0
-  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
-  can_bus = CanBus(CP)
-  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
-  stock_values = {
-    name: 0 for name in packer.dbc.name_to_msg["CCNC_0x161"].sigs
-  }
-  stock_values.update({
-    "COUNTER": 47,
-    "FCA_ICON": 1,
-    "HBA_ICON": 2,
-    "HDA_ICON": 2,
-    "TARGET": 3,
-    "TARGET_DISTANCE": 42.0,
-    "SETSPEED_SPEED": 65,
-    "LANELINE_LEFT_POSITION": 12,
-    "LANELINE_RIGHT_POSITION": 18,
-    "LANELINE_CURVATURE": 17,
-  })
-  scene = Ev9DashScene(
-    lane_outline=Ev9LaneOutline(True, True, 0.0),
-    lane_change_direction=side,
-  )
-  hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False)
-
-  message = ev9_canfd.create_aol_lateral_status(
-    packer, CP, can_bus, stock_values, True, True, hud, scene,
-  )
-  parser.update([(1, [message])])
-  status = parser.vl["CCNC_0x161"]
-
-  assert parser.can_valid
-  assert status["COUNTER"] == 48
-  assert status["FCA_ICON"] == 1
-  assert status["HBA_ICON"] == 2
-  assert status["HDA_ICON"] == 2
-  assert status["TARGET"] == 3
-  assert status["TARGET_DISTANCE"] == pytest.approx(42.0)
-  assert status["SETSPEED_SPEED"] == 65
-  assert status["LANELINE_LEFT_POSITION"] == 15
-  assert status["LANELINE_RIGHT_POSITION"] == 15
-  assert status["LANELINE_CURVATURE"] == 15
-  assert status["LFA_ICON"] == 2
-  assert status["LANELINE_LEFT"] == 6
-  assert status["LANELINE_RIGHT"] == 6
-  assert status["LCA_LEFT_ICON"] == 2
-  assert status["LCA_RIGHT_ICON"] == 2
-  assert status["LCA_LEFT_ARROW"] == left_arrow
-  assert status["LCA_RIGHT_ARROW"] == right_arrow
-
-
-@pytest.mark.parametrize(("steering_active", "expected_icon"), [(False, 1), (True, 2)])
-def test_aol_lateral_status_matches_alpha_steering_icon(steering_active, expected_icon):
-  CP = CarParams.new_message()
-  CP.carFingerprint = CAR.KIA_EV9
-  CP.wheelbase = 3.1
-  CP.steerRatio = 14.0
-  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
-  can_bus = CanBus(CP)
-  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CCNC_0x161", 0)], can_bus.ECAN)
-  stock_values = {name: 0 for name in packer.dbc.name_to_msg["CCNC_0x161"].sigs}
-  stock_values.update({"COUNTER": 9, "HBA_ICON": 2, "HDA_ICON": 1, "LCA_LEFT_ICON": 1, "LCA_RIGHT_ICON": 1})
-  scene = Ev9DashScene(lane_outline=Ev9LaneOutline(True, True, 0.01))
-
-  message = ev9_canfd.create_aol_lateral_status(
-    packer, CP, can_bus, stock_values, True, steering_active,
-    SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False), scene,
-  )
-  parser.update([(1, [message])])
-  status = parser.vl["CCNC_0x161"]
-
-  assert status["LFA_ICON"] == expected_icon
-  assert status["LANELINE_LEFT"] == 2
-  assert status["LANELINE_RIGHT"] == 2
-  assert status["LCA_LEFT_ICON"] == 1
-  assert status["LCA_RIGHT_ICON"] == 1
-  assert status["HBA_ICON"] == 2
-  assert status["HDA_ICON"] == 1
-
-
-def test_aol_lateral_status_follows_each_fresh_stock_counter_once():
-  CP = CarParams.new_message()
-  CP.carFingerprint = CAR.KIA_EV9
-  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
-  controller = EV9DashController(CP, packer, CanBus(CP))
-  stock_values = {
-    name: 0 for name in packer.dbc.name_to_msg["CCNC_0x161"].sigs
-  }
-  stock_values["COUNTER"] = 47
-  now_nanos = 1_000_000_000
-  CS = SimpleNamespace(
-    ev9_dash_scene=Ev9DashScene(lane_change_direction="left"),
-    msg_161=stock_values,
-    msg_161_ts=now_nanos,
-  )
-
-  hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False)
-  assert len(controller.create_aol_lateral_status(now_nanos, CS, True, True, hud)) == 1
-  assert controller.create_aol_lateral_status(now_nanos, CS, True, True, hud) == []
-
-  stock_values["COUNTER"] += 1
-  assert len(controller.create_aol_lateral_status(now_nanos, CS, True, True, hud)) == 1
-
-  assert controller.create_aol_lateral_status(now_nanos, CS, False, False, hud) == []
-  CS.ev9_dash_scene = Ev9DashScene(lane_change_direction="left")
-  assert controller.create_aol_lateral_status(
-    now_nanos + EV9_STOCK_STATUS_STALE_NS + 1, CS, True, True, hud,
-  ) == []
 
 
 @pytest.mark.parametrize(("steering_angle", "expected"), [
